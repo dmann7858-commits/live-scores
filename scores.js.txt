@@ -1,0 +1,368 @@
+// scores.js
+// Live scores app - the real thing, with your design.
+//
+// Run it:      node scores.js
+// Then open:   http://localhost:3000
+
+const http = require("http");
+
+// The key now comes from a setting on the server, so it never
+// appears in the code. Fill in the fallback only if you want to
+// keep running it on your own PC.
+const API_KEY = process.env.API_FOOTBALL_KEY || "PASTE_YOUR_KEY_HERE";
+
+// The hosting company tells us which port to use. On your own PC
+// there is no instruction, so we fall back to 3000.
+const PORT = process.env.PORT || 3000;
+
+const MY_LEAGUES = [
+  39,   // Premier League
+  40,   // Championship
+  41,   // League One
+  42,   // League Two
+  43,   // National League
+  2,    // Champions League
+  3,    // Europa League
+  140,  // La Liga
+  135,  // Serie A
+  78,   // Bundesliga
+  61,   // Ligue 1
+];
+
+
+// ---------------------------------------------------------------
+// THE CACHE
+// Saves the last set of scores for 60 seconds so we do not burn
+// through the daily quota every time someone looks at the page.
+// ---------------------------------------------------------------
+let savedMatches = [];
+let savedAt = 0;
+
+async function getMatches() {
+  const secondsOld = (Date.now() - savedAt) / 1000;
+
+  if (secondsOld < 60 && savedAt > 0) {
+    console.log("Served from cache (" + Math.round(secondsOld) + "s old)");
+    return savedMatches;
+  }
+
+  console.log("Fetching from API...");
+
+  try {
+    const response = await fetch("https://v3.football.api-sports.io/fixtures?live=all", {
+      headers: { "x-apisports-key": API_KEY },
+    });
+    const data = await response.json();
+
+    if (!data.response) {
+      console.log("API problem:", data);
+      return savedMatches;
+    }
+
+    savedMatches = data.response.filter(function (match) {
+      return MY_LEAGUES.includes(match.league.id);
+    });
+    savedAt = Date.now();
+
+    console.log(data.response.length + " live worldwide, " + savedMatches.length + " in your leagues");
+  } catch (error) {
+    console.log("Could not reach the API:", error.message);
+  }
+
+  return savedMatches;
+}
+
+
+// ---------------------------------------------------------------
+// THE PAGE
+// ---------------------------------------------------------------
+const PAGE = `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Scores</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    background: #F4F4F2;
+    color: #1a1a1a;
+    padding-bottom: 70px;
+  }
+  .header { background: #185FA5; padding: 14px 16px 12px; }
+  .headerTop {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .title { font-size: 18px; font-weight: 500; color: #fff; }
+  .badges { display: flex; align-items: center; gap: 10px; }
+  .coins {
+    display: flex; align-items: center; gap: 4px;
+    background: #042C53; padding: 4px 10px; border-radius: 12px;
+    font-size: 13px; color: #FAC775;
+  }
+  .level {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: #EF9F27; color: #412402;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 600;
+  }
+  .xpRow { display: flex; align-items: center; gap: 8px; }
+  .xpTrack {
+    flex: 1; height: 5px; background: #042C53;
+    border-radius: 3px; overflow: hidden;
+  }
+  .xpFill { height: 100%; background: #EF9F27; width: 0%; }
+  .xpText { font-size: 11px; color: #B5D4F4; }
+
+  .updated {
+    padding: 8px 16px; font-size: 12px; color: #777;
+    background: #F4F4F2;
+  }
+  .leagueRow {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 16px; background: #E8E8E4;
+    font-size: 12px; color: #555;
+  }
+  .leagueLogo { width: 16px; height: 16px; object-fit: contain; }
+
+  .match {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .minute { width: 40px; font-size: 12px; color: #BA7517; flex-shrink: 0; }
+  .minute.grey { color: #777; }
+  .teams { flex: 1; min-width: 0; }
+  .teamRow {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px;
+  }
+  .teamRow:first-child { margin-bottom: 7px; }
+  .teamName {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 15px; min-width: 0;
+  }
+  .teamName span {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .crest { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; }
+  .goals { font-size: 15px; font-weight: 600; flex-shrink: 0; }
+  .bell {
+    font-size: 17px; color: #ccc; cursor: pointer;
+    flex-shrink: 0; user-select: none;
+  }
+  .bell.on { color: #EF9F27; }
+
+  .empty { padding: 50px 24px; text-align: center; color: #777; }
+
+  .nav {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    display: flex; background: #fff;
+    border-top: 1px solid #E8E8E4; padding: 8px 0;
+  }
+  .navItem { flex: 1; text-align: center; font-size: 11px; color: #999; }
+  .navItem.active { color: #185FA5; }
+  .navIcon { font-size: 18px; display: block; margin-bottom: 2px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="headerTop">
+    <div class="title">Live scores</div>
+    <div class="badges">
+      <div class="coins">&#9679; <span id="coins">0</span></div>
+      <div class="level" id="level">1</div>
+    </div>
+  </div>
+  <div class="xpRow">
+    <div class="xpTrack"><div class="xpFill" id="xpFill"></div></div>
+    <div class="xpText"><span id="xpText">0 / 1000 xp</span></div>
+  </div>
+</div>
+
+<div class="updated" id="updated">Loading...</div>
+<div id="list"></div>
+
+<div class="nav">
+  <div class="navItem active"><span class="navIcon">&#9917;</span>Scores</div>
+  <div class="navItem"><span class="navIcon">&#128197;</span>Fixtures</div>
+  <div class="navItem"><span class="navIcon">&#127942;</span>Leagues</div>
+  <div class="navItem"><span class="navIcon">&#9776;</span>Tables</div>
+  <div class="navItem"><span class="navIcon">&#9733;</span>Teams</div>
+</div>
+
+<script>
+// ---------------------------------------------------------------
+// XP AND COINS
+// Stored in the browser for now. Later this moves to a database
+// so it follows the user between devices.
+// ---------------------------------------------------------------
+function load(name, fallback) {
+  const value = localStorage.getItem(name);
+  return value === null ? fallback : Number(value);
+}
+
+let xp = load("xp", 0);
+let coins = load("coins", 0);
+let alerts = JSON.parse(localStorage.getItem("alerts") || "[]");
+
+// Daily bonus - once per calendar day.
+const today = new Date().toDateString();
+if (localStorage.getItem("lastOpen") !== today) {
+  xp = xp + 5;
+  coins = coins + 2;
+  localStorage.setItem("lastOpen", today);
+}
+
+function saveProgress() {
+  localStorage.setItem("xp", xp);
+  localStorage.setItem("coins", coins);
+  localStorage.setItem("alerts", JSON.stringify(alerts));
+}
+
+function drawProgress() {
+  const level = Math.floor(xp / 1000) + 1;
+  const intoLevel = xp % 1000;
+  document.getElementById("level").textContent = level;
+  document.getElementById("coins").textContent = coins;
+  document.getElementById("xpFill").style.width = (intoLevel / 10) + "%";
+  document.getElementById("xpText").textContent = intoLevel + " / 1000 xp";
+}
+
+// Toggle an alert on a match.
+function toggleAlert(fixtureId, element) {
+  const position = alerts.indexOf(fixtureId);
+  if (position === -1) {
+    alerts.push(fixtureId);
+    element.classList.add("on");
+  } else {
+    alerts.splice(position, 1);
+    element.classList.remove("on");
+  }
+  saveProgress();
+}
+
+
+// ---------------------------------------------------------------
+// DRAWING THE SCORES
+// ---------------------------------------------------------------
+async function refresh() {
+  let matches = [];
+  try {
+    const response = await fetch("/api/scores");
+    matches = await response.json();
+  } catch (error) {
+    document.getElementById("updated").textContent = "Could not reach the server";
+    return;
+  }
+
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (matches.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No matches in your leagues right now.<br><br>' +
+      'European games are usually on in your evening.</div>';
+  }
+
+  // Watching live football earns xp.
+  if (matches.length > 0) {
+    xp = xp + 1;
+    saveProgress();
+  }
+
+  let lastLeague = null;
+
+  for (const match of matches) {
+    // Start a new league heading whenever the league changes.
+    if (match.league.name !== lastLeague) {
+      const heading = document.createElement("div");
+      heading.className = "leagueRow";
+      heading.innerHTML =
+        '<img class="leagueLogo" src="' + match.league.logo + '" alt="">' +
+        match.league.country + ' - ' + match.league.name;
+      list.appendChild(heading);
+      lastLeague = match.league.name;
+    }
+
+    let minute = match.fixture.status.elapsed + "'";
+    let minuteClass = "minute";
+    if (match.fixture.status.elapsed === null) {
+      minute = match.fixture.status.short;
+      minuteClass = "minute grey";
+    }
+    if (match.fixture.status.short === "HT") {
+      minute = "HT";
+      minuteClass = "minute grey";
+    }
+
+    const isOn = alerts.includes(match.fixture.id);
+
+    const row = document.createElement("div");
+    row.className = "match";
+    row.innerHTML =
+      '<div class="' + minuteClass + '">' + minute + '</div>' +
+      '<div class="teams">' +
+        '<div class="teamRow">' +
+          '<div class="teamName">' +
+            '<img class="crest" src="' + match.teams.home.logo + '" alt="">' +
+            '<span>' + match.teams.home.name + '</span>' +
+          '</div>' +
+          '<div class="goals">' + match.goals.home + '</div>' +
+        '</div>' +
+        '<div class="teamRow">' +
+          '<div class="teamName">' +
+            '<img class="crest" src="' + match.teams.away.logo + '" alt="">' +
+            '<span>' + match.teams.away.name + '</span>' +
+          '</div>' +
+          '<div class="goals">' + match.goals.away + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="bell' + (isOn ? ' on' : '') + '">&#128276;</div>';
+
+    const bell = row.querySelector(".bell");
+    bell.onclick = function () { toggleAlert(match.fixture.id, bell); };
+
+    list.appendChild(row);
+  }
+
+  drawProgress();
+  document.getElementById("updated").textContent =
+    matches.length + " live - updated " + new Date().toLocaleTimeString();
+}
+
+drawProgress();
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
+`;
+
+
+// ---------------------------------------------------------------
+// THE SERVER
+// ---------------------------------------------------------------
+const server = http.createServer(async function (request, response) {
+  if (request.url === "/api/scores") {
+    const matches = await getMatches();
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(matches));
+    return;
+  }
+
+  response.writeHead(200, { "Content-Type": "text/html" });
+  response.end(PAGE);
+});
+
+server.listen(PORT, function () {
+  console.log("");
+  console.log("  App running on port " + PORT);
+  console.log("  On your own PC:  http://localhost:" + PORT);
+  console.log("");
+});

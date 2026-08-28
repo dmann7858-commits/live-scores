@@ -1,0 +1,12 @@
+{
+  "name": "live-scores",
+  "version": "1.0.0",
+  "description": "Live football scores app",
+  "main": "scores.js",
+  "scripts": {
+    "start": "node scores.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
