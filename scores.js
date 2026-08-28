@@ -132,6 +132,33 @@ async function getTableFor(leagueId) {
 }
 
 
+// One request brings back the goals, the stats and the team sheets
+// all together, so a match page costs a single call.
+async function getMatch(fixtureId) {
+  const name = "match-" + fixtureId;
+  const saved = cache[name];
+
+  if (saved) {
+    const age = (Date.now() - saved.time) / 1000;
+    // Short, because a live game changes constantly.
+    if (age < 60) {
+      console.log("cache hit: " + name);
+      return saved.data;
+    }
+  }
+
+  console.log("fetching match " + fixtureId);
+  const result = await askApi("fixtures?id=" + fixtureId);
+
+  if (result === null || result.length === 0) {
+    return saved ? saved.data : null;
+  }
+
+  cache[name] = { data: result[0], time: Date.now() };
+  return result[0];
+}
+
+
 // ---------------------------------------------------------------
 // THE PAGE
 // ---------------------------------------------------------------
@@ -249,6 +276,53 @@ const PAGE = `
   .keyItem { display: flex; align-items: center; gap: 6px; }
   .keyDash { width: 10px; height: 3px; }
 
+  /* Single match screen */
+  .matchHead { background: #185FA5; padding: 12px 16px 16px; }
+  .matchTop {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .back { font-size: 20px; color: #fff; cursor: pointer; user-select: none; }
+  .comp { font-size: 12px; color: #B5D4F4; }
+  .scoreLine { display: flex; align-items: center; }
+  .side { flex: 1; text-align: center; }
+  .side img { width: 44px; height: 44px; object-fit: contain; margin-bottom: 8px; }
+  .side div { font-size: 13px; color: #fff; }
+  .bigScore { text-align: center; padding: 0 8px; }
+  .bigScore .nums { font-size: 30px; font-weight: 600; color: #fff; }
+  .bigScore .clock { font-size: 12px; color: #EF9F27; margin-top: 2px; }
+
+  .tabs { display: flex; background: #fff; border-bottom: 1px solid #E8E8E4; }
+  .tab {
+    flex: 1; text-align: center; padding: 11px 0;
+    font-size: 14px; color: #777; cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  .tab.on { color: #185FA5; border-bottom-color: #185FA5; }
+
+  .event {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .evMin { width: 34px; font-size: 12px; color: #777; }
+  .evIcon { font-size: 15px; width: 20px; }
+  .evName { font-size: 14px; flex: 1; }
+  .evTeam { font-size: 12px; color: #999; }
+
+  .statBox { padding: 16px; background: #fff; }
+  .stat { margin-bottom: 16px; }
+  .stat:last-child { margin-bottom: 0; }
+  .statTop {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 6px;
+  }
+  .statVal { font-size: 14px; font-weight: 600; }
+  .statName { font-size: 13px; color: #777; }
+  .statBar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: #E8E8E4; }
+  .statHome { background: #185FA5; }
+  .statAway { background: #EF9F27; }
+
   .nav {
     position: fixed; bottom: 0; left: 0; right: 0;
     display: flex; background: #fff; border-top: 1px solid #E8E8E4; padding: 8px 0;
@@ -260,7 +334,7 @@ const PAGE = `
 </head>
 <body>
 
-<div class="header">
+<div class="header" id="mainHeader">
   <div class="headerTop">
     <div class="title" id="screenTitle">Live scores</div>
     <div class="badges">
@@ -276,6 +350,7 @@ const PAGE = `
   <div id="pickerBox" style="display:none"></div>
 </div>
 
+<div id="matchHead"></div>
 <div class="updated" id="updated">Loading...</div>
 <div id="list"></div>
 
@@ -486,7 +561,14 @@ function drawMatches(matches, showKickoffTimes) {
       '<div class="bell' + (isOn ? ' on' : '') + '">&#128276;</div>';
 
     const bell = row.querySelector(".bell");
-    bell.onclick = function () { toggleAlert(match.fixture.id, bell); };
+    bell.onclick = function (event) {
+      // Stop the tap also opening the match page underneath.
+      event.stopPropagation();
+      toggleAlert(match.fixture.id, bell);
+    };
+
+    row.style.cursor = "pointer";
+    row.onclick = function () { openMatch(match.fixture.id); };
 
     list.appendChild(row);
   }
@@ -582,11 +664,193 @@ function drawTable(rows) {
 
 
 // ---------------------------------------------------------------
+// THE SINGLE MATCH SCREEN
+// ---------------------------------------------------------------
+let openFixtureId = null;
+let matchTab = "summary";
+let previousScreen = "scores";
+
+function openMatch(fixtureId) {
+  previousScreen = screen;
+  openFixtureId = fixtureId;
+  matchTab = "summary";
+  screen = "match";
+
+  document.getElementById("mainHeader").style.display = "none";
+  refresh();
+}
+
+function closeMatch() {
+  openFixtureId = null;
+  document.getElementById("mainHeader").style.display = "block";
+  document.getElementById("matchHead").innerHTML = "";
+  goTo(previousScreen);
+}
+
+// Picks a symbol for each thing that happened.
+function eventIcon(event) {
+  if (event.type === "Goal") return "&#9917;";
+  if (event.type === "Card") {
+    return event.detail === "Red Card" ? "&#128308;" : "&#129000;";
+  }
+  if (event.type === "subst") return "&#8646;";
+  return "&#8226;";
+}
+
+function drawMatch(match) {
+  const head = document.getElementById("matchHead");
+  const list = document.getElementById("list");
+
+  const homeGoals = match.goals.home === null ? "-" : match.goals.home;
+  const awayGoals = match.goals.away === null ? "-" : match.goals.away;
+
+  let clock = match.fixture.status.elapsed + "'";
+  if (match.fixture.status.elapsed === null) {
+    clock = match.fixture.status.long;
+  }
+
+  head.innerHTML =
+    '<div class="matchHead">' +
+      '<div class="matchTop">' +
+        '<span class="back" id="backBtn">&#8592;</span>' +
+        '<span class="comp">' + match.league.name + '</span>' +
+        '<span style="width:20px"></span>' +
+      '</div>' +
+      '<div class="scoreLine">' +
+        '<div class="side">' +
+          '<img src="' + match.teams.home.logo + '" alt="">' +
+          '<div>' + match.teams.home.name + '</div>' +
+        '</div>' +
+        '<div class="bigScore">' +
+          '<div class="nums">' + homeGoals + ' - ' + awayGoals + '</div>' +
+          '<div class="clock">' + clock + '</div>' +
+        '</div>' +
+        '<div class="side">' +
+          '<img src="' + match.teams.away.logo + '" alt="">' +
+          '<div>' + match.teams.away.name + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="tabs">' +
+      '<div class="tab' + (matchTab === "summary" ? " on" : "") + '" id="tabSummary">Summary</div>' +
+      '<div class="tab' + (matchTab === "stats" ? " on" : "") + '" id="tabStats">Stats</div>' +
+    '</div>';
+
+  document.getElementById("backBtn").onclick = closeMatch;
+  document.getElementById("tabSummary").onclick = function () {
+    matchTab = "summary"; drawMatch(match);
+  };
+  document.getElementById("tabStats").onclick = function () {
+    matchTab = "stats"; drawMatch(match);
+  };
+
+  list.innerHTML = "";
+
+  if (matchTab === "summary") {
+    const events = match.events || [];
+    // Cards and substitutions are noise on a first look.
+    const goals = events.filter(function (e) { return e.type === "Goal"; });
+
+    if (goals.length === 0) {
+      list.innerHTML = '<div class="empty">No goals yet.</div>';
+      return;
+    }
+
+    for (const event of goals) {
+      const row = document.createElement("div");
+      row.className = "event";
+      row.innerHTML =
+        '<span class="evMin">' + event.time.elapsed + "'" + '</span>' +
+        '<span class="evIcon">' + eventIcon(event) + '</span>' +
+        '<span class="evName">' + (event.player.name || "Unknown") + '</span>' +
+        '<span class="evTeam">' + event.team.name + '</span>';
+      list.appendChild(row);
+    }
+    return;
+  }
+
+  // Stats tab
+  const stats = match.statistics || [];
+
+  if (stats.length < 2) {
+    list.innerHTML =
+      '<div class="empty">No stats for this match.<br><br>' +
+      'Lower leagues usually only have goals.</div>';
+    return;
+  }
+
+  const homeStats = stats[0].statistics;
+  const awayStats = stats[1].statistics;
+
+  const box = document.createElement("div");
+  box.className = "statBox";
+
+  // Only the ones worth showing, in a sensible order.
+  const wanted = [
+    "Ball Possession", "Total Shots", "Shots on Goal",
+    "Corner Kicks", "Fouls", "Yellow Cards"
+  ];
+
+  for (const name of wanted) {
+    const home = homeStats.find(function (s) { return s.type === name; });
+    const away = awayStats.find(function (s) { return s.type === name; });
+    if (!home || !away) continue;
+
+    const homeValue = home.value === null ? 0 : home.value;
+    const awayValue = away.value === null ? 0 : away.value;
+
+    // Possession arrives as "46%", so strip the sign to do the maths.
+    const homeNum = Number(String(homeValue).replace("%", "")) || 0;
+    const awayNum = Number(String(awayValue).replace("%", "")) || 0;
+    const total = homeNum + awayNum;
+
+    const homeWidth = total === 0 ? 50 : (homeNum / total) * 100;
+
+    const stat = document.createElement("div");
+    stat.className = "stat";
+    stat.innerHTML =
+      '<div class="statTop">' +
+        '<span class="statVal">' + homeValue + '</span>' +
+        '<span class="statName">' + name + '</span>' +
+        '<span class="statVal">' + awayValue + '</span>' +
+      '</div>' +
+      '<div class="statBar">' +
+        '<div class="statHome" style="width:' + homeWidth + '%"></div>' +
+        '<div class="statAway" style="width:' + (100 - homeWidth) + '%"></div>' +
+      '</div>';
+    box.appendChild(stat);
+  }
+
+  list.appendChild(box);
+}
+
+
+// ---------------------------------------------------------------
 // LOADING WHATEVER THE CURRENT SCREEN NEEDS
 // ---------------------------------------------------------------
 async function refresh() {
   const list = document.getElementById("list");
   const updated = document.getElementById("updated");
+
+  if (screen === "match") {
+    updated.textContent = "Loading...";
+    let match = null;
+    try {
+      const response = await fetch("/api/match?id=" + openFixtureId);
+      match = await response.json();
+    } catch (error) {
+      updated.textContent = "Could not reach the server";
+      return;
+    }
+    if (!match) {
+      updated.textContent = "";
+      list.innerHTML = '<div class="empty">Could not load that match.</div>';
+      return;
+    }
+    updated.textContent = "";
+    drawMatch(match);
+    return;
+  }
 
   // Screens we have not built yet.
   if (screen === "leagues" || screen === "teams") {
@@ -692,6 +956,22 @@ const server = http.createServer(async function (request, response) {
     const matches = await getFixturesFor(date);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (request.url.startsWith("/api/match")) {
+    const address = new URL(request.url, "http://localhost");
+    const fixtureId = Number(address.searchParams.get("id"));
+
+    if (!fixtureId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("null");
+      return;
+    }
+
+    const match = await getMatch(fixtureId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(match));
     return;
   }
 
