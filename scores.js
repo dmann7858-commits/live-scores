@@ -6,19 +6,32 @@ const http = require("http");
 const API_KEY = process.env.API_FOOTBALL_KEY || "PASTE_YOUR_KEY_HERE";
 const PORT = process.env.PORT || 3000;
 
+// Each league has an id, a short name for the menus, and whether
+// it has a league table. Cups do not, so they are left out of the
+// Tables screen.
 const MY_LEAGUES = [
-  39,   // Premier League
-  40,   // Championship
-  41,   // League One
-  42,   // League Two
-  43,   // National League
-  2,    // Champions League
-  3,    // Europa League
-  140,  // La Liga
-  135,  // Serie A
-  78,   // Bundesliga
-  61,   // Ligue 1
+  { id: 39,  name: "Premier League",  table: true },
+  { id: 40,  name: "Championship",    table: true },
+  { id: 41,  name: "League One",      table: true },
+  { id: 42,  name: "League Two",      table: true },
+  { id: 43,  name: "National League", table: true },
+  { id: 2,   name: "Champions League", table: false },
+  { id: 3,   name: "Europa League",   table: false },
+  { id: 140, name: "La Liga",         table: true },
+  { id: 135, name: "Serie A",         table: true },
+  { id: 78,  name: "Bundesliga",      table: true },
+  { id: 61,  name: "Ligue 1",         table: true },
 ];
+
+const MY_LEAGUE_IDS = MY_LEAGUES.map(function (league) { return league.id; });
+
+// Which season to ask for. European seasons are named after the
+// year they start in, so August 2026 is season 2026 but March 2027
+// is still season 2026.
+function currentSeason() {
+  const now = new Date();
+  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+}
 
 
 // ---------------------------------------------------------------
@@ -67,7 +80,7 @@ async function getCached(name, maxAgeSeconds, path) {
   }
 
   const mine = fresh.filter(function (match) {
-    return MY_LEAGUES.includes(match.league.id);
+    return MY_LEAGUE_IDS.includes(match.league.id);
   });
 
   cache[name] = { data: mine, time: Date.now() };
@@ -82,6 +95,40 @@ function getLiveScores() {
 function getFixturesFor(date) {
   // Fixture lists barely change, so ten minutes is plenty.
   return getCached("fixtures-" + date, 600, "fixtures?date=" + date);
+}
+
+// Standings come back in a different shape, so they need their own
+// function rather than going through getCached.
+async function getTableFor(leagueId) {
+  const name = "table-" + leagueId;
+  const saved = cache[name];
+
+  if (saved) {
+    const age = (Date.now() - saved.time) / 1000;
+    // A table only changes when games finish, so half an hour is fine.
+    if (age < 1800) {
+      console.log("cache hit: " + name);
+      return saved.data;
+    }
+  }
+
+  const path = "standings?league=" + leagueId + "&season=" + currentSeason();
+  console.log("fetching: " + path);
+  const result = await askApi(path);
+
+  if (result === null || result.length === 0) {
+    return saved ? saved.data : [];
+  }
+
+  // The answer is buried: response[0].league.standings[0] is the
+  // actual list of teams. The extra layer exists because some
+  // competitions have several groups.
+  const groups = result[0].league.standings;
+  const rows = groups && groups[0] ? groups[0] : [];
+
+  cache[name] = { data: rows, time: Date.now() };
+  console.log("table has " + rows.length + " teams");
+  return rows;
 }
 
 
@@ -164,6 +211,44 @@ const PAGE = `
 
   .empty { padding: 50px 24px; text-align: center; color: #777; line-height: 1.6; }
 
+  /* League picker on the Tables screen */
+  .picker {
+    display: flex; align-items: center; justify-content: space-between;
+    background: #042C53; border-radius: 6px; padding: 9px 12px;
+    margin-bottom: 12px; color: #fff; font-size: 14px;
+  }
+  .picker select {
+    background: transparent; border: none; color: #fff;
+    font-size: 14px; width: 100%; outline: none;
+  }
+  .picker select option { background: #042C53; color: #fff; }
+
+  .tableHead {
+    display: flex; padding: 8px 16px; background: #E8E8E4;
+    font-size: 11px; color: #555;
+  }
+  .tableRow {
+    display: flex; align-items: center; padding: 10px 16px;
+    background: #fff; border-bottom: 1px solid #E8E8E4;
+    border-left: 3px solid transparent;
+  }
+  .tableRow.up { border-left-color: #639922; }
+  .tableRow.mid { border-left-color: #EF9F27; }
+  .tableRow.down { border-left-color: #E24B4A; }
+  .colPos { width: 22px; font-size: 13px; color: #777; }
+  .colTeam { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .colTeam span { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .colTeam img { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
+  .colNum { width: 30px; text-align: center; font-size: 13px; color: #777; }
+  .colPts { width: 32px; text-align: right; font-size: 14px; font-weight: 600; }
+
+  .key {
+    display: flex; gap: 16px; padding: 12px 16px;
+    background: #E8E8E4; font-size: 11px; color: #555;
+  }
+  .keyItem { display: flex; align-items: center; gap: 6px; }
+  .keyDash { width: 10px; height: 3px; }
+
   .nav {
     position: fixed; bottom: 0; left: 0; right: 0;
     display: flex; background: #fff; border-top: 1px solid #E8E8E4; padding: 8px 0;
@@ -188,6 +273,7 @@ const PAGE = `
     <div class="xpText"><span id="xpText">0 / 1000 xp</span></div>
   </div>
   <div class="dates" id="dates" style="display:none"></div>
+  <div id="pickerBox" style="display:none"></div>
 </div>
 
 <div class="updated" id="updated">Loading...</div>
@@ -202,6 +288,10 @@ const PAGE = `
 </div>
 
 <script>
+// The league list, handed over from the server so the menus
+// do not need it typed out twice.
+const LEAGUES = __LEAGUES__;
+
 // ---------------------------------------------------------------
 // XP AND COINS
 // ---------------------------------------------------------------
@@ -274,6 +364,8 @@ function goTo(name) {
 
   document.getElementById("dates").style.display =
     name === "fixtures" ? "flex" : "none";
+  document.getElementById("pickerBox").style.display =
+    name === "tables" ? "block" : "none";
 
   const titles = {
     scores: "Live scores", fixtures: "Fixtures",
@@ -402,6 +494,94 @@ function drawMatches(matches, showKickoffTimes) {
 
 
 // ---------------------------------------------------------------
+// THE TABLES SCREEN
+// ---------------------------------------------------------------
+let chosenLeague = 39; // Premier League to start with
+
+function drawPicker() {
+  const box = document.getElementById("pickerBox");
+  const withTables = LEAGUES.filter(function (league) { return league.table; });
+
+  let options = "";
+  for (const league of withTables) {
+    const selected = league.id === chosenLeague ? " selected" : "";
+    options += '<option value="' + league.id + '"' + selected + '>' + league.name + '</option>';
+  }
+
+  box.innerHTML = '<div class="picker"><select id="leaguePick">' + options + '</select></div>';
+
+  document.getElementById("leaguePick").onchange = function (event) {
+    chosenLeague = Number(event.target.value);
+    refresh();
+  };
+}
+
+// The API describes what each position means in plain words, so we
+// read that rather than hard-coding the rules for every league.
+function bandFor(description) {
+  if (!description) return "";
+  const text = description.toLowerCase();
+  if (text.includes("relegation")) return "down";
+  if (text.includes("play-off") || text.includes("playoff")) return "mid";
+  if (text.includes("promotion") || text.includes("champions league")) return "up";
+  if (text.includes("europa") || text.includes("conference")) return "mid";
+  return "";
+}
+
+function drawTable(rows) {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (rows.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No table available for this league yet.<br><br>' +
+      'Lower leagues and new seasons are often missing.</div>';
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.className = "tableHead";
+  head.innerHTML =
+    '<span class="colPos">#</span>' +
+    '<span class="colTeam">Team</span>' +
+    '<span class="colNum">P</span>' +
+    '<span class="colNum">GD</span>' +
+    '<span class="colPts">Pts</span>';
+  list.appendChild(head);
+
+  let usedBands = false;
+
+  for (const entry of rows) {
+    const band = bandFor(entry.description);
+    if (band) usedBands = true;
+
+    const row = document.createElement("div");
+    row.className = "tableRow " + band;
+    row.innerHTML =
+      '<span class="colPos">' + entry.rank + '</span>' +
+      '<span class="colTeam">' +
+        '<img src="' + entry.team.logo + '" alt="">' +
+        '<span>' + entry.team.name + '</span>' +
+      '</span>' +
+      '<span class="colNum">' + entry.all.played + '</span>' +
+      '<span class="colNum">' + (entry.goalsDiff > 0 ? "+" : "") + entry.goalsDiff + '</span>' +
+      '<span class="colPts">' + entry.points + '</span>';
+    list.appendChild(row);
+  }
+
+  if (usedBands) {
+    const key = document.createElement("div");
+    key.className = "key";
+    key.innerHTML =
+      '<div class="keyItem"><div class="keyDash" style="background:#639922"></div>Promotion</div>' +
+      '<div class="keyItem"><div class="keyDash" style="background:#EF9F27"></div>Play-offs</div>' +
+      '<div class="keyItem"><div class="keyDash" style="background:#E24B4A"></div>Relegation</div>';
+    list.appendChild(key);
+  }
+}
+
+
+// ---------------------------------------------------------------
 // LOADING WHATEVER THE CURRENT SCREEN NEEDS
 // ---------------------------------------------------------------
 async function refresh() {
@@ -409,13 +589,28 @@ async function refresh() {
   const updated = document.getElementById("updated");
 
   // Screens we have not built yet.
-  if (screen === "leagues" || screen === "tables" || screen === "teams") {
+  if (screen === "leagues" || screen === "teams") {
     updated.textContent = "";
     list.innerHTML = '<div class="empty">Not built yet.<br>Coming next.</div>';
     return;
   }
 
   updated.textContent = "Loading...";
+
+  if (screen === "tables") {
+    let rows = [];
+    try {
+      const response = await fetch("/api/table?league=" + chosenLeague);
+      rows = await response.json();
+    } catch (error) {
+      updated.textContent = "Could not reach the server";
+      return;
+    }
+    drawTable(rows);
+    updated.textContent = rows.length > 0 ? rows.length + " teams" : "";
+    drawProgress();
+    return;
+  }
 
   let matches = [];
   try {
@@ -457,6 +652,7 @@ async function refresh() {
 }
 
 drawDates();
+drawPicker();
 drawProgress();
 refresh();
 
@@ -499,8 +695,26 @@ const server = http.createServer(async function (request, response) {
     return;
   }
 
+  if (request.url.startsWith("/api/table")) {
+    const address = new URL(request.url, "http://localhost");
+    const leagueId = Number(address.searchParams.get("league"));
+
+    // Only serve leagues we actually follow.
+    if (!MY_LEAGUE_IDS.includes(leagueId)) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify([]));
+      return;
+    }
+
+    const rows = await getTableFor(leagueId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(rows));
+    return;
+  }
+
+  // Drop the league list into the page before sending it.
   response.writeHead(200, { "Content-Type": "text/html" });
-  response.end(PAGE);
+  response.end(PAGE.replace("__LEAGUES__", JSON.stringify(MY_LEAGUES)));
 });
 
 server.listen(PORT, function () {
