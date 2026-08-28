@@ -60,6 +60,8 @@ async function askApi(path) {
 // ---------------------------------------------------------------
 const cache = {};
 
+// Caches the FULL answer. Filtering happens afterwards, so two
+// people following different leagues still share one API call.
 async function getCached(name, maxAgeSeconds, path) {
   const saved = cache[name];
 
@@ -79,13 +81,16 @@ async function getCached(name, maxAgeSeconds, path) {
     return saved ? saved.data : [];
   }
 
-  const mine = fresh.filter(function (match) {
-    return MY_LEAGUE_IDS.includes(match.league.id);
-  });
+  cache[name] = { data: fresh, time: Date.now() };
+  console.log(fresh.length + " matches back");
+  return fresh;
+}
 
-  cache[name] = { data: mine, time: Date.now() };
-  console.log(fresh.length + " total, " + mine.length + " in your leagues");
-  return mine;
+// Keeps only the matches in the leagues this person follows.
+function onlyTheirLeagues(matches, leagueIds) {
+  return matches.filter(function (match) {
+    return leagueIds.includes(match.league.id);
+  });
 }
 
 function getLiveScores() {
@@ -95,6 +100,53 @@ function getLiveScores() {
 function getFixturesFor(date) {
   // Fixture lists barely change, so ten minutes is plenty.
   return getCached("fixtures-" + date, 600, "fixtures?date=" + date);
+}
+
+// The full list of competitions the API covers. Changes about
+// twice a year, so once a day is generous.
+async function getAllLeagues() {
+  const saved = cache["allLeagues"];
+
+  if (saved) {
+    const age = (Date.now() - saved.time) / 1000;
+    if (age < 86400) return saved.data;
+  }
+
+  console.log("fetching the league list");
+  const result = await askApi("leagues");
+
+  if (result === null) {
+    return saved ? saved.data : [];
+  }
+
+  // The raw answer carries every season ever played, which is huge.
+  // Keep only what the screen actually needs.
+  const trimmed = result.map(function (item) {
+    return {
+      id: item.league.id,
+      name: item.league.name,
+      type: item.league.type,
+      logo: item.league.logo,
+      country: item.country.name,
+    };
+  });
+
+  cache["allLeagues"] = { data: trimmed, time: Date.now() };
+  console.log(trimmed.length + " leagues available");
+  return trimmed;
+}
+
+// Reads a "39,40,140" style list off a web address safely.
+function leagueIdsFrom(address) {
+  const raw = address.searchParams.get("leagues");
+  if (!raw) return MY_LEAGUE_IDS;
+
+  const ids = raw.split(",")
+    .map(Number)
+    .filter(function (n) { return Number.isInteger(n) && n > 0; })
+    .slice(0, 200);
+
+  return ids.length > 0 ? ids : MY_LEAGUE_IDS;
 }
 
 // Standings come back in a different shape, so they need their own
@@ -323,6 +375,35 @@ const PAGE = `
   .statHome { background: #185FA5; }
   .statAway { background: #EF9F27; }
 
+  /* Leagues screen */
+  .searchBox {
+    display: flex; align-items: center; gap: 8px;
+    background: #fff; border-radius: 6px; padding: 9px 12px;
+    margin-bottom: 12px;
+  }
+  .searchBox input {
+    border: none; outline: none; font-size: 14px;
+    width: 100%; background: transparent;
+  }
+  .countryRow {
+    padding: 8px 16px; background: #E8E8E4;
+    font-size: 12px; color: #555;
+  }
+  .leagueItem {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4; cursor: pointer;
+  }
+  .leagueItem img { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
+  .leagueItem .nm { flex: 1; font-size: 15px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .liveTag {
+    font-size: 12px; padding: 3px 9px; border-radius: 10px;
+    background: #FAEEDA; color: #854F0B; flex-shrink: 0;
+  }
+  .star { font-size: 18px; color: #ccc; flex-shrink: 0; user-select: none; }
+  .star.on { color: #EF9F27; }
+
   .nav {
     position: fixed; bottom: 0; left: 0; right: 0;
     display: flex; background: #fff; border-top: 1px solid #E8E8E4; padding: 8px 0;
@@ -348,6 +429,12 @@ const PAGE = `
   </div>
   <div class="dates" id="dates" style="display:none"></div>
   <div id="pickerBox" style="display:none"></div>
+  <div id="searchArea" style="display:none">
+    <div class="searchBox">
+      <span style="color:#888">&#128269;</span>
+      <input id="searchInput" placeholder="Search country or league" autocomplete="off">
+    </div>
+  </div>
 </div>
 
 <div id="matchHead"></div>
@@ -378,6 +465,32 @@ function load(name, fallback) {
 let xp = load("xp", 0);
 let coins = load("coins", 0);
 let alerts = JSON.parse(localStorage.getItem("alerts") || "[]");
+
+// Which leagues this person follows. Starts with the built-in set,
+// then it is theirs to change on the Leagues screen.
+let myLeagues = JSON.parse(localStorage.getItem("myLeagues") || "null");
+if (myLeagues === null) {
+  myLeagues = LEAGUES.map(function (league) { return league.id; });
+  localStorage.setItem("myLeagues", JSON.stringify(myLeagues));
+}
+
+// Names of followed leagues, so the Tables menu has labels even
+// for ones added later.
+let leagueNames = JSON.parse(localStorage.getItem("leagueNames") || "null");
+if (leagueNames === null) {
+  leagueNames = {};
+  for (const league of LEAGUES) leagueNames[league.id] = league.name;
+  localStorage.setItem("leagueNames", JSON.stringify(leagueNames));
+}
+
+function saveLeagues() {
+  localStorage.setItem("myLeagues", JSON.stringify(myLeagues));
+  localStorage.setItem("leagueNames", JSON.stringify(leagueNames));
+}
+
+function leagueParam() {
+  return "leagues=" + myLeagues.join(",");
+}
 
 const today = new Date().toDateString();
 if (localStorage.getItem("lastOpen") !== today) {
@@ -441,6 +554,8 @@ function goTo(name) {
     name === "fixtures" ? "flex" : "none";
   document.getElementById("pickerBox").style.display =
     name === "tables" ? "block" : "none";
+  document.getElementById("searchArea").style.display =
+    name === "leagues" ? "block" : "none";
 
   const titles = {
     scores: "Live scores", fixtures: "Fixtures",
@@ -582,12 +697,26 @@ let chosenLeague = 39; // Premier League to start with
 
 function drawPicker() {
   const box = document.getElementById("pickerBox");
-  const withTables = LEAGUES.filter(function (league) { return league.table; });
+
+  // Cups have no table, so leave out the ones we know about.
+  const noTable = {};
+  for (const league of LEAGUES) {
+    if (!league.table) noTable[league.id] = true;
+  }
+  const withTables = myLeagues.filter(function (id) { return !noTable[id]; });
+
+  if (withTables.length === 0) {
+    box.innerHTML = '<div class="picker">No leagues followed</div>';
+    return;
+  }
+
+  if (!withTables.includes(chosenLeague)) chosenLeague = withTables[0];
 
   let options = "";
-  for (const league of withTables) {
-    const selected = league.id === chosenLeague ? " selected" : "";
-    options += '<option value="' + league.id + '"' + selected + '>' + league.name + '</option>';
+  for (const id of withTables) {
+    const selected = id === chosenLeague ? " selected" : "";
+    const name = leagueNames[id] || ("League " + id);
+    options += '<option value="' + id + '"' + selected + '>' + name + '</option>';
   }
 
   box.innerHTML = '<div class="picker"><select id="leaguePick">' + options + '</select></div>';
@@ -826,6 +955,94 @@ function drawMatch(match) {
 
 
 // ---------------------------------------------------------------
+// THE LEAGUES SCREEN
+// ---------------------------------------------------------------
+let allLeagues = null;   // fetched once, then kept
+let liveCounts = {};     // how many matches each league has on
+let searchText = "";
+
+document.getElementById("searchInput").oninput = function (event) {
+  searchText = event.target.value.trim().toLowerCase();
+  drawLeagues();
+};
+
+function toggleFollow(league) {
+  const position = myLeagues.indexOf(league.id);
+  if (position === -1) {
+    myLeagues.push(league.id);
+    leagueNames[league.id] = league.name;
+  } else {
+    myLeagues.splice(position, 1);
+  }
+  saveLeagues();
+  drawPicker();
+  drawLeagues();
+}
+
+function drawLeagues() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (allLeagues === null) {
+    list.innerHTML = '<div class="empty">Loading leagues...</div>';
+    return;
+  }
+
+  let shown;
+
+  if (searchText === "") {
+    // Nothing typed: show what they follow, so the screen is
+    // useful straight away rather than a wall of 1200 names.
+    shown = allLeagues.filter(function (league) {
+      return myLeagues.includes(league.id);
+    });
+  } else {
+    shown = allLeagues.filter(function (league) {
+      return league.name.toLowerCase().includes(searchText) ||
+             league.country.toLowerCase().includes(searchText);
+    }).slice(0, 60);
+  }
+
+  if (shown.length === 0) {
+    list.innerHTML = '<div class="empty">Nothing found.<br><br>Try a country name.</div>';
+    return;
+  }
+
+  // Country first, then league name.
+  shown.sort(function (a, b) {
+    if (a.country !== b.country) return a.country.localeCompare(b.country);
+    return a.name.localeCompare(b.name);
+  });
+
+  let lastCountry = null;
+
+  for (const league of shown) {
+    if (league.country !== lastCountry) {
+      const heading = document.createElement("div");
+      heading.className = "countryRow";
+      heading.textContent = league.country;
+      list.appendChild(heading);
+      lastCountry = league.country;
+    }
+
+    const following = myLeagues.includes(league.id);
+    const count = liveCounts[league.id] || 0;
+
+    const row = document.createElement("div");
+    row.className = "leagueItem";
+    row.innerHTML =
+      '<img src="' + league.logo + '" alt="">' +
+      '<span class="nm">' + league.name + '</span>' +
+      (count > 0 ? '<span class="liveTag">' + count + ' live</span>' : '') +
+      '<span class="star' + (following ? ' on' : '') + '">&#9733;</span>';
+
+    row.onclick = function () { toggleFollow(league); };
+    list.appendChild(row);
+  }
+}
+
+
+// ---------------------------------------------------------------
 // LOADING WHATEVER THE CURRENT SCREEN NEEDS
 // ---------------------------------------------------------------
 async function refresh() {
@@ -852,8 +1069,25 @@ async function refresh() {
     return;
   }
 
+  if (screen === "leagues") {
+    updated.textContent = "";
+
+    if (allLeagues === null) {
+      list.innerHTML = '<div class="empty">Loading leagues...</div>';
+      try {
+        const response = await fetch("/api/leagues");
+        allLeagues = await response.json();
+      } catch (error) {
+        list.innerHTML = '<div class="empty">Could not load the league list.</div>';
+        return;
+      }
+    }
+    drawLeagues();
+    return;
+  }
+
   // Screens we have not built yet.
-  if (screen === "leagues" || screen === "teams") {
+  if (screen === "teams") {
     updated.textContent = "";
     list.innerHTML = '<div class="empty">Not built yet.<br>Coming next.</div>';
     return;
@@ -878,7 +1112,9 @@ async function refresh() {
 
   let matches = [];
   try {
-    const address = screen === "scores" ? "/api/scores" : "/api/fixtures?date=" + chosenDate;
+    const address = screen === "scores"
+      ? "/api/scores?" + leagueParam()
+      : "/api/fixtures?date=" + chosenDate + "&" + leagueParam();
     const response = await fetch(address);
     matches = await response.json();
   } catch (error) {
@@ -887,6 +1123,12 @@ async function refresh() {
   }
 
   if (screen === "scores") {
+    // Remember how many are live per league, for the Leagues screen.
+    liveCounts = {};
+    for (const match of matches) {
+      liveCounts[match.league.id] = (liveCounts[match.league.id] || 0) + 1;
+    }
+
     if (matches.length === 0) {
       list.innerHTML =
         '<div class="empty">No matches in your leagues right now.<br><br>' +
@@ -934,10 +1176,19 @@ setInterval(function () {
 // THE SERVER
 // ---------------------------------------------------------------
 const server = http.createServer(async function (request, response) {
-  if (request.url === "/api/scores") {
-    const matches = await getLiveScores();
+  if (request.url.startsWith("/api/scores")) {
+    const address = new URL(request.url, "http://localhost");
+    const all = await getLiveScores();
+    const matches = onlyTheirLeagues(all, leagueIdsFrom(address));
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (request.url.startsWith("/api/leagues")) {
+    const leagues = await getAllLeagues();
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(leagues));
     return;
   }
 
@@ -953,7 +1204,8 @@ const server = http.createServer(async function (request, response) {
       return;
     }
 
-    const matches = await getFixturesFor(date);
+    const all = await getFixturesFor(date);
+    const matches = onlyTheirLeagues(all, leagueIdsFrom(address));
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(matches));
     return;
@@ -979,8 +1231,7 @@ const server = http.createServer(async function (request, response) {
     const address = new URL(request.url, "http://localhost");
     const leagueId = Number(address.searchParams.get("league"));
 
-    // Only serve leagues we actually follow.
-    if (!MY_LEAGUE_IDS.includes(leagueId)) {
+    if (!leagueId) {
       response.writeHead(400, { "Content-Type": "application/json" });
       response.end(JSON.stringify([]));
       return;
