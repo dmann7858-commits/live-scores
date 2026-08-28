@@ -1,18 +1,9 @@
 // scores.js
-// Live scores app - the real thing, with your design.
-//
-// Run it:      node scores.js
-// Then open:   http://localhost:3000
+// Live football scores app - Scores and Fixtures screens.
 
 const http = require("http");
 
-// The key now comes from a setting on the server, so it never
-// appears in the code. Fill in the fallback only if you want to
-// keep running it on your own PC.
 const API_KEY = process.env.API_FOOTBALL_KEY || "PASTE_YOUR_KEY_HERE";
-
-// The hosting company tells us which port to use. On your own PC
-// there is no instruction, so we fall back to 3000.
 const PORT = process.env.PORT || 3000;
 
 const MY_LEAGUES = [
@@ -31,45 +22,66 @@ const MY_LEAGUES = [
 
 
 // ---------------------------------------------------------------
-// THE CACHE
-// Saves the last set of scores for 60 seconds so we do not burn
-// through the daily quota every time someone looks at the page.
+// ASKING THE API
+// One place that does all the talking, so the caching rules live
+// in one spot instead of being scattered about.
 // ---------------------------------------------------------------
-let savedMatches = [];
-let savedAt = 0;
-
-async function getMatches() {
-  const secondsOld = (Date.now() - savedAt) / 1000;
-
-  if (secondsOld < 60 && savedAt > 0) {
-    console.log("Served from cache (" + Math.round(secondsOld) + "s old)");
-    return savedMatches;
+async function askApi(path) {
+  const response = await fetch("https://v3.football.api-sports.io/" + path, {
+    headers: { "x-apisports-key": API_KEY },
+  });
+  const data = await response.json();
+  if (!data.response) {
+    console.log("API problem:", JSON.stringify(data.errors || data));
+    return null;
   }
+  return data.response;
+}
 
-  console.log("Fetching from API...");
 
-  try {
-    const response = await fetch("https://v3.football.api-sports.io/fixtures?live=all", {
-      headers: { "x-apisports-key": API_KEY },
-    });
-    const data = await response.json();
+// ---------------------------------------------------------------
+// THE CACHE
+// Every answer we get is stored under a name, with the time we
+// got it. Different kinds of data go stale at different speeds:
+// live scores in a minute, a day's fixture list in ten.
+// ---------------------------------------------------------------
+const cache = {};
 
-    if (!data.response) {
-      console.log("API problem:", data);
-      return savedMatches;
+async function getCached(name, maxAgeSeconds, path) {
+  const saved = cache[name];
+
+  if (saved) {
+    const age = (Date.now() - saved.time) / 1000;
+    if (age < maxAgeSeconds) {
+      console.log("cache hit: " + name + " (" + Math.round(age) + "s old)");
+      return saved.data;
     }
-
-    savedMatches = data.response.filter(function (match) {
-      return MY_LEAGUES.includes(match.league.id);
-    });
-    savedAt = Date.now();
-
-    console.log(data.response.length + " live worldwide, " + savedMatches.length + " in your leagues");
-  } catch (error) {
-    console.log("Could not reach the API:", error.message);
   }
 
-  return savedMatches;
+  console.log("fetching: " + path);
+  const fresh = await askApi(path);
+
+  if (fresh === null) {
+    // API failed. Better to serve something old than nothing.
+    return saved ? saved.data : [];
+  }
+
+  const mine = fresh.filter(function (match) {
+    return MY_LEAGUES.includes(match.league.id);
+  });
+
+  cache[name] = { data: mine, time: Date.now() };
+  console.log(fresh.length + " total, " + mine.length + " in your leagues");
+  return mine;
+}
+
+function getLiveScores() {
+  return getCached("live", 60, "fixtures?live=all");
+}
+
+function getFixturesFor(date) {
+  // Fixture lists barely change, so ten minutes is plenty.
+  return getCached("fixtures-" + date, 600, "fixtures?date=" + date);
 }
 
 
@@ -87,12 +99,10 @@ const PAGE = `
   * { box-sizing: border-box; }
   body {
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-    margin: 0;
-    background: #F4F4F2;
-    color: #1a1a1a;
+    margin: 0; background: #F4F4F2; color: #1a1a1a;
     padding-bottom: 70px;
   }
-  .header { background: #185FA5; padding: 14px 16px 12px; }
+  .header { background: #185FA5; padding: 14px 16px 0; }
   .headerTop {
     display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 10px;
@@ -110,18 +120,22 @@ const PAGE = `
     display: flex; align-items: center; justify-content: center;
     font-size: 14px; font-weight: 600;
   }
-  .xpRow { display: flex; align-items: center; gap: 8px; }
-  .xpTrack {
-    flex: 1; height: 5px; background: #042C53;
-    border-radius: 3px; overflow: hidden;
-  }
+  .xpRow { display: flex; align-items: center; gap: 8px; padding-bottom: 12px; }
+  .xpTrack { flex: 1; height: 5px; background: #042C53; border-radius: 3px; overflow: hidden; }
   .xpFill { height: 100%; background: #EF9F27; width: 0%; }
   .xpText { font-size: 11px; color: #B5D4F4; }
 
-  .updated {
-    padding: 8px 16px; font-size: 12px; color: #777;
-    background: #F4F4F2;
+  /* Date strip, only shown on the Fixtures screen */
+  .dates { display: flex; }
+  .dateBtn {
+    flex: 1; text-align: center; padding: 6px 0 8px;
+    color: #85B7EB; cursor: pointer; border-bottom: 2px solid transparent;
   }
+  .dateBtn.on { color: #EF9F27; border-bottom-color: #EF9F27; }
+  .dateDay { font-size: 11px; }
+  .dateNum { font-size: 15px; margin-top: 2px; }
+
+  .updated { padding: 8px 16px; font-size: 12px; color: #777; }
   .leagueRow {
     display: flex; align-items: center; gap: 8px;
     padding: 8px 16px; background: #E8E8E4;
@@ -134,38 +148,28 @@ const PAGE = `
     padding: 12px 16px; background: #fff;
     border-bottom: 1px solid #E8E8E4;
   }
-  .minute { width: 40px; font-size: 12px; color: #BA7517; flex-shrink: 0; }
-  .minute.grey { color: #777; }
+  .when { width: 44px; font-size: 12px; color: #BA7517; flex-shrink: 0; }
+  .when.grey { color: #777; }
   .teams { flex: 1; min-width: 0; }
   .teamRow {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 8px;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
   }
   .teamRow:first-child { margin-bottom: 7px; }
-  .teamName {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 15px; min-width: 0;
-  }
-  .teamName span {
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
+  .teamName { display: flex; align-items: center; gap: 8px; font-size: 15px; min-width: 0; }
+  .teamName span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .crest { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; }
   .goals { font-size: 15px; font-weight: 600; flex-shrink: 0; }
-  .bell {
-    font-size: 17px; color: #ccc; cursor: pointer;
-    flex-shrink: 0; user-select: none;
-  }
+  .bell { font-size: 17px; color: #ccc; cursor: pointer; flex-shrink: 0; user-select: none; }
   .bell.on { color: #EF9F27; }
 
-  .empty { padding: 50px 24px; text-align: center; color: #777; }
+  .empty { padding: 50px 24px; text-align: center; color: #777; line-height: 1.6; }
 
   .nav {
     position: fixed; bottom: 0; left: 0; right: 0;
-    display: flex; background: #fff;
-    border-top: 1px solid #E8E8E4; padding: 8px 0;
+    display: flex; background: #fff; border-top: 1px solid #E8E8E4; padding: 8px 0;
   }
-  .navItem { flex: 1; text-align: center; font-size: 11px; color: #999; }
-  .navItem.active { color: #185FA5; }
+  .navItem { flex: 1; text-align: center; font-size: 11px; color: #999; cursor: pointer; }
+  .navItem.on { color: #185FA5; }
   .navIcon { font-size: 18px; display: block; margin-bottom: 2px; }
 </style>
 </head>
@@ -173,7 +177,7 @@ const PAGE = `
 
 <div class="header">
   <div class="headerTop">
-    <div class="title">Live scores</div>
+    <div class="title" id="screenTitle">Live scores</div>
     <div class="badges">
       <div class="coins">&#9679; <span id="coins">0</span></div>
       <div class="level" id="level">1</div>
@@ -183,24 +187,23 @@ const PAGE = `
     <div class="xpTrack"><div class="xpFill" id="xpFill"></div></div>
     <div class="xpText"><span id="xpText">0 / 1000 xp</span></div>
   </div>
+  <div class="dates" id="dates" style="display:none"></div>
 </div>
 
 <div class="updated" id="updated">Loading...</div>
 <div id="list"></div>
 
 <div class="nav">
-  <div class="navItem active"><span class="navIcon">&#9917;</span>Scores</div>
-  <div class="navItem"><span class="navIcon">&#128197;</span>Fixtures</div>
-  <div class="navItem"><span class="navIcon">&#127942;</span>Leagues</div>
-  <div class="navItem"><span class="navIcon">&#9776;</span>Tables</div>
-  <div class="navItem"><span class="navIcon">&#9733;</span>Teams</div>
+  <div class="navItem on" id="navScores"><span class="navIcon">&#9917;</span>Scores</div>
+  <div class="navItem" id="navFixtures"><span class="navIcon">&#128197;</span>Fixtures</div>
+  <div class="navItem" id="navLeagues"><span class="navIcon">&#127942;</span>Leagues</div>
+  <div class="navItem" id="navTables"><span class="navIcon">&#9776;</span>Tables</div>
+  <div class="navItem" id="navTeams"><span class="navIcon">&#9733;</span>Teams</div>
 </div>
 
 <script>
 // ---------------------------------------------------------------
 // XP AND COINS
-// Stored in the browser for now. Later this moves to a database
-// so it follows the user between devices.
 // ---------------------------------------------------------------
 function load(name, fallback) {
   const value = localStorage.getItem(name);
@@ -211,7 +214,6 @@ let xp = load("xp", 0);
 let coins = load("coins", 0);
 let alerts = JSON.parse(localStorage.getItem("alerts") || "[]");
 
-// Daily bonus - once per calendar day.
 const today = new Date().toDateString();
 if (localStorage.getItem("lastOpen") !== today) {
   xp = xp + 5;
@@ -234,7 +236,6 @@ function drawProgress() {
   document.getElementById("xpText").textContent = intoLevel + " / 1000 xp";
 }
 
-// Toggle an alert on a match.
 function toggleAlert(fixtureId, element) {
   const position = alerts.indexOf(fixtureId);
   if (position === -1) {
@@ -249,37 +250,94 @@ function toggleAlert(fixtureId, element) {
 
 
 // ---------------------------------------------------------------
-// DRAWING THE SCORES
+// WHICH SCREEN ARE WE ON
 // ---------------------------------------------------------------
-async function refresh() {
-  let matches = [];
-  try {
-    const response = await fetch("/api/scores");
-    matches = await response.json();
-  } catch (error) {
-    document.getElementById("updated").textContent = "Could not reach the server";
-    return;
-  }
+let screen = "scores";
+let chosenDate = isoDate(new Date());
 
+// Turns a date into the 2026-08-29 shape the API wants.
+function isoDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return year + "-" + month + "-" + day;
+}
+
+function goTo(name) {
+  screen = name;
+
+  document.getElementById("navScores").classList.toggle("on", name === "scores");
+  document.getElementById("navFixtures").classList.toggle("on", name === "fixtures");
+  document.getElementById("navLeagues").classList.toggle("on", name === "leagues");
+  document.getElementById("navTables").classList.toggle("on", name === "tables");
+  document.getElementById("navTeams").classList.toggle("on", name === "teams");
+
+  document.getElementById("dates").style.display =
+    name === "fixtures" ? "flex" : "none";
+
+  const titles = {
+    scores: "Live scores", fixtures: "Fixtures",
+    leagues: "Leagues", tables: "Tables", teams: "My teams"
+  };
+  document.getElementById("screenTitle").textContent = titles[name];
+
+  refresh();
+}
+
+document.getElementById("navScores").onclick = function () { goTo("scores"); };
+document.getElementById("navFixtures").onclick = function () { goTo("fixtures"); };
+document.getElementById("navLeagues").onclick = function () { goTo("leagues"); };
+document.getElementById("navTables").onclick = function () { goTo("tables"); };
+document.getElementById("navTeams").onclick = function () { goTo("teams"); };
+
+
+// ---------------------------------------------------------------
+// THE DATE STRIP
+// Yesterday, today, and the next three days.
+// ---------------------------------------------------------------
+function drawDates() {
+  const strip = document.getElementById("dates");
+  strip.innerHTML = "";
+
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  for (let offset = -1; offset <= 3; offset++) {
+    const date = new Date();
+    date.setDate(date.getDate() + offset);
+    const iso = isoDate(date);
+
+    const button = document.createElement("div");
+    button.className = "dateBtn" + (iso === chosenDate ? " on" : "");
+    button.innerHTML =
+      '<div class="dateDay">' + dayNames[date.getDay()] + '</div>' +
+      '<div class="dateNum">' + date.getDate() + '</div>';
+    button.onclick = function () {
+      chosenDate = iso;
+      drawDates();
+      refresh();
+    };
+    strip.appendChild(button);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// DRAWING A LIST OF MATCHES
+// Used by both screens. The only difference is what goes in the
+// left hand column - a minute, or a kick-off time.
+// ---------------------------------------------------------------
+function drawMatches(matches, showKickoffTimes) {
   const list = document.getElementById("list");
   list.innerHTML = "";
 
   if (matches.length === 0) {
-    list.innerHTML =
-      '<div class="empty">No matches in your leagues right now.<br><br>' +
-      'European games are usually on in your evening.</div>';
-  }
-
-  // Watching live football earns xp.
-  if (matches.length > 0) {
-    xp = xp + 1;
-    saveProgress();
+    list.innerHTML = '<div class="empty">Nothing to show here.</div>';
+    return;
   }
 
   let lastLeague = null;
 
   for (const match of matches) {
-    // Start a new league heading whenever the league changes.
     if (match.league.name !== lastLeague) {
       const heading = document.createElement("div");
       heading.className = "leagueRow";
@@ -290,37 +348,47 @@ async function refresh() {
       lastLeague = match.league.name;
     }
 
-    let minute = match.fixture.status.elapsed + "'";
-    let minuteClass = "minute";
-    if (match.fixture.status.elapsed === null) {
-      minute = match.fixture.status.short;
-      minuteClass = "minute grey";
+    let when;
+    let whenClass = "when";
+
+    if (showKickoffTimes) {
+      // The API sends the kick-off in world time. The browser
+      // converts it to whatever the phone is set to.
+      const kickoff = new Date(match.fixture.date);
+      when = kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      whenClass = "when grey";
+    } else {
+      when = match.fixture.status.elapsed + "'";
+      if (match.fixture.status.elapsed === null || match.fixture.status.short === "HT") {
+        when = match.fixture.status.short;
+        whenClass = "when grey";
+      }
     }
-    if (match.fixture.status.short === "HT") {
-      minute = "HT";
-      minuteClass = "minute grey";
-    }
+
+    // Finished and unstarted games have no goals yet.
+    const homeGoals = match.goals.home === null ? "-" : match.goals.home;
+    const awayGoals = match.goals.away === null ? "-" : match.goals.away;
 
     const isOn = alerts.includes(match.fixture.id);
 
     const row = document.createElement("div");
     row.className = "match";
     row.innerHTML =
-      '<div class="' + minuteClass + '">' + minute + '</div>' +
+      '<div class="' + whenClass + '">' + when + '</div>' +
       '<div class="teams">' +
         '<div class="teamRow">' +
           '<div class="teamName">' +
             '<img class="crest" src="' + match.teams.home.logo + '" alt="">' +
             '<span>' + match.teams.home.name + '</span>' +
           '</div>' +
-          '<div class="goals">' + match.goals.home + '</div>' +
+          '<div class="goals">' + homeGoals + '</div>' +
         '</div>' +
         '<div class="teamRow">' +
           '<div class="teamName">' +
             '<img class="crest" src="' + match.teams.away.logo + '" alt="">' +
             '<span>' + match.teams.away.name + '</span>' +
           '</div>' +
-          '<div class="goals">' + match.goals.away + '</div>' +
+          '<div class="goals">' + awayGoals + '</div>' +
         '</div>' +
       '</div>' +
       '<div class="bell' + (isOn ? ' on' : '') + '">&#128276;</div>';
@@ -330,15 +398,72 @@ async function refresh() {
 
     list.appendChild(row);
   }
-
-  drawProgress();
-  document.getElementById("updated").textContent =
-    matches.length + " live - updated " + new Date().toLocaleTimeString();
 }
 
+
+// ---------------------------------------------------------------
+// LOADING WHATEVER THE CURRENT SCREEN NEEDS
+// ---------------------------------------------------------------
+async function refresh() {
+  const list = document.getElementById("list");
+  const updated = document.getElementById("updated");
+
+  // Screens we have not built yet.
+  if (screen === "leagues" || screen === "tables" || screen === "teams") {
+    updated.textContent = "";
+    list.innerHTML = '<div class="empty">Not built yet.<br>Coming next.</div>';
+    return;
+  }
+
+  updated.textContent = "Loading...";
+
+  let matches = [];
+  try {
+    const address = screen === "scores" ? "/api/scores" : "/api/fixtures?date=" + chosenDate;
+    const response = await fetch(address);
+    matches = await response.json();
+  } catch (error) {
+    updated.textContent = "Could not reach the server";
+    return;
+  }
+
+  if (screen === "scores") {
+    if (matches.length === 0) {
+      list.innerHTML =
+        '<div class="empty">No matches in your leagues right now.<br><br>' +
+        'European games are usually on in your evening.</div>';
+      updated.textContent = "0 live - updated " + new Date().toLocaleTimeString();
+      drawProgress();
+      return;
+    }
+    xp = xp + 1;
+    saveProgress();
+    drawMatches(matches, false);
+    updated.textContent = matches.length + " live - updated " + new Date().toLocaleTimeString();
+  } else {
+    if (matches.length === 0) {
+      list.innerHTML = '<div class="empty">No games in your leagues that day.</div>';
+    } else {
+      // Earliest kick-off first.
+      matches.sort(function (a, b) {
+        return new Date(a.fixture.date) - new Date(b.fixture.date);
+      });
+      drawMatches(matches, true);
+    }
+    updated.textContent = matches.length + " games";
+  }
+
+  drawProgress();
+}
+
+drawDates();
 drawProgress();
 refresh();
-setInterval(refresh, 30000);
+
+// Only the live screen needs to keep refreshing itself.
+setInterval(function () {
+  if (screen === "scores") refresh();
+}, 30000);
 </script>
 </body>
 </html>
@@ -350,7 +475,25 @@ setInterval(refresh, 30000);
 // ---------------------------------------------------------------
 const server = http.createServer(async function (request, response) {
   if (request.url === "/api/scores") {
-    const matches = await getMatches();
+    const matches = await getLiveScores();
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (request.url.startsWith("/api/fixtures")) {
+    // Pull the date out of the web address.
+    const address = new URL(request.url, "http://localhost");
+    const date = address.searchParams.get("date");
+
+    // Only allow the 2026-08-29 shape, so nobody can send us junk.
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify([]));
+      return;
+    }
+
+    const matches = await getFixturesFor(date);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(matches));
     return;
