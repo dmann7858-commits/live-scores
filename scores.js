@@ -54,14 +54,42 @@ function currentSeason() {
 // in one spot instead of being scattered about.
 // ---------------------------------------------------------------
 async function askApi(path) {
-  const response = await fetch("https://v3.football.api-sports.io/" + path, {
-    headers: { "x-apisports-key": API_KEY },
-  });
-  const data = await response.json();
-  if (!data.response) {
-    console.log("API problem:", JSON.stringify(data.errors || data));
+  if (!API_KEY || API_KEY === "PASTE_YOUR_KEY_HERE") {
+    console.log("!! NO API KEY SET. Check the API_FOOTBALL_KEY setting.");
     return null;
   }
+
+  let response;
+  try {
+    response = await fetch("https://v3.football.api-sports.io/" + path, {
+      headers: { "x-apisports-key": API_KEY },
+    });
+  } catch (error) {
+    console.log("!! could not reach the API: " + error.message);
+    return null;
+  }
+
+  console.log("   http status: " + response.status);
+
+  const data = await response.json();
+
+  // The API reports trouble inside a normal 200 response. It sends
+  // an empty array when all is well, and an object full of
+  // complaints when it is not - so check both shapes.
+  const errors = data.errors;
+  const hasErrors = errors &&
+    (Array.isArray(errors) ? errors.length > 0 : Object.keys(errors).length > 0);
+
+  if (hasErrors) {
+    console.log("   !! API SAYS: " + JSON.stringify(errors));
+  }
+
+  if (!Array.isArray(data.response)) {
+    console.log("   !! unexpected answer: " + JSON.stringify(data).slice(0, 300));
+    return null;
+  }
+
+  console.log("   results: " + data.results);
   return data.response;
 }
 
@@ -182,7 +210,13 @@ async function getTableFor(leagueId) {
   console.log("fetching: " + path);
   const result = await askApi(path);
 
-  if (result === null || result.length === 0) {
+  if (result === null) {
+    console.log("   standings call failed for league " + leagueId);
+    return saved ? saved.data : [];
+  }
+
+  if (result.length === 0) {
+    console.log("   standings came back empty for league " + leagueId);
     return saved ? saved.data : [];
   }
 
