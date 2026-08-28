@@ -1,184 +1,260 @@
 // scores.js
-// Live football scores app - Scores and Fixtures screens.
+// Live football scores app, using apifootball.com
+//
+// Sign up:  https://apifootball.com/register/
+// Your key: on the dashboard after you log in
 
 const http = require("http");
 
-const API_KEY = process.env.API_FOOTBALL_KEY || "PASTE_YOUR_KEY_HERE";
+const API_KEY = process.env.APIFOOTBALL_KEY || "PASTE_YOUR_KEY_HERE";
 const PORT = process.env.PORT || 3000;
+const BASE = "https://apiv3.apifootball.com/";
 
-// Each league has an id, a short name for the menus, and whether
-// it has a league table. Cups do not, so they are left out of the
-// Tables screen.
+// Leagues to start with. The free plan only carries two, so these
+// are them. Once you upgrade, add more from the Leagues screen.
 const MY_LEAGUES = [
-  { id: 39,  name: "Premier League",  table: true },
-  { id: 40,  name: "Championship",    table: true },
-  { id: 41,  name: "League One",      table: true },
-  { id: 42,  name: "League Two",      table: true },
-  { id: 43,  name: "National League", table: true },
-  { id: 2,   name: "Champions League", table: false },
-  { id: 3,   name: "Europa League",   table: false },
-  { id: 140, name: "La Liga",         table: true },
-  { id: 135, name: "Serie A",         table: true },
-  { id: 78,  name: "Bundesliga",      table: true },
-  { id: 61,  name: "Ligue 1",         table: true },
+  { id: 63,  name: "Championship", table: true },
+  { id: 169, name: "Ligue 2",      table: true },
 ];
 
-const MY_LEAGUE_IDS = MY_LEAGUES.map(function (league) { return league.id; });
-
-// ===============================================================
-// SEASON TEST SWITCH
-//
-// The free API plan only allows old seasons. Set this to 2021 to
-// check whether the code works, then set it back to null once you
-// are on a paid plan.
-//
-//   2021  =  test mode, shows the 2021-22 season
-//   null  =  normal, works out the real current season
-// ===============================================================
-const TEST_SEASON = 2021;
-
-
-// Which season to ask for. European seasons are named after the
-// year they start in, so August 2026 is season 2026 but March 2027
-// is still season 2026.
-function currentSeason() {
-  if (TEST_SEASON !== null) return TEST_SEASON;
-  const now = new Date();
-  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
-}
+const MY_LEAGUE_IDS = MY_LEAGUES.map(function (l) { return l.id; });
 
 
 // ---------------------------------------------------------------
-// ASKING THE API
-// One place that does all the talking, so the caching rules live
-// in one spot instead of being scattered about.
+// TALKING TO THE API
+// Everything goes through here, so if the provider ever changes
+// again this is the only part that needs rewriting.
 // ---------------------------------------------------------------
-async function askApi(path) {
+async function askApi(action, extra) {
   if (!API_KEY || API_KEY === "PASTE_YOUR_KEY_HERE") {
-    console.log("!! NO API KEY SET. Check the API_FOOTBALL_KEY setting.");
+    console.log("!! NO API KEY SET. Check the APIFOOTBALL_KEY setting.");
     return null;
   }
 
+  const url = BASE + "?action=" + action + (extra || "") + "&APIkey=" + API_KEY;
+
+  // Never print the key itself into the logs.
+  console.log("fetching: " + action + (extra || ""));
+
   let response;
   try {
-    response = await fetch("https://v3.football.api-sports.io/" + path, {
-      headers: { "x-apisports-key": API_KEY },
-    });
+    response = await fetch(url);
   } catch (error) {
-    console.log("!! could not reach the API: " + error.message);
+    console.log("   !! could not reach the API: " + error.message);
     return null;
   }
 
   console.log("   http status: " + response.status);
 
-  const data = await response.json();
-
-  // The API reports trouble inside a normal 200 response. It sends
-  // an empty array when all is well, and an object full of
-  // complaints when it is not - so check both shapes.
-  const errors = data.errors;
-  const hasErrors = errors &&
-    (Array.isArray(errors) ? errors.length > 0 : Object.keys(errors).length > 0);
-
-  if (hasErrors) {
-    console.log("   !! API SAYS: " + JSON.stringify(errors));
-  }
-
-  if (!Array.isArray(data.response)) {
-    console.log("   !! unexpected answer: " + JSON.stringify(data).slice(0, 300));
+  let data;
+  try {
+    data = await response.json();
+  } catch (error) {
+    console.log("   !! answer was not readable");
     return null;
   }
 
-  console.log("   results: " + data.results);
-  return data.response;
+  // This API reports trouble as an object with an error number,
+  // rather than as a list. A list means it worked.
+  if (!Array.isArray(data)) {
+    console.log("   !! API SAYS: " + JSON.stringify(data).slice(0, 300));
+    return null;
+  }
+
+  console.log("   " + data.length + " rows back");
+  return data;
+}
+
+
+// ---------------------------------------------------------------
+// TRANSLATION
+// apifootball sends one shape, the screens expect another. These
+// two functions are the bridge between them.
+// ---------------------------------------------------------------
+function numberOrNull(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const n = Number(value);
+  return Number.isNaN(n) ? null : n;
+}
+
+function readStatus(raw) {
+  const status = (raw.match_status || "").trim();
+
+  // Empty means it has not kicked off yet.
+  if (status === "") {
+    return { short: "NS", long: "Not started", elapsed: null };
+  }
+  if (status === "Finished" || status === "FT") {
+    return { short: "FT", long: "Finished", elapsed: null };
+  }
+  if (status === "Half Time" || status === "HT") {
+    return { short: "HT", long: "Half time", elapsed: null };
+  }
+  if (status === "Postponed" || status === "Cancelled") {
+    return { short: "PST", long: status, elapsed: null };
+  }
+
+  // Anything else is the minute, sometimes with a + on it.
+  const minute = parseInt(status, 10);
+  if (!Number.isNaN(minute)) {
+    return { short: "LIVE", long: "In play", elapsed: minute };
+  }
+
+  return { short: status, long: status, elapsed: null };
+}
+
+function translateMatch(raw) {
+  const goals = raw.goalscorer || [];
+
+  return {
+    fixture: {
+      id: Number(raw.match_id),
+      // Their date and time arrive separately.
+      date: raw.match_date + "T" + (raw.match_time || "00:00") + ":00",
+      status: readStatus(raw),
+    },
+    league: {
+      id: Number(raw.league_id),
+      name: raw.league_name,
+      country: raw.country_name,
+      logo: raw.league_logo || raw.country_logo || "",
+    },
+    teams: {
+      home: { name: raw.match_hometeam_name, logo: raw.team_home_badge || "" },
+      away: { name: raw.match_awayteam_name, logo: raw.team_away_badge || "" },
+    },
+    goals: {
+      home: numberOrNull(raw.match_hometeam_score),
+      away: numberOrNull(raw.match_awayteam_score),
+    },
+    // Goals only, in the shape the match screen already reads.
+    events: goals
+      .filter(function (g) { return g.home_scorer || g.away_scorer; })
+      .map(function (g) {
+        const isHome = Boolean(g.home_scorer);
+        return {
+          type: "Goal",
+          time: { elapsed: parseInt(g.time, 10) || 0 },
+          player: { name: isHome ? g.home_scorer : g.away_scorer },
+          team: { name: isHome ? raw.match_hometeam_name : raw.match_awayteam_name },
+        };
+      }),
+    statistics: raw.statistics || [],
+  };
+}
+
+function translateTableRow(raw) {
+  const scored = Number(raw.overall_league_GF) || 0;
+  const conceded = Number(raw.overall_league_GA) || 0;
+
+  return {
+    rank: Number(raw.overall_league_position),
+    team: { name: raw.team_name, logo: raw.team_badge || "" },
+    // Their spelling of "played" has a typo in it, so try both.
+    all: { played: Number(raw.overall_league_payed || raw.overall_league_played) || 0 },
+    goalsDiff: scored - conceded,
+    points: Number(raw.overall_league_PTS) || 0,
+    // This API does not say what each position means, so no
+    // promotion or relegation colours for now.
+    description: "",
+  };
 }
 
 
 // ---------------------------------------------------------------
 // THE CACHE
-// Every answer we get is stored under a name, with the time we
-// got it. Different kinds of data go stale at different speeds:
-// live scores in a minute, a day's fixture list in ten.
 // ---------------------------------------------------------------
 const cache = {};
 
-// Caches the FULL answer. Filtering happens afterwards, so two
-// people following different leagues still share one API call.
-async function getCached(name, maxAgeSeconds, path) {
+function fromCache(name, maxAgeSeconds) {
   const saved = cache[name];
-
-  if (saved) {
-    const age = (Date.now() - saved.time) / 1000;
-    if (age < maxAgeSeconds) {
-      console.log("cache hit: " + name + " (" + Math.round(age) + "s old)");
-      return saved.data;
-    }
-  }
-
-  console.log("fetching: " + path);
-  const fresh = await askApi(path);
-
-  if (fresh === null) {
-    // API failed. Better to serve something old than nothing.
-    return saved ? saved.data : [];
-  }
-
-  cache[name] = { data: fresh, time: Date.now() };
-  console.log(fresh.length + " matches back");
-  return fresh;
+  if (!saved) return null;
+  const age = (Date.now() - saved.time) / 1000;
+  if (age >= maxAgeSeconds) return null;
+  console.log("cache hit: " + name + " (" + Math.round(age) + "s old)");
+  return saved.data;
 }
 
-// Keeps only the matches in the leagues this person follows.
+function intoCache(name, data) {
+  cache[name] = { data: data, time: Date.now() };
+  return data;
+}
+
+async function getLiveScores() {
+  const hit = fromCache("live", 60);
+  if (hit) return hit;
+
+  const raw = await askApi("get_events", "&match_live=1");
+  if (raw === null) return cache["live"] ? cache["live"].data : [];
+
+  return intoCache("live", raw.map(translateMatch));
+}
+
+async function getFixturesFor(date) {
+  const name = "fixtures-" + date;
+  const hit = fromCache(name, 600);
+  if (hit) return hit;
+
+  const raw = await askApi("get_events", "&from=" + date + "&to=" + date);
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  return intoCache(name, raw.map(translateMatch));
+}
+
+async function getTableFor(leagueId) {
+  const name = "table-" + leagueId;
+  const hit = fromCache(name, 1800);
+  if (hit) return hit;
+
+  const raw = await askApi("get_standings", "&league_id=" + leagueId);
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  const rows = raw
+    .map(translateTableRow)
+    .sort(function (a, b) { return a.rank - b.rank; });
+
+  return intoCache(name, rows);
+}
+
+async function getMatch(fixtureId) {
+  const name = "match-" + fixtureId;
+  const hit = fromCache(name, 60);
+  if (hit) return hit;
+
+  const raw = await askApi("get_events", "&match_id=" + fixtureId);
+  if (raw === null || raw.length === 0) {
+    return cache[name] ? cache[name].data : null;
+  }
+
+  return intoCache(name, translateMatch(raw[0]));
+}
+
+async function getAllLeagues() {
+  const hit = fromCache("allLeagues", 86400);
+  if (hit) return hit;
+
+  const raw = await askApi("get_leagues", "");
+  if (raw === null) return cache["allLeagues"] ? cache["allLeagues"].data : [];
+
+  const list = raw.map(function (item) {
+    return {
+      id: Number(item.league_id),
+      name: item.league_name,
+      country: item.country_name,
+      logo: item.league_logo || item.country_logo || "",
+      type: "League",
+    };
+  });
+
+  return intoCache("allLeagues", list);
+}
+
 function onlyTheirLeagues(matches, leagueIds) {
   return matches.filter(function (match) {
     return leagueIds.includes(match.league.id);
   });
 }
 
-function getLiveScores() {
-  return getCached("live", 60, "fixtures?live=all");
-}
-
-function getFixturesFor(date) {
-  // Fixture lists barely change, so ten minutes is plenty.
-  return getCached("fixtures-" + date, 600, "fixtures?date=" + date);
-}
-
-// The full list of competitions the API covers. Changes about
-// twice a year, so once a day is generous.
-async function getAllLeagues() {
-  const saved = cache["allLeagues"];
-
-  if (saved) {
-    const age = (Date.now() - saved.time) / 1000;
-    if (age < 86400) return saved.data;
-  }
-
-  console.log("fetching the league list");
-  const result = await askApi("leagues");
-
-  if (result === null) {
-    return saved ? saved.data : [];
-  }
-
-  // The raw answer carries every season ever played, which is huge.
-  // Keep only what the screen actually needs.
-  const trimmed = result.map(function (item) {
-    return {
-      id: item.league.id,
-      name: item.league.name,
-      type: item.league.type,
-      logo: item.league.logo,
-      country: item.country.name,
-    };
-  });
-
-  cache["allLeagues"] = { data: trimmed, time: Date.now() };
-  console.log(trimmed.length + " leagues available");
-  return trimmed;
-}
-
-// Reads a "39,40,140" style list off a web address safely.
 function leagueIdsFrom(address) {
   const raw = address.searchParams.get("leagues");
   if (!raw) return MY_LEAGUE_IDS;
@@ -189,73 +265,6 @@ function leagueIdsFrom(address) {
     .slice(0, 200);
 
   return ids.length > 0 ? ids : MY_LEAGUE_IDS;
-}
-
-// Standings come back in a different shape, so they need their own
-// function rather than going through getCached.
-async function getTableFor(leagueId) {
-  const name = "table-" + leagueId;
-  const saved = cache[name];
-
-  if (saved) {
-    const age = (Date.now() - saved.time) / 1000;
-    // A table only changes when games finish, so half an hour is fine.
-    if (age < 1800) {
-      console.log("cache hit: " + name);
-      return saved.data;
-    }
-  }
-
-  const path = "standings?league=" + leagueId + "&season=" + currentSeason();
-  console.log("fetching: " + path);
-  const result = await askApi(path);
-
-  if (result === null) {
-    console.log("   standings call failed for league " + leagueId);
-    return saved ? saved.data : [];
-  }
-
-  if (result.length === 0) {
-    console.log("   standings came back empty for league " + leagueId);
-    return saved ? saved.data : [];
-  }
-
-  // The answer is buried: response[0].league.standings[0] is the
-  // actual list of teams. The extra layer exists because some
-  // competitions have several groups.
-  const groups = result[0].league.standings;
-  const rows = groups && groups[0] ? groups[0] : [];
-
-  cache[name] = { data: rows, time: Date.now() };
-  console.log("table has " + rows.length + " teams");
-  return rows;
-}
-
-
-// One request brings back the goals, the stats and the team sheets
-// all together, so a match page costs a single call.
-async function getMatch(fixtureId) {
-  const name = "match-" + fixtureId;
-  const saved = cache[name];
-
-  if (saved) {
-    const age = (Date.now() - saved.time) / 1000;
-    // Short, because a live game changes constantly.
-    if (age < 60) {
-      console.log("cache hit: " + name);
-      return saved.data;
-    }
-  }
-
-  console.log("fetching match " + fixtureId);
-  const result = await askApi("fixtures?id=" + fixtureId);
-
-  if (result === null || result.length === 0) {
-    return saved ? saved.data : null;
-  }
-
-  cache[name] = { data: result[0], time: Date.now() };
-  return result[0];
 }
 
 
@@ -299,7 +308,6 @@ const PAGE = `
   .xpFill { height: 100%; background: #EF9F27; width: 0%; }
   .xpText { font-size: 11px; color: #B5D4F4; }
 
-  /* Date strip, only shown on the Fixtures screen */
   .dates { display: flex; }
   .dateBtn {
     flex: 1; text-align: center; padding: 6px 0 8px;
@@ -309,8 +317,29 @@ const PAGE = `
   .dateDay { font-size: 11px; }
   .dateNum { font-size: 15px; margin-top: 2px; }
 
+  .picker {
+    display: flex; align-items: center; justify-content: space-between;
+    background: #042C53; border-radius: 6px; padding: 9px 12px;
+    margin-bottom: 12px; color: #fff; font-size: 14px;
+  }
+  .picker select {
+    background: transparent; border: none; color: #fff;
+    font-size: 14px; width: 100%; outline: none;
+  }
+  .picker select option { background: #042C53; color: #fff; }
+
+  .searchBox {
+    display: flex; align-items: center; gap: 8px;
+    background: #fff; border-radius: 6px; padding: 9px 12px;
+    margin-bottom: 12px;
+  }
+  .searchBox input {
+    border: none; outline: none; font-size: 14px;
+    width: 100%; background: transparent;
+  }
+
   .updated { padding: 8px 16px; font-size: 12px; color: #777; }
-  .leagueRow {
+  .leagueRow, .countryRow {
     display: flex; align-items: center; gap: 8px;
     padding: 8px 16px; background: #E8E8E4;
     font-size: 12px; color: #555;
@@ -336,19 +365,20 @@ const PAGE = `
   .bell { font-size: 17px; color: #ccc; cursor: pointer; flex-shrink: 0; user-select: none; }
   .bell.on { color: #EF9F27; }
 
-  .empty { padding: 50px 24px; text-align: center; color: #777; line-height: 1.6; }
-
-  /* League picker on the Tables screen */
-  .picker {
-    display: flex; align-items: center; justify-content: space-between;
-    background: #042C53; border-radius: 6px; padding: 9px 12px;
-    margin-bottom: 12px; color: #fff; font-size: 14px;
+  .leagueItem {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4; cursor: pointer;
   }
-  .picker select {
-    background: transparent; border: none; color: #fff;
-    font-size: 14px; width: 100%; outline: none;
+  .leagueItem img { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
+  .leagueItem .nm { flex: 1; font-size: 15px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .liveTag {
+    font-size: 12px; padding: 3px 9px; border-radius: 10px;
+    background: #FAEEDA; color: #854F0B; flex-shrink: 0;
   }
-  .picker select option { background: #042C53; color: #fff; }
+  .star { font-size: 18px; color: #ccc; flex-shrink: 0; user-select: none; }
+  .star.on { color: #EF9F27; }
 
   .tableHead {
     display: flex; padding: 8px 16px; background: #E8E8E4;
@@ -357,11 +387,7 @@ const PAGE = `
   .tableRow {
     display: flex; align-items: center; padding: 10px 16px;
     background: #fff; border-bottom: 1px solid #E8E8E4;
-    border-left: 3px solid transparent;
   }
-  .tableRow.up { border-left-color: #639922; }
-  .tableRow.mid { border-left-color: #EF9F27; }
-  .tableRow.down { border-left-color: #E24B4A; }
   .colPos { width: 22px; font-size: 13px; color: #777; }
   .colTeam { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
   .colTeam span { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -369,14 +395,6 @@ const PAGE = `
   .colNum { width: 30px; text-align: center; font-size: 13px; color: #777; }
   .colPts { width: 32px; text-align: right; font-size: 14px; font-weight: 600; }
 
-  .key {
-    display: flex; gap: 16px; padding: 12px 16px;
-    background: #E8E8E4; font-size: 11px; color: #555;
-  }
-  .keyItem { display: flex; align-items: center; gap: 6px; }
-  .keyDash { width: 10px; height: 3px; }
-
-  /* Single match screen */
   .matchHead { background: #185FA5; padding: 12px 16px 16px; }
   .matchTop {
     display: flex; align-items: center; justify-content: space-between;
@@ -423,34 +441,7 @@ const PAGE = `
   .statHome { background: #185FA5; }
   .statAway { background: #EF9F27; }
 
-  /* Leagues screen */
-  .searchBox {
-    display: flex; align-items: center; gap: 8px;
-    background: #fff; border-radius: 6px; padding: 9px 12px;
-    margin-bottom: 12px;
-  }
-  .searchBox input {
-    border: none; outline: none; font-size: 14px;
-    width: 100%; background: transparent;
-  }
-  .countryRow {
-    padding: 8px 16px; background: #E8E8E4;
-    font-size: 12px; color: #555;
-  }
-  .leagueItem {
-    display: flex; align-items: center; gap: 10px;
-    padding: 12px 16px; background: #fff;
-    border-bottom: 1px solid #E8E8E4; cursor: pointer;
-  }
-  .leagueItem img { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
-  .leagueItem .nm { flex: 1; font-size: 15px; min-width: 0;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .liveTag {
-    font-size: 12px; padding: 3px 9px; border-radius: 10px;
-    background: #FAEEDA; color: #854F0B; flex-shrink: 0;
-  }
-  .star { font-size: 18px; color: #ccc; flex-shrink: 0; user-select: none; }
-  .star.on { color: #EF9F27; }
+  .empty { padding: 50px 24px; text-align: center; color: #777; line-height: 1.6; }
 
   .nav {
     position: fixed; bottom: 0; left: 0; right: 0;
@@ -498,8 +489,6 @@ const PAGE = `
 </div>
 
 <script>
-// The league list, handed over from the server so the menus
-// do not need it typed out twice.
 const LEAGUES = __LEAGUES__;
 
 // ---------------------------------------------------------------
@@ -514,30 +503,17 @@ let xp = load("xp", 0);
 let coins = load("coins", 0);
 let alerts = JSON.parse(localStorage.getItem("alerts") || "[]");
 
-// Which leagues this person follows. Starts with the built-in set,
-// then it is theirs to change on the Leagues screen.
-let myLeagues = JSON.parse(localStorage.getItem("myLeagues") || "null");
+// The key is versioned, so switching data provider does not leave
+// old league numbers behind that mean nothing any more.
+let myLeagues = JSON.parse(localStorage.getItem("myLeagues_v2") || "null");
 if (myLeagues === null) {
-  myLeagues = LEAGUES.map(function (league) { return league.id; });
-  localStorage.setItem("myLeagues", JSON.stringify(myLeagues));
+  myLeagues = LEAGUES.map(function (l) { return l.id; });
 }
 
-// Names of followed leagues, so the Tables menu has labels even
-// for ones added later.
-let leagueNames = JSON.parse(localStorage.getItem("leagueNames") || "null");
+let leagueNames = JSON.parse(localStorage.getItem("leagueNames_v2") || "null");
 if (leagueNames === null) {
   leagueNames = {};
-  for (const league of LEAGUES) leagueNames[league.id] = league.name;
-  localStorage.setItem("leagueNames", JSON.stringify(leagueNames));
-}
-
-function saveLeagues() {
-  localStorage.setItem("myLeagues", JSON.stringify(myLeagues));
-  localStorage.setItem("leagueNames", JSON.stringify(leagueNames));
-}
-
-function leagueParam() {
-  return "leagues=" + myLeagues.join(",");
+  for (const l of LEAGUES) leagueNames[l.id] = l.name;
 }
 
 const today = new Date().toDateString();
@@ -551,6 +527,16 @@ function saveProgress() {
   localStorage.setItem("xp", xp);
   localStorage.setItem("coins", coins);
   localStorage.setItem("alerts", JSON.stringify(alerts));
+}
+
+function saveLeagues() {
+  localStorage.setItem("myLeagues_v2", JSON.stringify(myLeagues));
+  localStorage.setItem("leagueNames_v2", JSON.stringify(leagueNames));
+}
+saveLeagues();
+
+function leagueParam() {
+  return "leagues=" + myLeagues.join(",");
 }
 
 function drawProgress() {
@@ -576,12 +562,10 @@ function toggleAlert(fixtureId, element) {
 
 
 // ---------------------------------------------------------------
-// WHICH SCREEN ARE WE ON
+// WHICH SCREEN
 // ---------------------------------------------------------------
 let screen = "scores";
-let chosenDate = isoDate(new Date());
 
-// Turns a date into the 2026-08-29 shape the API wants.
 function isoDate(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -589,21 +573,20 @@ function isoDate(date) {
   return year + "-" + month + "-" + day;
 }
 
+let chosenDate = isoDate(new Date());
+
 function goTo(name) {
   screen = name;
 
-  document.getElementById("navScores").classList.toggle("on", name === "scores");
-  document.getElementById("navFixtures").classList.toggle("on", name === "fixtures");
-  document.getElementById("navLeagues").classList.toggle("on", name === "leagues");
-  document.getElementById("navTables").classList.toggle("on", name === "tables");
-  document.getElementById("navTeams").classList.toggle("on", name === "teams");
+  const items = ["Scores", "Fixtures", "Leagues", "Tables", "Teams"];
+  const keys = ["scores", "fixtures", "leagues", "tables", "teams"];
+  for (let i = 0; i < items.length; i++) {
+    document.getElementById("nav" + items[i]).classList.toggle("on", name === keys[i]);
+  }
 
-  document.getElementById("dates").style.display =
-    name === "fixtures" ? "flex" : "none";
-  document.getElementById("pickerBox").style.display =
-    name === "tables" ? "block" : "none";
-  document.getElementById("searchArea").style.display =
-    name === "leagues" ? "block" : "none";
+  document.getElementById("dates").style.display = name === "fixtures" ? "flex" : "none";
+  document.getElementById("pickerBox").style.display = name === "tables" ? "block" : "none";
+  document.getElementById("searchArea").style.display = name === "leagues" ? "block" : "none";
 
   const titles = {
     scores: "Live scores", fixtures: "Fixtures",
@@ -622,13 +605,11 @@ document.getElementById("navTeams").onclick = function () { goTo("teams"); };
 
 
 // ---------------------------------------------------------------
-// THE DATE STRIP
-// Yesterday, today, and the next three days.
+// DATE STRIP
 // ---------------------------------------------------------------
 function drawDates() {
   const strip = document.getElementById("dates");
   strip.innerHTML = "";
-
   const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
   for (let offset = -1; offset <= 3; offset++) {
@@ -652,9 +633,7 @@ function drawDates() {
 
 
 // ---------------------------------------------------------------
-// DRAWING A LIST OF MATCHES
-// Used by both screens. The only difference is what goes in the
-// left hand column - a minute, or a kick-off time.
+// DRAWING MATCHES
 // ---------------------------------------------------------------
 function drawMatches(matches, showKickoffTimes) {
   const list = document.getElementById("list");
@@ -672,7 +651,7 @@ function drawMatches(matches, showKickoffTimes) {
       const heading = document.createElement("div");
       heading.className = "leagueRow";
       heading.innerHTML =
-        '<img class="leagueLogo" src="' + match.league.logo + '" alt="">' +
+        (match.league.logo ? '<img class="leagueLogo" src="' + match.league.logo + '" alt="">' : '') +
         match.league.country + ' - ' + match.league.name;
       list.appendChild(heading);
       lastLeague = match.league.name;
@@ -682,23 +661,19 @@ function drawMatches(matches, showKickoffTimes) {
     let whenClass = "when";
 
     if (showKickoffTimes) {
-      // The API sends the kick-off in world time. The browser
-      // converts it to whatever the phone is set to.
       const kickoff = new Date(match.fixture.date);
-      when = kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      when = isNaN(kickoff) ? "--:--"
+        : kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       whenClass = "when grey";
-    } else {
+    } else if (match.fixture.status.elapsed !== null) {
       when = match.fixture.status.elapsed + "'";
-      if (match.fixture.status.elapsed === null || match.fixture.status.short === "HT") {
-        when = match.fixture.status.short;
-        whenClass = "when grey";
-      }
+    } else {
+      when = match.fixture.status.short;
+      whenClass = "when grey";
     }
 
-    // Finished and unstarted games have no goals yet.
     const homeGoals = match.goals.home === null ? "-" : match.goals.home;
     const awayGoals = match.goals.away === null ? "-" : match.goals.away;
-
     const isOn = alerts.includes(match.fixture.id);
 
     const row = document.createElement("div");
@@ -725,7 +700,6 @@ function drawMatches(matches, showKickoffTimes) {
 
     const bell = row.querySelector(".bell");
     bell.onclick = function (event) {
-      // Stop the tap also opening the match page underneath.
       event.stopPropagation();
       toggleAlert(match.fixture.id, bell);
     };
@@ -739,29 +713,26 @@ function drawMatches(matches, showKickoffTimes) {
 
 
 // ---------------------------------------------------------------
-// THE TABLES SCREEN
+// TABLES
 // ---------------------------------------------------------------
-let chosenLeague = 39; // Premier League to start with
+let chosenLeague = MY_LEAGUE_ID_FALLBACK();
+
+function MY_LEAGUE_ID_FALLBACK() {
+  return LEAGUES.length > 0 ? LEAGUES[0].id : 0;
+}
 
 function drawPicker() {
   const box = document.getElementById("pickerBox");
 
-  // Cups have no table, so leave out the ones we know about.
-  const noTable = {};
-  for (const league of LEAGUES) {
-    if (!league.table) noTable[league.id] = true;
-  }
-  const withTables = myLeagues.filter(function (id) { return !noTable[id]; });
-
-  if (withTables.length === 0) {
+  if (myLeagues.length === 0) {
     box.innerHTML = '<div class="picker">No leagues followed</div>';
     return;
   }
 
-  if (!withTables.includes(chosenLeague)) chosenLeague = withTables[0];
+  if (!myLeagues.includes(chosenLeague)) chosenLeague = myLeagues[0];
 
   let options = "";
-  for (const id of withTables) {
+  for (const id of myLeagues) {
     const selected = id === chosenLeague ? " selected" : "";
     const name = leagueNames[id] || ("League " + id);
     options += '<option value="' + id + '"' + selected + '>' + name + '</option>';
@@ -775,47 +746,28 @@ function drawPicker() {
   };
 }
 
-// The API describes what each position means in plain words, so we
-// read that rather than hard-coding the rules for every league.
-function bandFor(description) {
-  if (!description) return "";
-  const text = description.toLowerCase();
-  if (text.includes("relegation")) return "down";
-  if (text.includes("play-off") || text.includes("playoff")) return "mid";
-  if (text.includes("promotion") || text.includes("champions league")) return "up";
-  if (text.includes("europa") || text.includes("conference")) return "mid";
-  return "";
-}
-
 function drawTable(rows) {
   const list = document.getElementById("list");
   list.innerHTML = "";
 
   if (rows.length === 0) {
     list.innerHTML =
-      '<div class="empty">No table available for this league yet.<br><br>' +
-      'Lower leagues and new seasons are often missing.</div>';
+      '<div class="empty">No table for this league.<br><br>' +
+      'It may not be included in your plan.</div>';
     return;
   }
 
   const head = document.createElement("div");
   head.className = "tableHead";
   head.innerHTML =
-    '<span class="colPos">#</span>' +
-    '<span class="colTeam">Team</span>' +
-    '<span class="colNum">P</span>' +
-    '<span class="colNum">GD</span>' +
+    '<span class="colPos">#</span><span class="colTeam">Team</span>' +
+    '<span class="colNum">P</span><span class="colNum">GD</span>' +
     '<span class="colPts">Pts</span>';
   list.appendChild(head);
 
-  let usedBands = false;
-
   for (const entry of rows) {
-    const band = bandFor(entry.description);
-    if (band) usedBands = true;
-
     const row = document.createElement("div");
-    row.className = "tableRow " + band;
+    row.className = "tableRow";
     row.innerHTML =
       '<span class="colPos">' + entry.rank + '</span>' +
       '<span class="colTeam">' +
@@ -827,186 +779,14 @@ function drawTable(rows) {
       '<span class="colPts">' + entry.points + '</span>';
     list.appendChild(row);
   }
-
-  if (usedBands) {
-    const key = document.createElement("div");
-    key.className = "key";
-    key.innerHTML =
-      '<div class="keyItem"><div class="keyDash" style="background:#639922"></div>Promotion</div>' +
-      '<div class="keyItem"><div class="keyDash" style="background:#EF9F27"></div>Play-offs</div>' +
-      '<div class="keyItem"><div class="keyDash" style="background:#E24B4A"></div>Relegation</div>';
-    list.appendChild(key);
-  }
 }
 
 
 // ---------------------------------------------------------------
-// THE SINGLE MATCH SCREEN
+// LEAGUES SCREEN
 // ---------------------------------------------------------------
-let openFixtureId = null;
-let matchTab = "summary";
-let previousScreen = "scores";
-
-function openMatch(fixtureId) {
-  previousScreen = screen;
-  openFixtureId = fixtureId;
-  matchTab = "summary";
-  screen = "match";
-
-  document.getElementById("mainHeader").style.display = "none";
-  refresh();
-}
-
-function closeMatch() {
-  openFixtureId = null;
-  document.getElementById("mainHeader").style.display = "block";
-  document.getElementById("matchHead").innerHTML = "";
-  goTo(previousScreen);
-}
-
-// Picks a symbol for each thing that happened.
-function eventIcon(event) {
-  if (event.type === "Goal") return "&#9917;";
-  if (event.type === "Card") {
-    return event.detail === "Red Card" ? "&#128308;" : "&#129000;";
-  }
-  if (event.type === "subst") return "&#8646;";
-  return "&#8226;";
-}
-
-function drawMatch(match) {
-  const head = document.getElementById("matchHead");
-  const list = document.getElementById("list");
-
-  const homeGoals = match.goals.home === null ? "-" : match.goals.home;
-  const awayGoals = match.goals.away === null ? "-" : match.goals.away;
-
-  let clock = match.fixture.status.elapsed + "'";
-  if (match.fixture.status.elapsed === null) {
-    clock = match.fixture.status.long;
-  }
-
-  head.innerHTML =
-    '<div class="matchHead">' +
-      '<div class="matchTop">' +
-        '<span class="back" id="backBtn">&#8592;</span>' +
-        '<span class="comp">' + match.league.name + '</span>' +
-        '<span style="width:20px"></span>' +
-      '</div>' +
-      '<div class="scoreLine">' +
-        '<div class="side">' +
-          '<img src="' + match.teams.home.logo + '" alt="">' +
-          '<div>' + match.teams.home.name + '</div>' +
-        '</div>' +
-        '<div class="bigScore">' +
-          '<div class="nums">' + homeGoals + ' - ' + awayGoals + '</div>' +
-          '<div class="clock">' + clock + '</div>' +
-        '</div>' +
-        '<div class="side">' +
-          '<img src="' + match.teams.away.logo + '" alt="">' +
-          '<div>' + match.teams.away.name + '</div>' +
-        '</div>' +
-      '</div>' +
-    '</div>' +
-    '<div class="tabs">' +
-      '<div class="tab' + (matchTab === "summary" ? " on" : "") + '" id="tabSummary">Summary</div>' +
-      '<div class="tab' + (matchTab === "stats" ? " on" : "") + '" id="tabStats">Stats</div>' +
-    '</div>';
-
-  document.getElementById("backBtn").onclick = closeMatch;
-  document.getElementById("tabSummary").onclick = function () {
-    matchTab = "summary"; drawMatch(match);
-  };
-  document.getElementById("tabStats").onclick = function () {
-    matchTab = "stats"; drawMatch(match);
-  };
-
-  list.innerHTML = "";
-
-  if (matchTab === "summary") {
-    const events = match.events || [];
-    // Cards and substitutions are noise on a first look.
-    const goals = events.filter(function (e) { return e.type === "Goal"; });
-
-    if (goals.length === 0) {
-      list.innerHTML = '<div class="empty">No goals yet.</div>';
-      return;
-    }
-
-    for (const event of goals) {
-      const row = document.createElement("div");
-      row.className = "event";
-      row.innerHTML =
-        '<span class="evMin">' + event.time.elapsed + "'" + '</span>' +
-        '<span class="evIcon">' + eventIcon(event) + '</span>' +
-        '<span class="evName">' + (event.player.name || "Unknown") + '</span>' +
-        '<span class="evTeam">' + event.team.name + '</span>';
-      list.appendChild(row);
-    }
-    return;
-  }
-
-  // Stats tab
-  const stats = match.statistics || [];
-
-  if (stats.length < 2) {
-    list.innerHTML =
-      '<div class="empty">No stats for this match.<br><br>' +
-      'Lower leagues usually only have goals.</div>';
-    return;
-  }
-
-  const homeStats = stats[0].statistics;
-  const awayStats = stats[1].statistics;
-
-  const box = document.createElement("div");
-  box.className = "statBox";
-
-  // Only the ones worth showing, in a sensible order.
-  const wanted = [
-    "Ball Possession", "Total Shots", "Shots on Goal",
-    "Corner Kicks", "Fouls", "Yellow Cards"
-  ];
-
-  for (const name of wanted) {
-    const home = homeStats.find(function (s) { return s.type === name; });
-    const away = awayStats.find(function (s) { return s.type === name; });
-    if (!home || !away) continue;
-
-    const homeValue = home.value === null ? 0 : home.value;
-    const awayValue = away.value === null ? 0 : away.value;
-
-    // Possession arrives as "46%", so strip the sign to do the maths.
-    const homeNum = Number(String(homeValue).replace("%", "")) || 0;
-    const awayNum = Number(String(awayValue).replace("%", "")) || 0;
-    const total = homeNum + awayNum;
-
-    const homeWidth = total === 0 ? 50 : (homeNum / total) * 100;
-
-    const stat = document.createElement("div");
-    stat.className = "stat";
-    stat.innerHTML =
-      '<div class="statTop">' +
-        '<span class="statVal">' + homeValue + '</span>' +
-        '<span class="statName">' + name + '</span>' +
-        '<span class="statVal">' + awayValue + '</span>' +
-      '</div>' +
-      '<div class="statBar">' +
-        '<div class="statHome" style="width:' + homeWidth + '%"></div>' +
-        '<div class="statAway" style="width:' + (100 - homeWidth) + '%"></div>' +
-      '</div>';
-    box.appendChild(stat);
-  }
-
-  list.appendChild(box);
-}
-
-
-// ---------------------------------------------------------------
-// THE LEAGUES SCREEN
-// ---------------------------------------------------------------
-let allLeagues = null;   // fetched once, then kept
-let liveCounts = {};     // how many matches each league has on
+let allLeagues = null;
+let liveCounts = {};
 let searchText = "";
 
 document.getElementById("searchInput").oninput = function (event) {
@@ -1037,17 +817,12 @@ function drawLeagues() {
   }
 
   let shown;
-
   if (searchText === "") {
-    // Nothing typed: show what they follow, so the screen is
-    // useful straight away rather than a wall of 1200 names.
-    shown = allLeagues.filter(function (league) {
-      return myLeagues.includes(league.id);
-    });
+    shown = allLeagues.filter(function (l) { return myLeagues.includes(l.id); });
   } else {
-    shown = allLeagues.filter(function (league) {
-      return league.name.toLowerCase().includes(searchText) ||
-             league.country.toLowerCase().includes(searchText);
+    shown = allLeagues.filter(function (l) {
+      return l.name.toLowerCase().includes(searchText) ||
+             l.country.toLowerCase().includes(searchText);
     }).slice(0, 60);
   }
 
@@ -1056,7 +831,6 @@ function drawLeagues() {
     return;
   }
 
-  // Country first, then league name.
   shown.sort(function (a, b) {
     if (a.country !== b.country) return a.country.localeCompare(b.country);
     return a.name.localeCompare(b.name);
@@ -1091,7 +865,135 @@ function drawLeagues() {
 
 
 // ---------------------------------------------------------------
-// LOADING WHATEVER THE CURRENT SCREEN NEEDS
+// SINGLE MATCH
+// ---------------------------------------------------------------
+let openFixtureId = null;
+let matchTab = "summary";
+let previousScreen = "scores";
+
+function openMatch(fixtureId) {
+  previousScreen = screen;
+  openFixtureId = fixtureId;
+  matchTab = "summary";
+  screen = "match";
+  document.getElementById("mainHeader").style.display = "none";
+  refresh();
+}
+
+function closeMatch() {
+  openFixtureId = null;
+  document.getElementById("mainHeader").style.display = "block";
+  document.getElementById("matchHead").innerHTML = "";
+  goTo(previousScreen);
+}
+
+function drawMatch(match) {
+  const head = document.getElementById("matchHead");
+  const list = document.getElementById("list");
+
+  const homeGoals = match.goals.home === null ? "-" : match.goals.home;
+  const awayGoals = match.goals.away === null ? "-" : match.goals.away;
+
+  let clock = match.fixture.status.elapsed !== null
+    ? match.fixture.status.elapsed + "'"
+    : match.fixture.status.long;
+
+  head.innerHTML =
+    '<div class="matchHead">' +
+      '<div class="matchTop">' +
+        '<span class="back" id="backBtn">&#8592;</span>' +
+        '<span class="comp">' + match.league.name + '</span>' +
+        '<span style="width:20px"></span>' +
+      '</div>' +
+      '<div class="scoreLine">' +
+        '<div class="side">' +
+          '<img src="' + match.teams.home.logo + '" alt="">' +
+          '<div>' + match.teams.home.name + '</div>' +
+        '</div>' +
+        '<div class="bigScore">' +
+          '<div class="nums">' + homeGoals + ' - ' + awayGoals + '</div>' +
+          '<div class="clock">' + clock + '</div>' +
+        '</div>' +
+        '<div class="side">' +
+          '<img src="' + match.teams.away.logo + '" alt="">' +
+          '<div>' + match.teams.away.name + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="tabs">' +
+      '<div class="tab' + (matchTab === "summary" ? " on" : "") + '" id="tabSummary">Summary</div>' +
+      '<div class="tab' + (matchTab === "stats" ? " on" : "") + '" id="tabStats">Stats</div>' +
+    '</div>';
+
+  document.getElementById("backBtn").onclick = closeMatch;
+  document.getElementById("tabSummary").onclick = function () { matchTab = "summary"; drawMatch(match); };
+  document.getElementById("tabStats").onclick = function () { matchTab = "stats"; drawMatch(match); };
+
+  list.innerHTML = "";
+
+  if (matchTab === "summary") {
+    const goals = match.events || [];
+    if (goals.length === 0) {
+      list.innerHTML = '<div class="empty">No goals yet.</div>';
+      return;
+    }
+    for (const event of goals) {
+      const row = document.createElement("div");
+      row.className = "event";
+      row.innerHTML =
+        '<span class="evMin">' + event.time.elapsed + "'" + '</span>' +
+        '<span class="evIcon">&#9917;</span>' +
+        '<span class="evName">' + (event.player.name || "Unknown") + '</span>' +
+        '<span class="evTeam">' + event.team.name + '</span>';
+      list.appendChild(row);
+    }
+    return;
+  }
+
+  // Stats. This API sends one flat list with a home and away value
+  // on each row, rather than a separate list per team.
+  const stats = match.statistics || [];
+
+  if (stats.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No stats for this match.<br><br>' +
+      'Often only available for bigger games.</div>';
+    return;
+  }
+
+  const box = document.createElement("div");
+  box.className = "statBox";
+
+  for (const item of stats) {
+    const homeValue = item.home === undefined ? "0" : item.home;
+    const awayValue = item.away === undefined ? "0" : item.away;
+
+    const homeNum = Number(String(homeValue).replace("%", "")) || 0;
+    const awayNum = Number(String(awayValue).replace("%", "")) || 0;
+    const total = homeNum + awayNum;
+    const homeWidth = total === 0 ? 50 : (homeNum / total) * 100;
+
+    const stat = document.createElement("div");
+    stat.className = "stat";
+    stat.innerHTML =
+      '<div class="statTop">' +
+        '<span class="statVal">' + homeValue + '</span>' +
+        '<span class="statName">' + (item.type || "") + '</span>' +
+        '<span class="statVal">' + awayValue + '</span>' +
+      '</div>' +
+      '<div class="statBar">' +
+        '<div class="statHome" style="width:' + homeWidth + '%"></div>' +
+        '<div class="statAway" style="width:' + (100 - homeWidth) + '%"></div>' +
+      '</div>';
+    box.appendChild(stat);
+  }
+
+  list.appendChild(box);
+}
+
+
+// ---------------------------------------------------------------
+// LOADING
 // ---------------------------------------------------------------
 async function refresh() {
   const list = document.getElementById("list");
@@ -1119,7 +1021,6 @@ async function refresh() {
 
   if (screen === "leagues") {
     updated.textContent = "";
-
     if (allLeagues === null) {
       list.innerHTML = '<div class="empty">Loading leagues...</div>';
       try {
@@ -1134,7 +1035,6 @@ async function refresh() {
     return;
   }
 
-  // Screens we have not built yet.
   if (screen === "teams") {
     updated.textContent = "";
     list.innerHTML = '<div class="empty">Not built yet.<br>Coming next.</div>';
@@ -1171,7 +1071,6 @@ async function refresh() {
   }
 
   if (screen === "scores") {
-    // Remember how many are live per league, for the Leagues screen.
     liveCounts = {};
     for (const match of matches) {
       liveCounts[match.league.id] = (liveCounts[match.league.id] || 0) + 1;
@@ -1193,7 +1092,6 @@ async function refresh() {
     if (matches.length === 0) {
       list.innerHTML = '<div class="empty">No games in your leagues that day.</div>';
     } else {
-      // Earliest kick-off first.
       matches.sort(function (a, b) {
         return new Date(a.fixture.date) - new Date(b.fixture.date);
       });
@@ -1210,7 +1108,6 @@ drawPicker();
 drawProgress();
 refresh();
 
-// Only the live screen needs to keep refreshing itself.
 setInterval(function () {
   if (screen === "scores") refresh();
 }, 30000);
@@ -1224,8 +1121,9 @@ setInterval(function () {
 // THE SERVER
 // ---------------------------------------------------------------
 const server = http.createServer(async function (request, response) {
-  if (request.url.startsWith("/api/scores")) {
-    const address = new URL(request.url, "http://localhost");
+  const address = new URL(request.url, "http://localhost");
+
+  if (address.pathname === "/api/scores") {
     const all = await getLiveScores();
     const matches = onlyTheirLeagues(all, leagueIdsFrom(address));
     response.writeHead(200, { "Content-Type": "application/json" });
@@ -1233,25 +1131,13 @@ const server = http.createServer(async function (request, response) {
     return;
   }
 
-  if (request.url.startsWith("/api/leagues")) {
-    const leagues = await getAllLeagues();
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(leagues));
-    return;
-  }
-
-  if (request.url.startsWith("/api/fixtures")) {
-    // Pull the date out of the web address.
-    const address = new URL(request.url, "http://localhost");
+  if (address.pathname === "/api/fixtures") {
     const date = address.searchParams.get("date");
-
-    // Only allow the 2026-08-29 shape, so nobody can send us junk.
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       response.writeHead(400, { "Content-Type": "application/json" });
-      response.end(JSON.stringify([]));
+      response.end("[]");
       return;
     }
-
     const all = await getFixturesFor(date);
     const matches = onlyTheirLeagues(all, leagueIdsFrom(address));
     response.writeHead(200, { "Content-Type": "application/json" });
@@ -1259,39 +1145,48 @@ const server = http.createServer(async function (request, response) {
     return;
   }
 
-  if (request.url.startsWith("/api/match")) {
-    const address = new URL(request.url, "http://localhost");
-    const fixtureId = Number(address.searchParams.get("id"));
-
-    if (!fixtureId) {
-      response.writeHead(400, { "Content-Type": "application/json" });
-      response.end("null");
-      return;
-    }
-
-    const match = await getMatch(fixtureId);
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(match));
-    return;
-  }
-
-  if (request.url.startsWith("/api/table")) {
-    const address = new URL(request.url, "http://localhost");
+  if (address.pathname === "/api/table") {
     const leagueId = Number(address.searchParams.get("league"));
-
     if (!leagueId) {
       response.writeHead(400, { "Content-Type": "application/json" });
-      response.end(JSON.stringify([]));
+      response.end("[]");
       return;
     }
-
     const rows = await getTableFor(leagueId);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(rows));
     return;
   }
 
-  // Drop the league list into the page before sending it.
+  if (address.pathname === "/api/match") {
+    const fixtureId = Number(address.searchParams.get("id"));
+    if (!fixtureId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("null");
+      return;
+    }
+    const match = await getMatch(fixtureId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(match));
+    return;
+  }
+
+  if (address.pathname === "/api/leagues") {
+    const leagues = await getAllLeagues();
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(leagues));
+    return;
+  }
+
+  // Shows the raw, untranslated answer. Handy when field names
+  // do not match what the code expects.
+  if (address.pathname === "/api/raw") {
+    const raw = await askApi("get_events", "&match_live=1");
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(raw ? raw.slice(0, 2) : null, null, 2));
+    return;
+  }
+
   response.writeHead(200, { "Content-Type": "text/html" });
   response.end(PAGE.replace("__LEAGUES__", JSON.stringify(MY_LEAGUES)));
 });
