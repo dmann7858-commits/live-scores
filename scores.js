@@ -25,10 +25,24 @@ const MY_LEAGUES = [
 
 const MY_LEAGUE_IDS = MY_LEAGUES.map(function (league) { return league.id; });
 
+// ===============================================================
+// SEASON TEST SWITCH
+//
+// The free API plan only allows old seasons. Set this to 2021 to
+// check whether the code works, then set it back to null once you
+// are on a paid plan.
+//
+//   2021  =  test mode, shows the 2021-22 season
+//   null  =  normal, works out the real current season
+// ===============================================================
+const TEST_SEASON = 2021;
+
+
 // Which season to ask for. European seasons are named after the
 // year they start in, so August 2026 is season 2026 but March 2027
 // is still season 2026.
 function currentSeason() {
+  if (TEST_SEASON !== null) return TEST_SEASON;
   const now = new Date();
   return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
 }
