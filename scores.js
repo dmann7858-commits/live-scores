@@ -544,7 +544,7 @@ const PAGE = `
   .shade.open { opacity: 1; pointer-events: auto; }
   .drawer {
     position: fixed; top: 0; left: 0; bottom: 0; width: 280px;
-    max-width: 82vw; background: #fff; z-index: 50;
+    max-width: 82vw; background: #EF9F27; z-index: 50;
     transform: translateX(-100%); transition: transform 0.22s;
     display: flex; flex-direction: column;
   }
@@ -557,25 +557,30 @@ const PAGE = `
   .drawerTop span:first-child { font-size: 16px; font-weight: 500; }
   .drawerClose { font-size: 20px; cursor: pointer; user-select: none; }
   .drawerBody { overflow-y: auto; flex: 1; }
+  /* Dark brown reads well on the yellow and matches the level badge. */
   .drawerHint {
-    padding: 8px 16px; background: #E8E8E4;
-    font-size: 11px; color: #666; text-transform: uppercase;
-    letter-spacing: 0.4px;
+    padding: 8px 16px; background: #C97F14;
+    font-size: 11px; color: #412402; text-transform: uppercase;
+    letter-spacing: 0.4px; font-weight: 600;
   }
   .countryItem {
     display: flex; align-items: center; gap: 10px;
     padding: 12px 16px; cursor: pointer;
-    border-bottom: 1px solid #EFEFEC;
+    border-bottom: 1px solid rgba(65, 36, 2, 0.14);
   }
-  .countryItem img { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
-  .countryItem .cname { flex: 1; font-size: 14px; }
-  .countryItem .arrow { font-size: 11px; color: #999; }
+  .countryItem img {
+    width: 18px; height: 18px; object-fit: contain;
+    flex-shrink: 0; border-radius: 2px;
+  }
+  .countryItem .cname { flex: 1; font-size: 14px; color: #412402; }
+  .countryItem .arrow { font-size: 11px; color: #7A4A08; }
+  .countryItem:hover { background: #E8940F; }
   .leagueChild {
     padding: 10px 16px 10px 44px; font-size: 13px;
-    color: #444; cursor: pointer; background: #FAFAF8;
-    border-bottom: 1px solid #EFEFEC;
+    color: #412402; cursor: pointer; background: #DE9220;
+    border-bottom: 1px solid rgba(65, 36, 2, 0.14);
   }
-  .leagueChild:hover { background: #F0F0EC; }
+  .leagueChild:hover { background: #C97F14; }
 
   /* League screen */
   .leagueHead { background: #185FA5; padding: 12px 16px 0; }
