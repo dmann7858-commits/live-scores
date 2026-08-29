@@ -560,25 +560,28 @@ const PAGE = `
   /* Dark brown reads well on the yellow and matches the level badge. */
   .drawerHint {
     padding: 8px 16px; background: #C97F14;
-    font-size: 11px; color: #412402; text-transform: uppercase;
-    letter-spacing: 0.4px; font-weight: 600;
+    font-size: 11px; color: #2B1700; text-transform: uppercase;
+    letter-spacing: 0.4px; font-weight: 700;
   }
   .countryItem {
     display: flex; align-items: center; gap: 10px;
     padding: 12px 16px; cursor: pointer;
-    border-bottom: 1px solid rgba(65, 36, 2, 0.14);
+    border-bottom: 1px solid rgba(43, 23, 0, 0.18);
   }
   .countryItem img {
     width: 18px; height: 18px; object-fit: contain;
     flex-shrink: 0; border-radius: 2px;
   }
-  .countryItem .cname { flex: 1; font-size: 14px; color: #412402; }
-  .countryItem .arrow { font-size: 11px; color: #7A4A08; }
+  .countryItem .cname {
+    flex: 1; font-size: 14px; color: #2B1700; font-weight: 600;
+  }
+  .countryItem .arrow { font-size: 11px; color: #5C3300; }
   .countryItem:hover { background: #E8940F; }
   .leagueChild {
     padding: 10px 16px 10px 44px; font-size: 13px;
-    color: #412402; cursor: pointer; background: #DE9220;
-    border-bottom: 1px solid rgba(65, 36, 2, 0.14);
+    color: #2B1700; font-weight: 500;
+    cursor: pointer; background: #DE9220;
+    border-bottom: 1px solid rgba(43, 23, 0, 0.16);
   }
   .leagueChild:hover { background: #C97F14; }
 
