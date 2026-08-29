@@ -229,6 +229,63 @@ async function getMatch(fixtureId) {
   return intoCache(name, translateMatch(raw[0]));
 }
 
+// Fixtures for one league across a date range.
+async function getLeagueFixtures(leagueId, from, to) {
+  const name = "lf-" + leagueId + "-" + from;
+  const hit = fromCache(name, 900);
+  if (hit) return hit;
+
+  const raw = await askApi("get_events",
+    "&league_id=" + leagueId + "&from=" + from + "&to=" + to);
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  return intoCache(name, raw.map(translateMatch));
+}
+
+// Every club in a league.
+async function getTeams(leagueId) {
+  const name = "teams-" + leagueId;
+  const hit = fromCache(name, 86400);
+  if (hit) return hit;
+
+  const raw = await askApi("get_teams", "&league_id=" + leagueId);
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  const teams = raw.map(function (t) {
+    return {
+      id: Number(t.team_key),
+      name: t.team_name,
+      logo: t.team_badge || "",
+      squad: (t.players || []).length,
+    };
+  });
+
+  return intoCache(name, teams);
+}
+
+// Leading scorers, used for the Statistics tab.
+async function getTopScorers(leagueId) {
+  const name = "scorers-" + leagueId;
+  const hit = fromCache(name, 3600);
+  if (hit) return hit;
+
+  const raw = await askApi("get_topscorers", "&league_id=" + leagueId);
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  const scorers = raw.map(function (s) {
+    return {
+      place: Number(s.player_place) || 0,
+      name: s.player_name,
+      team: s.team_name,
+      goals: Number(s.goals) || 0,
+      assists: Number(s.assists) || 0,
+      penalties: Number(s.penalty_goals) || 0,
+    };
+  });
+
+  return intoCache(name, scorers);
+}
+
 async function getAllLeagues() {
   const hit = fromCache("allLeagues", 86400);
   if (hit) return hit;
@@ -443,6 +500,94 @@ const PAGE = `
 
   .empty { padding: 50px 24px; text-align: center; color: #777; line-height: 1.6; }
 
+  /* Slide-out country drawer */
+  .burger {
+    font-size: 20px; color: #fff; cursor: pointer;
+    user-select: none; margin-right: 12px; line-height: 1;
+  }
+  .shade {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    z-index: 40;
+  }
+  .shade.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 280px;
+    max-width: 82vw; background: #fff; z-index: 50;
+    transform: translateX(-100%); transition: transform 0.22s;
+    display: flex; flex-direction: column;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawerTop {
+    background: #185FA5; color: #fff; padding: 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .drawerTop span:first-child { font-size: 16px; font-weight: 500; }
+  .drawerClose { font-size: 20px; cursor: pointer; user-select: none; }
+  .drawerBody { overflow-y: auto; flex: 1; }
+  .drawerHint {
+    padding: 8px 16px; background: #E8E8E4;
+    font-size: 11px; color: #666; text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .countryItem {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; cursor: pointer;
+    border-bottom: 1px solid #EFEFEC;
+  }
+  .countryItem img { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
+  .countryItem .cname { flex: 1; font-size: 14px; }
+  .countryItem .arrow { font-size: 11px; color: #999; }
+  .leagueChild {
+    padding: 10px 16px 10px 44px; font-size: 13px;
+    color: #444; cursor: pointer; background: #FAFAF8;
+    border-bottom: 1px solid #EFEFEC;
+  }
+  .leagueChild:hover { background: #F0F0EC; }
+
+  /* League screen */
+  .leagueHead { background: #185FA5; padding: 12px 16px 0; }
+  .leagueHeadTop {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+  }
+  .leagueHeadTop img { width: 28px; height: 28px; object-fit: contain; }
+  .leagueHeadTop .txt { flex: 1; min-width: 0; }
+  .leagueHeadTop .ln {
+    font-size: 16px; font-weight: 500; color: #fff;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .leagueHeadTop .cn { font-size: 12px; color: #B5D4F4; }
+  .leagueTabs { display: flex; }
+  .lTab {
+    flex: 1; text-align: center; padding: 9px 0 8px;
+    font-size: 13px; color: #85B7EB; cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  .lTab.on { color: #EF9F27; border-bottom-color: #EF9F27; }
+
+  .scorerRow {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .scorerRow .pl { width: 22px; font-size: 13px; color: #777; }
+  .scorerRow .who { flex: 1; min-width: 0; }
+  .scorerRow .pn {
+    font-size: 14px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .scorerRow .tn { font-size: 12px; color: #999; }
+  .scorerRow .gl { font-size: 15px; font-weight: 600; }
+
+  .teamRowItem {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .teamRowItem img { width: 24px; height: 24px; object-fit: contain; flex-shrink: 0; }
+  .teamRowItem span { font-size: 14px; }
+
   .nav {
     position: fixed; bottom: 0; left: 0; right: 0;
     display: flex; background: #fff; border-top: 1px solid #E8E8E4; padding: 8px 0;
@@ -454,9 +599,21 @@ const PAGE = `
 </head>
 <body>
 
+<div class="shade" id="shade"></div>
+<div class="drawer" id="drawer">
+  <div class="drawerTop">
+    <span>Countries</span>
+    <span class="drawerClose" id="drawerClose">&#10005;</span>
+  </div>
+  <div class="drawerBody" id="drawerBody"></div>
+</div>
+
 <div class="header" id="mainHeader">
   <div class="headerTop">
-    <div class="title" id="screenTitle">Live scores</div>
+    <div style="display:flex; align-items:center; min-width:0">
+      <span class="burger" id="burger">&#9776;</span>
+      <div class="title" id="screenTitle">Live scores</div>
+    </div>
     <div class="badges">
       <div class="coins">&#9679; <span id="coins">0</span></div>
       <div class="level" id="level">1</div>
@@ -477,6 +634,7 @@ const PAGE = `
 </div>
 
 <div id="matchHead"></div>
+<div id="leagueHead"></div>
 <div class="updated" id="updated">Loading...</div>
 <div id="list"></div>
 
@@ -577,6 +735,11 @@ let chosenDate = isoDate(new Date());
 
 function goTo(name) {
   screen = name;
+
+  // Coming back from a league or match page.
+  document.getElementById("leagueHead").innerHTML = "";
+  document.getElementById("matchHead").innerHTML = "";
+  document.getElementById("mainHeader").style.display = "block";
 
   const items = ["Scores", "Fixtures", "Leagues", "Tables", "Teams"];
   const keys = ["scores", "fixtures", "leagues", "tables", "teams"];
@@ -865,6 +1028,274 @@ function drawLeagues() {
 
 
 // ---------------------------------------------------------------
+// THE COUNTRY DRAWER
+//
+// These nine sit at the top in this order. Everything else falls
+// in alphabetically underneath.
+// ---------------------------------------------------------------
+const PINNED = [
+  "England", "Germany", "Scotland", "France",
+  "Italy", "Spain", "Portugal", "Netherlands", "USA"
+];
+
+// The API does not always use the name people expect.
+const ALSO_KNOWN_AS = {
+  "Netherlands": ["Holland"],
+  "USA": ["United States", "United States of America", "Usa"],
+};
+
+let openCountry = null;   // which country is expanded in the drawer
+
+function matchesPinned(pinnedName, apiCountry) {
+  if (apiCountry === pinnedName) return true;
+  const others = ALSO_KNOWN_AS[pinnedName] || [];
+  return others.includes(apiCountry);
+}
+
+function openDrawer() {
+  document.getElementById("drawer").classList.add("open");
+  document.getElementById("shade").classList.add("open");
+  buildDrawer();
+}
+
+function closeDrawer() {
+  document.getElementById("drawer").classList.remove("open");
+  document.getElementById("shade").classList.remove("open");
+}
+
+document.getElementById("burger").onclick = async function () {
+  openDrawer();
+  // Fetch the league list the first time it is opened.
+  if (allLeagues === null) {
+    try {
+      const response = await fetch("/api/leagues");
+      allLeagues = await response.json();
+    } catch (error) {
+      allLeagues = [];
+    }
+    buildDrawer();
+  }
+};
+
+document.getElementById("drawerClose").onclick = closeDrawer;
+document.getElementById("shade").onclick = closeDrawer;
+
+// Groups every league under its country, pinned ones first.
+function countriesInOrder() {
+  const byCountry = {};
+
+  for (const league of allLeagues || []) {
+    const country = league.country || "Other";
+    if (!byCountry[country]) byCountry[country] = [];
+    byCountry[country].push(league);
+  }
+
+  const names = Object.keys(byCountry);
+  const top = [];
+  const rest = [];
+
+  // Take the pinned ones out first, in the order given above.
+  for (const pinned of PINNED) {
+    const found = names.find(function (name) {
+      return matchesPinned(pinned, name);
+    });
+    if (found) top.push(found);
+  }
+
+  for (const name of names) {
+    if (!top.includes(name)) rest.push(name);
+  }
+
+  rest.sort(function (a, b) { return a.localeCompare(b); });
+
+  return { order: top.concat(rest), byCountry: byCountry, pinnedCount: top.length };
+}
+
+function buildDrawer() {
+  const body = document.getElementById("drawerBody");
+  body.innerHTML = "";
+
+  if (allLeagues === null) {
+    body.innerHTML = '<div class="empty">Loading...</div>';
+    return;
+  }
+
+  if (allLeagues.length === 0) {
+    body.innerHTML = '<div class="empty">No leagues available<br>on your plan.</div>';
+    return;
+  }
+
+  const grouped = countriesInOrder();
+  let index = 0;
+
+  for (const country of grouped.order) {
+    // Headings that separate the pinned countries from the rest.
+    if (index === 0) {
+      const hint = document.createElement("div");
+      hint.className = "drawerHint";
+      hint.textContent = "Top countries";
+      body.appendChild(hint);
+    }
+    if (index === grouped.pinnedCount && grouped.pinnedCount > 0) {
+      const hint = document.createElement("div");
+      hint.className = "drawerHint";
+      hint.textContent = "All countries";
+      body.appendChild(hint);
+    }
+    index++;
+
+    const leagues = grouped.byCountry[country];
+    const isOpen = openCountry === country;
+
+    const row = document.createElement("div");
+    row.className = "countryItem";
+    row.innerHTML =
+      (leagues[0].logo ? '<img src="' + leagues[0].logo + '" alt="">' : '<img alt="">') +
+      '<span class="cname">' + country + '</span>' +
+      '<span class="arrow">' + (isOpen ? "&#9660;" : "&#9654;") + '</span>';
+
+    row.onclick = function () {
+      // Tapping the open one closes it.
+      openCountry = isOpen ? null : country;
+      buildDrawer();
+    };
+    body.appendChild(row);
+
+    if (isOpen) {
+      const sorted = leagues.slice().sort(function (a, b) {
+        return a.name.localeCompare(b.name);
+      });
+      for (const league of sorted) {
+        const child = document.createElement("div");
+        child.className = "leagueChild";
+        child.textContent = league.name;
+        child.onclick = function () {
+          closeDrawer();
+          openLeague(league);
+        };
+        body.appendChild(child);
+      }
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------
+// THE LEAGUE SCREEN
+// Table, fixtures, statistics and teams for one competition.
+// ---------------------------------------------------------------
+let openLeagueInfo = null;
+let leagueTab = "table";
+
+function openLeague(league) {
+  openLeagueInfo = league;
+  leagueTab = "table";
+  screen = "league";
+  document.getElementById("mainHeader").style.display = "none";
+  document.getElementById("matchHead").innerHTML = "";
+  refresh();
+}
+
+function closeLeague() {
+  openLeagueInfo = null;
+  document.getElementById("leagueHead").innerHTML = "";
+  document.getElementById("mainHeader").style.display = "block";
+  goTo("scores");
+}
+
+function drawLeagueHead() {
+  const head = document.getElementById("leagueHead");
+  const league = openLeagueInfo;
+
+  const tabs = [
+    ["table", "Table"],
+    ["fixtures", "Fixtures"],
+    ["stats", "Statistics"],
+    ["teams", "Teams"],
+  ];
+
+  let tabHtml = "";
+  for (const [key, label] of tabs) {
+    tabHtml += '<div class="lTab' + (leagueTab === key ? " on" : "") +
+               '" data-tab="' + key + '">' + label + '</div>';
+  }
+
+  head.innerHTML =
+    '<div class="leagueHead">' +
+      '<div class="leagueHeadTop">' +
+        '<span class="back" id="leagueBack">&#8592;</span>' +
+        (league.logo ? '<img src="' + league.logo + '" alt="">' : '') +
+        '<div class="txt">' +
+          '<div class="ln">' + league.name + '</div>' +
+          '<div class="cn">' + league.country + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="leagueTabs">' + tabHtml + '</div>' +
+    '</div>';
+
+  document.getElementById("leagueBack").onclick = closeLeague;
+
+  for (const tab of head.querySelectorAll(".lTab")) {
+    tab.onclick = function () {
+      leagueTab = this.getAttribute("data-tab");
+      refresh();
+    };
+  }
+}
+
+function drawScorers(scorers) {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (scorers.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No scorer data for this league.<br><br>' +
+      'Often missing early in a season.</div>';
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.className = "drawerHint";
+  head.textContent = "Top scorers";
+  list.appendChild(head);
+
+  for (const scorer of scorers.slice(0, 30)) {
+    const row = document.createElement("div");
+    row.className = "scorerRow";
+    row.innerHTML =
+      '<span class="pl">' + (scorer.place || "-") + '</span>' +
+      '<span class="who">' +
+        '<div class="pn">' + scorer.name + '</div>' +
+        '<div class="tn">' + scorer.team + '</div>' +
+      '</span>' +
+      '<span class="gl">' + scorer.goals + '</span>';
+    list.appendChild(row);
+  }
+}
+
+function drawTeams(teams) {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (teams.length === 0) {
+    list.innerHTML = '<div class="empty">No teams listed for this league.</div>';
+    return;
+  }
+
+  teams.sort(function (a, b) { return a.name.localeCompare(b.name); });
+
+  for (const team of teams) {
+    const row = document.createElement("div");
+    row.className = "teamRowItem";
+    row.innerHTML =
+      '<img src="' + team.logo + '" alt="">' +
+      '<span>' + team.name + '</span>';
+    list.appendChild(row);
+  }
+}
+
+
+// ---------------------------------------------------------------
 // SINGLE MATCH
 // ---------------------------------------------------------------
 let openFixtureId = null;
@@ -998,6 +1429,49 @@ function drawMatch(match) {
 async function refresh() {
   const list = document.getElementById("list");
   const updated = document.getElementById("updated");
+
+  if (screen === "league") {
+    drawLeagueHead();
+    const id = openLeagueInfo.id;
+    updated.textContent = "Loading...";
+
+    try {
+      if (leagueTab === "table") {
+        const rows = await (await fetch("/api/table?league=" + id)).json();
+        drawTable(rows);
+        updated.textContent = rows.length > 0 ? rows.length + " teams" : "";
+
+      } else if (leagueTab === "fixtures") {
+        // Today plus the next fortnight.
+        const from = isoDate(new Date());
+        const later = new Date();
+        later.setDate(later.getDate() + 14);
+        const to = isoDate(later);
+
+        const matches = await (await fetch(
+          "/api/league-fixtures?league=" + id + "&from=" + from + "&to=" + to)).json();
+
+        matches.sort(function (a, b) {
+          return new Date(a.fixture.date) - new Date(b.fixture.date);
+        });
+        drawMatches(matches, true);
+        updated.textContent = matches.length + " games in the next fortnight";
+
+      } else if (leagueTab === "stats") {
+        const scorers = await (await fetch("/api/scorers?league=" + id)).json();
+        drawScorers(scorers);
+        updated.textContent = "";
+
+      } else {
+        const teams = await (await fetch("/api/teams?league=" + id)).json();
+        drawTeams(teams);
+        updated.textContent = teams.length > 0 ? teams.length + " clubs" : "";
+      }
+    } catch (error) {
+      updated.textContent = "Could not reach the server";
+    }
+    return;
+  }
 
   if (screen === "match") {
     updated.textContent = "Loading...";
@@ -1168,6 +1642,50 @@ const server = http.createServer(async function (request, response) {
     const match = await getMatch(fixtureId);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(match));
+    return;
+  }
+
+  if (address.pathname === "/api/league-fixtures") {
+    const leagueId = Number(address.searchParams.get("league"));
+    const from = address.searchParams.get("from");
+    const to = address.searchParams.get("to");
+    const dateOk = /^\d{4}-\d{2}-\d{2}$/;
+
+    if (!leagueId || !dateOk.test(from) || !dateOk.test(to)) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+
+    const matches = await getLeagueFixtures(leagueId, from, to);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (address.pathname === "/api/teams") {
+    const leagueId = Number(address.searchParams.get("league"));
+    if (!leagueId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    const teams = await getTeams(leagueId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(teams));
+    return;
+  }
+
+  if (address.pathname === "/api/scorers") {
+    const leagueId = Number(address.searchParams.get("league"));
+    if (!leagueId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    const scorers = await getTopScorers(leagueId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(scorers));
     return;
   }
 
