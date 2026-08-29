@@ -1046,6 +1046,151 @@ const ALSO_KNOWN_AS = {
 
 let openCountry = null;   // which country is expanded in the drawer
 
+
+// ===============================================================
+// LEAGUE RANKING
+//
+// The API hands over every competition it has, including youth,
+// reserve and amateur ones, in no particular order. These lists
+// decide what is shown and in what order.
+//
+// To change what appears for a country, edit its list below.
+// ===============================================================
+
+// Exact running order for the countries that matter most.
+// Each line is one tier. The words inside are alternative
+// spellings the API might use for that same tier.
+const LEAGUE_ORDER = {
+  "England": [
+    ["premier league"], ["championship"], ["league one"],
+    ["league two"], ["national league"],
+  ],
+  "Germany":     [["bundesliga"], ["2. bundesliga", "2 bundesliga"], ["3. liga", "3 liga"]],
+  "Scotland":    [["premiership"], ["championship"], ["league one"], ["league two"]],
+  "France":      [["ligue 1"], ["ligue 2"], ["national 1", "championnat national"]],
+  "Italy":       [["serie a"], ["serie b"], ["serie c"]],
+  "Spain":       [["la liga", "primera division"], ["segunda division", "la liga 2"], ["primera federacion"]],
+  "Portugal":    [["primeira liga", "liga portugal"], ["liga portugal 2", "segunda liga", "liga 2"]],
+  "Netherlands": [["eredivisie"], ["eerste divisie"]],
+  "USA":         [["mls", "major league soccer"], ["usl championship"], ["usl league one"]],
+};
+
+// Women's leagues. Top two tiers only, shown below the men's.
+const WOMEN_ORDER = {
+  "England":     [["super league"], ["championship"]],
+  "Germany":     [["bundesliga"], ["2. bundesliga", "2 bundesliga"]],
+  "Scotland":    [["premier league"], ["championship"]],
+  "France":      [["division 1", "premiere ligue", "d1"], ["division 2", "d2"]],
+  "Italy":       [["serie a"], ["serie b"]],
+  "Spain":       [["liga f", "primera division"], ["segunda"]],
+  "Portugal":    [["campeonato nacional", "liga bpi"], ["segunda"]],
+  "Netherlands": [["eredivisie"], ["eerste divisie"]],
+  "USA":         [["nwsl", "national women's soccer league"], ["usl super league"]],
+};
+
+// Anything whose name contains one of these is dropped entirely.
+// This is where the amateur and youth competitions go.
+const NOT_WANTED = [
+  "u21", "u-21", "u23", "u-23", "u19", "u-19", "u18", "u-18",
+  "u17", "u-17", "u20", "u-20", "youth", "junior", "juvenil",
+  "reserve", "academy", "amateur", "primavera", "development",
+  "regionalliga", "oberliga", "landesliga", "kreisliga",
+  "bezirksliga", "verbandsliga", "county", "sunday",
+  "veteran", "futsal", "beach", "indoor", "friendly",
+  "trial", "test", "esport", "virtual", "simulated",
+  // Regional splits below the professional pyramid.
+  "national league north", "national league south",
+  "isthmian", "northern premier", "southern league",
+];
+
+const WOMENS_WORDS = [
+  "women", "woman", "feminine", "femenin", "feminin",
+  "frauen", "femminile", "damallsvenskan", "naisten",
+  "kvinner", "kvinnor", "nwsl", "w-league", "(w)",
+];
+
+// Rough tiers for every other country, since we cannot list
+// them all by hand. Earlier groups rank higher.
+const GENERIC_TIERS = [
+  ["premier", "primera", "serie a", "super league", "superliga",
+   "superligaen", "bundesliga", "eredivisie", "ligue 1", "liga 1",
+   "premiership", "first division", "division 1", "allsvenskan",
+   "eliteserien", "ekstraklasa", "primeira", "pro league", "a-league",
+   "veikkausliiga", "liga mx"],
+  ["serie b", "segunda", "2. bundesliga", "ligue 2", "championship",
+   "liga 2", "second division", "division 2", "superettan",
+   "eerste divisie"],
+  ["serie c", "3. liga", "league one", "liga 3", "third division",
+   "division 3"],
+  ["serie d", "league two", "division 4"],
+];
+
+function isWomens(name) {
+  const lower = name.toLowerCase();
+  return WOMENS_WORDS.some(function (word) { return lower.includes(word); });
+}
+
+function isUnwanted(name) {
+  const lower = name.toLowerCase();
+  return NOT_WANTED.some(function (word) { return lower.includes(word); });
+}
+
+// Where a league sits in its country. Lower number means higher up.
+// Returns -1 when it should not be shown at all.
+function rankOf(league) {
+  const name = (league.name || "").toLowerCase();
+  const country = league.country || "";
+
+  if (isUnwanted(name)) return -1;
+
+  const women = isWomens(name);
+  const tiers = women ? WOMEN_ORDER[country] : LEAGUE_ORDER[country];
+
+  if (tiers) {
+    // Check every tier and keep the longest match, so a name like
+    // "2. Bundesliga" is not mistaken for plain "Bundesliga".
+    let best = -1;
+    let bestLength = 0;
+
+    for (let tier = 0; tier < tiers.length; tier++) {
+      for (const word of tiers[tier]) {
+        if (name.includes(word) && word.length > bestLength) {
+          best = tier;
+          bestLength = word.length;
+        }
+      }
+    }
+
+    if (best === -1) return -1;
+    // Women's leagues sort after all the men's ones.
+    return women ? 100 + best : best;
+  }
+
+  // Countries without a hand-written list.
+  for (let tier = 0; tier < GENERIC_TIERS.length; tier++) {
+    if (GENERIC_TIERS[tier].some(function (word) { return name.includes(word); })) {
+      if (women) return tier > 1 ? -1 : 100 + tier;
+      return tier;
+    }
+  }
+
+  return -1;
+}
+
+// Filters and sorts one country's competitions.
+function tidyLeagues(leagues) {
+  return leagues
+    .map(function (league) {
+      return { league: league, rank: rankOf(league) };
+    })
+    .filter(function (entry) { return entry.rank >= 0; })
+    .sort(function (a, b) {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.league.name.localeCompare(b.league.name);
+    })
+    .map(function (entry) { return entry.league; });
+}
+
 function matchesPinned(pinnedName, apiCountry) {
   if (apiCountry === pinnedName) return true;
   const others = ALSO_KNOWN_AS[pinnedName] || [];
@@ -1088,6 +1233,13 @@ function countriesInOrder() {
     const country = league.country || "Other";
     if (!byCountry[country]) byCountry[country] = [];
     byCountry[country].push(league);
+  }
+
+  // Drop the youth and amateur competitions, and put what is left
+  // in order. Countries with nothing worth showing disappear.
+  for (const country of Object.keys(byCountry)) {
+    byCountry[country] = tidyLeagues(byCountry[country]);
+    if (byCountry[country].length === 0) delete byCountry[country];
   }
 
   const names = Object.keys(byCountry);
@@ -1162,10 +1314,8 @@ function buildDrawer() {
     body.appendChild(row);
 
     if (isOpen) {
-      const sorted = leagues.slice().sort(function (a, b) {
-        return a.name.localeCompare(b.name);
-      });
-      for (const league of sorted) {
+      // Already in rank order, so leave it alone.
+      for (const league of leagues) {
         const child = document.createElement("div");
         child.className = "leagueChild";
         child.textContent = league.name;
