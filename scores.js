@@ -242,6 +242,19 @@ async function getLeagueFixtures(leagueId, from, to) {
   return intoCache(name, raw.map(translateMatch));
 }
 
+// Fixtures for one club across a date range.
+async function getTeamFixtures(teamId, from, to) {
+  const name = "tf-" + teamId + "-" + from;
+  const hit = fromCache(name, 900);
+  if (hit) return hit;
+
+  const raw = await askApi("get_events",
+    "&team_id=" + teamId + "&from=" + from + "&to=" + to);
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  return intoCache(name, raw.map(translateMatch));
+}
+
 // Every club in a league.
 async function getTeams(leagueId) {
   const name = "teams-" + leagueId;
@@ -629,11 +642,87 @@ const PAGE = `
 
   .nav {
     position: fixed; bottom: 0; left: 0; right: 0;
-    display: flex; background: #fff; border-top: 1px solid #E8E8E4; padding: 8px 0;
+    display: flex; align-items: flex-end;
+    background: #fff; border-top: 1px solid #E8E8E4;
+    padding: 8px 0 10px; z-index: 30;
   }
-  .navItem { flex: 1; text-align: center; font-size: 11px; color: #999; cursor: pointer; }
+  .navItem {
+    flex: 1; text-align: center; font-size: 10px;
+    color: #999; cursor: pointer; user-select: none;
+  }
   .navItem.on { color: #185FA5; }
-  .navIcon { font-size: 18px; display: block; margin-bottom: 2px; }
+  .navIcon { font-size: 18px; display: block; margin-bottom: 3px; }
+
+  /* The home button sits raised in the middle. */
+  .navHome {
+    flex: 1; text-align: center; cursor: pointer;
+    user-select: none; position: relative;
+  }
+  .navHomeBall {
+    width: 54px; height: 54px; border-radius: 50%;
+    background: #185FA5; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; margin: -26px auto 2px;
+    border: 4px solid #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+  }
+  .navHome.on .navHomeBall { background: #EF9F27; }
+  .navHomeLabel { font-size: 10px; color: #999; }
+  .navHome.on .navHomeLabel { color: #185FA5; }
+
+  /* Two-column home screen */
+  .homeCols { display: flex; gap: 1px; background: #E8E8E4; }
+  .homeCol { flex: 1; min-width: 0; background: #F4F4F2; }
+  .colHead {
+    padding: 9px 12px; background: #185FA5; color: #fff;
+    font-size: 12px; font-weight: 600; text-align: center;
+  }
+  .miniMatch {
+    background: #fff; padding: 10px 12px;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .miniWhen { font-size: 11px; color: #777; margin-bottom: 6px; }
+  .miniTeam {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 13px; margin-bottom: 4px;
+  }
+  .miniTeam:last-child { margin-bottom: 0; }
+  .miniTeam img { width: 16px; height: 16px; object-fit: contain; flex-shrink: 0; }
+  .miniTeam span {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .colEmpty { padding: 24px 12px; text-align: center; font-size: 12px; color: #888; }
+
+  /* Favourites drill-down */
+  .crumbs {
+    display: flex; align-items: center; gap: 6px;
+    padding: 10px 16px; background: #E8E8E4;
+    font-size: 12px; color: #555;
+  }
+  .crumb { cursor: pointer; color: #185FA5; }
+  .pickRow {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4; cursor: pointer;
+  }
+  .pickRow img { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; }
+  .pickRow .pname { flex: 1; font-size: 14px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pickRow .chev { font-size: 12px; color: #bbb; }
+
+  /* Filter strip on the fixtures screen */
+  .filterBar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 16px; background: #E8E8E4;
+    font-size: 13px;
+  }
+  .filterBtn {
+    background: #185FA5; color: #fff; border: none;
+    padding: 6px 12px; border-radius: 14px;
+    font-size: 12px; cursor: pointer;
+  }
+  .filterNote { flex: 1; color: #555; font-size: 12px; }
+  .filterClear { color: #B33; font-size: 12px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -683,11 +772,14 @@ const PAGE = `
 <div id="list"></div>
 
 <div class="nav">
-  <div class="navItem on" id="navScores"><span class="navIcon">&#9917;</span>Scores</div>
+  <div class="navItem" id="navFavourites"><span class="navIcon">&#9733;</span>Favourites</div>
   <div class="navItem" id="navFixtures"><span class="navIcon">&#128197;</span>Fixtures</div>
-  <div class="navItem" id="navLeagues"><span class="navIcon">&#127942;</span>Leagues</div>
-  <div class="navItem" id="navTables"><span class="navIcon">&#9776;</span>Tables</div>
-  <div class="navItem" id="navTeams"><span class="navIcon">&#9733;</span>Teams</div>
+  <div class="navHome on" id="navHome">
+    <div class="navHomeBall">&#9917;</div>
+    <div class="navHomeLabel">Home</div>
+  </div>
+  <div class="navItem" id="navXp"><span class="navIcon">&#9889;</span>XP League</div>
+  <div class="navItem" id="navChallenges"><span class="navIcon">&#127919;</span>Challenges</div>
 </div>
 
 <script>
@@ -766,7 +858,7 @@ function toggleAlert(fixtureId, element) {
 // ---------------------------------------------------------------
 // WHICH SCREEN
 // ---------------------------------------------------------------
-let screen = "scores";
+let screen = "home";
 
 function isoDate(date) {
   const year = date.getFullYear();
@@ -785,30 +877,36 @@ function goTo(name) {
   document.getElementById("matchHead").innerHTML = "";
   document.getElementById("mainHeader").style.display = "block";
 
-  const items = ["Scores", "Fixtures", "Leagues", "Tables", "Teams"];
-  const keys = ["scores", "fixtures", "leagues", "tables", "teams"];
-  for (let i = 0; i < items.length; i++) {
-    document.getElementById("nav" + items[i]).classList.toggle("on", name === keys[i]);
+  const buttons = {
+    favourites: "navFavourites",
+    fixtures: "navFixtures",
+    home: "navHome",
+    xp: "navXp",
+    challenges: "navChallenges",
+  };
+
+  for (const key of Object.keys(buttons)) {
+    document.getElementById(buttons[key]).classList.toggle("on", name === key);
   }
 
   document.getElementById("dates").style.display = name === "fixtures" ? "flex" : "none";
-  document.getElementById("pickerBox").style.display = name === "tables" ? "block" : "none";
-  document.getElementById("searchArea").style.display = name === "leagues" ? "block" : "none";
+  document.getElementById("pickerBox").style.display = "none";
+  document.getElementById("searchArea").style.display = "none";
 
   const titles = {
-    scores: "Live scores", fixtures: "Fixtures",
-    leagues: "Leagues", tables: "Tables", teams: "My teams"
+    favourites: "Favourites", fixtures: "Fixtures", home: "Home",
+    xp: "XP League", challenges: "Challenges",
   };
-  document.getElementById("screenTitle").textContent = titles[name];
+  document.getElementById("screenTitle").textContent = titles[name] || "Live scores";
 
   refresh();
 }
 
-document.getElementById("navScores").onclick = function () { goTo("scores"); };
+document.getElementById("navFavourites").onclick = function () { favView = "countries"; goTo("favourites"); };
 document.getElementById("navFixtures").onclick = function () { goTo("fixtures"); };
-document.getElementById("navLeagues").onclick = function () { goTo("leagues"); };
-document.getElementById("navTables").onclick = function () { goTo("tables"); };
-document.getElementById("navTeams").onclick = function () { goTo("teams"); };
+document.getElementById("navHome").onclick = function () { goTo("home"); };
+document.getElementById("navXp").onclick = function () { goTo("xp"); };
+document.getElementById("navChallenges").onclick = function () { goTo("challenges"); };
 
 
 // ---------------------------------------------------------------
@@ -819,7 +917,7 @@ function drawDates() {
   strip.innerHTML = "";
   const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-  for (let offset = -1; offset <= 3; offset++) {
+  for (let offset = 0; offset <= 6; offset++) {
     const date = new Date();
     date.setDate(date.getDate() + offset);
     const iso = isoDate(date);
@@ -1068,6 +1166,53 @@ function drawLeagues() {
     row.onclick = function () { toggleFollow(league); };
     list.appendChild(row);
   }
+}
+
+
+// ---------------------------------------------------------------
+// FAVOURITES
+//
+// Two lists: leagues the person follows, and clubs they follow.
+// Both are saved on the device and feed the Home screen.
+// ---------------------------------------------------------------
+let favLeagues = JSON.parse(localStorage.getItem("favLeagues") || "[]");
+let favTeams = JSON.parse(localStorage.getItem("favTeams") || "[]");
+
+function saveFavourites() {
+  localStorage.setItem("favLeagues", JSON.stringify(favLeagues));
+  localStorage.setItem("favTeams", JSON.stringify(favTeams));
+}
+
+function isFavLeague(id) {
+  return favLeagues.some(function (l) { return l.id === id; });
+}
+
+function isFavTeam(id) {
+  return favTeams.some(function (t) { return t.id === id; });
+}
+
+function toggleFavLeague(league) {
+  if (isFavLeague(league.id)) {
+    favLeagues = favLeagues.filter(function (l) { return l.id !== league.id; });
+  } else {
+    favLeagues.push({
+      id: league.id, name: league.name,
+      country: league.country, logo: league.logo,
+    });
+  }
+  saveFavourites();
+}
+
+function toggleFavTeam(team, league) {
+  if (isFavTeam(team.id)) {
+    favTeams = favTeams.filter(function (t) { return t.id !== team.id; });
+  } else {
+    favTeams.push({
+      id: team.id, name: team.name, logo: team.logo,
+      leagueName: league ? league.name : "",
+    });
+  }
+  saveFavourites();
 }
 
 
@@ -1566,6 +1711,297 @@ function drawTeams(teams) {
 
 
 // ---------------------------------------------------------------
+// THE FAVOURITES SCREEN
+//
+// Drills down: countries, then that country's leagues, then that
+// league's clubs. Stars on the leagues and the clubs.
+// ---------------------------------------------------------------
+let favView = "countries";     // countries | leagues | teams
+let favCountry = null;
+let favLeagueChosen = null;
+let favTeamList = [];
+
+function drawCrumbs() {
+  const bits = ['<span class="crumb" data-go="countries">Countries</span>'];
+  if (favCountry) {
+    bits.push("&rsaquo;");
+    bits.push('<span class="crumb" data-go="leagues">' + favCountry + '</span>');
+  }
+  if (favLeagueChosen) {
+    bits.push("&rsaquo;");
+    bits.push('<span>' + favLeagueChosen.name + '</span>');
+  }
+
+  const bar = document.createElement("div");
+  bar.className = "crumbs";
+  bar.innerHTML = bits.join(" ");
+
+  for (const crumb of bar.querySelectorAll(".crumb")) {
+    crumb.onclick = function () {
+      const target = this.getAttribute("data-go");
+      if (target === "countries") {
+        favView = "countries";
+        favCountry = null;
+        favLeagueChosen = null;
+      } else {
+        favView = "leagues";
+        favLeagueChosen = null;
+      }
+      refresh();
+    };
+  }
+  return bar;
+}
+
+function drawFavCountries() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  list.appendChild(drawCrumbs());
+
+  if (allLeagues === null || allLeagues.length === 0) {
+    list.innerHTML += '<div class="empty">Loading countries...</div>';
+    return;
+  }
+
+  const grouped = countriesInOrder();
+
+  for (const country of grouped.order) {
+    const leagues = grouped.byCountry[country];
+    const row = document.createElement("div");
+    row.className = "pickRow";
+    row.innerHTML =
+      (leagues[0].logo ? '<img src="' + leagues[0].logo + '" alt="">' : '<img alt="">') +
+      '<span class="pname">' + country + '</span>' +
+      '<span class="chev">&#9654;</span>';
+    row.onclick = function () {
+      favCountry = country;
+      favView = "leagues";
+      refresh();
+    };
+    list.appendChild(row);
+  }
+}
+
+function drawFavLeagues() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  list.appendChild(drawCrumbs());
+
+  const grouped = countriesInOrder();
+  const leagues = grouped.byCountry[favCountry] || [];
+
+  for (const league of leagues) {
+    const starred = isFavLeague(league.id);
+
+    const row = document.createElement("div");
+    row.className = "pickRow";
+    row.innerHTML =
+      (league.logo ? '<img src="' + league.logo + '" alt="">' : '<img alt="">') +
+      '<span class="pname">' + league.name + '</span>' +
+      '<span class="star' + (starred ? " on" : "") + '">&#9733;</span>' +
+      '<span class="chev">&#9654;</span>';
+
+    // The star saves the league. Tapping anywhere else opens its clubs.
+    row.querySelector(".star").onclick = function (event) {
+      event.stopPropagation();
+      toggleFavLeague(league);
+      refresh();
+    };
+    row.onclick = function () {
+      favLeagueChosen = league;
+      favView = "teams";
+      refresh();
+    };
+    list.appendChild(row);
+  }
+
+  if (leagues.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No leagues here.";
+    list.appendChild(empty);
+  }
+}
+
+function drawFavTeams() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  list.appendChild(drawCrumbs());
+
+  if (favTeamList.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.innerHTML = "No clubs listed for this league.";
+    list.appendChild(empty);
+    return;
+  }
+
+  const sorted = favTeamList.slice().sort(function (a, b) {
+    return a.name.localeCompare(b.name);
+  });
+
+  for (const team of sorted) {
+    const starred = isFavTeam(team.id);
+
+    const row = document.createElement("div");
+    row.className = "pickRow";
+    row.innerHTML =
+      '<img src="' + team.logo + '" alt="">' +
+      '<span class="pname">' + team.name + '</span>' +
+      '<span class="star' + (starred ? " on" : "") + '">&#9733;</span>';
+
+    row.onclick = function () {
+      toggleFavTeam(team, favLeagueChosen);
+      refresh();
+    };
+    list.appendChild(row);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// THE HOME SCREEN
+//
+// Clubs down the left, leagues down the right. Tables underneath.
+// With nothing followed, it fills up with games from the big
+// countries instead of sitting empty.
+// ---------------------------------------------------------------
+function miniMatchHtml(match) {
+  const kickoff = new Date(match.fixture.date);
+  const when = isNaN(kickoff) ? "" :
+    kickoff.toLocaleDateString([], { weekday: "short", day: "numeric" }) + " " +
+    kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  return '<div class="miniMatch">' +
+    '<div class="miniWhen">' + when + '</div>' +
+    '<div class="miniTeam"><img src="' + match.teams.home.logo + '" alt="">' +
+      '<span>' + match.teams.home.name + '</span></div>' +
+    '<div class="miniTeam"><img src="' + match.teams.away.logo + '" alt="">' +
+      '<span>' + match.teams.away.name + '</span></div>' +
+  '</div>';
+}
+
+async function drawHome() {
+  const list = document.getElementById("list");
+  const updated = document.getElementById("updated");
+  list.innerHTML = "";
+  updated.textContent = "Loading...";
+
+  const from = isoDate(new Date());
+  const later = new Date();
+  later.setDate(later.getDate() + 7);
+  const to = isoDate(later);
+
+  const hasFavourites = favTeams.length > 0 || favLeagues.length > 0;
+
+  // Left column: clubs. Right column: leagues.
+  let teamMatches = [];
+  let leagueMatches = [];
+
+  try {
+    if (hasFavourites) {
+      // Only the first few, to stay inside the hourly limit.
+      for (const team of favTeams.slice(0, 5)) {
+        const got = await (await fetch(
+          "/api/team-fixtures?team=" + team.id + "&from=" + from + "&to=" + to)).json();
+        teamMatches = teamMatches.concat(got);
+      }
+      for (const league of favLeagues.slice(0, 5)) {
+        const got = await (await fetch(
+          "/api/league-fixtures?league=" + league.id + "&from=" + from + "&to=" + to)).json();
+        leagueMatches = leagueMatches.concat(got);
+      }
+    } else {
+      // Nothing followed yet, so show the big leagues instead.
+      const grouped = countriesInOrder();
+      const picks = [];
+      for (const country of grouped.order.slice(0, grouped.pinnedCount)) {
+        const top = grouped.byCountry[country][0];
+        if (top) picks.push(top);
+      }
+      for (const league of picks.slice(0, 4)) {
+        const got = await (await fetch(
+          "/api/league-fixtures?league=" + league.id + "&from=" + from + "&to=" + to)).json();
+        leagueMatches = leagueMatches.concat(got);
+      }
+    }
+  } catch (error) {
+    updated.textContent = "Could not reach the server";
+    return;
+  }
+
+  function byKickoff(a, b) {
+    return new Date(a.fixture.date) - new Date(b.fixture.date);
+  }
+  teamMatches.sort(byKickoff);
+  leagueMatches.sort(byKickoff);
+
+  // Drop any game already showing in the clubs column.
+  const seen = {};
+  for (const m of teamMatches) seen[m.fixture.id] = true;
+  leagueMatches = leagueMatches.filter(function (m) { return !seen[m.fixture.id]; });
+
+  const leftTitle = hasFavourites ? "Your teams" : "Coming up";
+  const rightTitle = hasFavourites ? "Your leagues" : "Top leagues";
+
+  const cols = document.createElement("div");
+  cols.className = "homeCols";
+  cols.innerHTML =
+    '<div class="homeCol">' +
+      '<div class="colHead">' + leftTitle + '</div>' +
+      (teamMatches.length === 0
+        ? '<div class="colEmpty">' +
+            (hasFavourites ? "No games in the next week."
+                           : "Star some clubs in Favourites.") + '</div>'
+        : teamMatches.slice(0, 20).map(miniMatchHtml).join("")) +
+    '</div>' +
+    '<div class="homeCol">' +
+      '<div class="colHead">' + rightTitle + '</div>' +
+      (leagueMatches.length === 0
+        ? '<div class="colEmpty">No games in the next week.</div>'
+        : leagueMatches.slice(0, 20).map(miniMatchHtml).join("")) +
+    '</div>';
+  list.appendChild(cols);
+
+  updated.textContent = (teamMatches.length + leagueMatches.length) + " games in the next 7 days";
+
+  // Then the tables for followed leagues, underneath.
+  for (const league of favLeagues.slice(0, 3)) {
+    const heading = document.createElement("div");
+    heading.className = "colHead";
+    heading.textContent = league.name + " table";
+    list.appendChild(heading);
+
+    try {
+      const rows = await (await fetch("/api/table?league=" + league.id)).json();
+      const box = document.createElement("div");
+      list.appendChild(box);
+
+      if (rows.length === 0) {
+        box.className = "colEmpty";
+        box.textContent = "No table available.";
+      } else {
+        for (const entry of rows) {
+          const row = document.createElement("div");
+          row.className = "tableRow";
+          row.innerHTML =
+            '<span class="colPos">' + entry.rank + '</span>' +
+            '<span class="colTeam"><img src="' + entry.team.logo + '" alt="">' +
+              '<span>' + entry.team.name + '</span></span>' +
+            '<span class="colNum">' + entry.all.played + '</span>' +
+            '<span class="colNum">' + (entry.goalsDiff > 0 ? "+" : "") + entry.goalsDiff + '</span>' +
+            '<span class="colPts">' + entry.points + '</span>';
+          box.appendChild(row);
+        }
+      }
+    } catch (error) {
+      // Skip this table rather than breaking the whole screen.
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------
 // SINGLE MATCH
 // ---------------------------------------------------------------
 let openFixtureId = null;
@@ -1696,9 +2132,115 @@ function drawMatch(match) {
 // ---------------------------------------------------------------
 // LOADING
 // ---------------------------------------------------------------
+// ---------------------------------------------------------------
+// THE FIXTURES SCREEN FILTER
+// ---------------------------------------------------------------
+let fixtureFilter = null;   // { country, league } or null
+let filterStage = "off";    // off | country | league
+
+function drawFilterBar() {
+  const bar = document.createElement("div");
+  bar.className = "filterBar";
+
+  if (fixtureFilter) {
+    bar.innerHTML =
+      '<span class="filterNote">' + fixtureFilter.country +
+      ' &rsaquo; ' + fixtureFilter.league.name + '</span>' +
+      '<span class="filterClear" id="clearFilter">Clear</span>';
+  } else {
+    bar.innerHTML =
+      '<button class="filterBtn" id="openFilter">Filter by league</button>' +
+      '<span class="filterNote">Showing everywhere</span>';
+  }
+  return bar;
+}
+
+function wireFilterBar() {
+  const open = document.getElementById("openFilter");
+  if (open) {
+    open.onclick = function () {
+      filterStage = "country";
+      refresh();
+    };
+  }
+  const clear = document.getElementById("clearFilter");
+  if (clear) {
+    clear.onclick = function () {
+      fixtureFilter = null;
+      filterStage = "off";
+      refresh();
+    };
+  }
+}
+
+// The two picking steps reuse the same row style as Favourites.
+function drawFilterPicker() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  const grouped = countriesInOrder();
+
+  const back = document.createElement("div");
+  back.className = "crumbs";
+  back.innerHTML = '<span class="crumb">&#8592; Back to fixtures</span>';
+  back.querySelector(".crumb").onclick = function () {
+    filterStage = "off";
+    refresh();
+  };
+  list.appendChild(back);
+
+  if (filterStage === "country") {
+    for (const country of grouped.order) {
+      const leagues = grouped.byCountry[country];
+      const row = document.createElement("div");
+      row.className = "pickRow";
+      row.innerHTML =
+        (leagues[0].logo ? '<img src="' + leagues[0].logo + '" alt="">' : '<img alt="">') +
+        '<span class="pname">' + country + '</span>' +
+        '<span class="chev">&#9654;</span>';
+      row.onclick = function () {
+        fixtureFilter = { country: country, league: null };
+        filterStage = "league";
+        refresh();
+      };
+      list.appendChild(row);
+    }
+    return;
+  }
+
+  const leagues = grouped.byCountry[fixtureFilter.country] || [];
+  for (const league of leagues) {
+    const row = document.createElement("div");
+    row.className = "pickRow";
+    row.innerHTML =
+      (league.logo ? '<img src="' + league.logo + '" alt="">' : '<img alt="">') +
+      '<span class="pname">' + league.name + '</span>';
+    row.onclick = function () {
+      fixtureFilter.league = league;
+      filterStage = "off";
+      refresh();
+    };
+    list.appendChild(row);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// LOADING WHATEVER THE CURRENT SCREEN NEEDS
+// ---------------------------------------------------------------
 async function refresh() {
   const list = document.getElementById("list");
   const updated = document.getElementById("updated");
+
+  // Most screens need the league list, so fetch it once up front.
+  if (allLeagues === null &&
+      ["favourites", "home", "fixtures"].includes(screen)) {
+    try {
+      allLeagues = await (await fetch("/api/leagues")).json();
+    } catch (error) {
+      allLeagues = [];
+    }
+  }
 
   if (screen === "league") {
     drawLeagueHead();
@@ -1712,15 +2254,11 @@ async function refresh() {
         updated.textContent = rows.length > 0 ? rows.length + " teams" : "";
 
       } else if (leagueTab === "fixtures") {
-        // Today plus the next fortnight.
         const from = isoDate(new Date());
         const later = new Date();
         later.setDate(later.getDate() + 14);
-        const to = isoDate(later);
-
         const matches = await (await fetch(
-          "/api/league-fixtures?league=" + id + "&from=" + from + "&to=" + to)).json();
-
+          "/api/league-fixtures?league=" + id + "&from=" + from + "&to=" + isoDate(later))).json();
         matches.sort(function (a, b) {
           return new Date(a.fixture.date) - new Date(b.fixture.date);
         });
@@ -1747,8 +2285,7 @@ async function refresh() {
     updated.textContent = "Loading...";
     let match = null;
     try {
-      const response = await fetch("/api/match?id=" + openFixtureId);
-      match = await response.json();
+      match = await (await fetch("/api/match?id=" + openFixtureId)).json();
     } catch (error) {
       updated.textContent = "Could not reach the server";
       return;
@@ -1763,98 +2300,114 @@ async function refresh() {
     return;
   }
 
-  if (screen === "leagues") {
-    updated.textContent = "";
-    if (allLeagues === null) {
-      list.innerHTML = '<div class="empty">Loading leagues...</div>';
-      try {
-        const response = await fetch("/api/leagues");
-        allLeagues = await response.json();
-      } catch (error) {
-        list.innerHTML = '<div class="empty">Could not load the league list.</div>';
-        return;
-      }
+  if (screen === "favourites") {
+    updated.textContent =
+      favTeams.length + " clubs, " + favLeagues.length + " leagues followed";
+
+    if (favView === "countries") { drawFavCountries(); return; }
+    if (favView === "leagues") { drawFavLeagues(); return; }
+
+    // Teams need fetching for the chosen league.
+    list.innerHTML = "";
+    list.appendChild(drawCrumbs());
+    const loading = document.createElement("div");
+    loading.className = "empty";
+    loading.textContent = "Loading clubs...";
+    list.appendChild(loading);
+
+    try {
+      favTeamList = await (await fetch("/api/teams?league=" + favLeagueChosen.id)).json();
+    } catch (error) {
+      favTeamList = [];
     }
-    drawLeagues();
+    drawFavTeams();
     return;
   }
 
-  if (screen === "teams") {
+  if (screen === "home") {
+    await drawHome();
+    return;
+  }
+
+  if (screen === "xp") {
     updated.textContent = "";
-    list.innerHTML = '<div class="empty">Not built yet.<br>Coming next.</div>';
+    list.innerHTML =
+      '<div class="empty">XP League<br><br>Coming soon.</div>';
+    return;
+  }
+
+  if (screen === "challenges") {
+    updated.textContent = "";
+    list.innerHTML =
+      '<div class="empty">Challenges<br><br>' +
+      'Daily, weekly and season goals.<br>Coming soon.</div>';
+    return;
+  }
+
+  // Fixtures screen.
+  if (filterStage !== "off") {
+    updated.textContent = "";
+    drawFilterPicker();
     return;
   }
 
   updated.textContent = "Loading...";
 
-  if (screen === "tables") {
-    let rows = [];
-    try {
-      const response = await fetch("/api/table?league=" + chosenLeague);
-      rows = await response.json();
-    } catch (error) {
-      updated.textContent = "Could not reach the server";
-      return;
-    }
-    drawTable(rows);
-    updated.textContent = rows.length > 0 ? rows.length + " teams" : "";
-    drawProgress();
-    return;
-  }
-
   let matches = [];
   try {
-    const address = screen === "scores"
-      ? "/api/scores?" + leagueParam()
-      : "/api/fixtures?date=" + chosenDate + "&" + leagueParam();
-    const response = await fetch(address);
-    matches = await response.json();
+    if (fixtureFilter && fixtureFilter.league) {
+      // One league, the whole week.
+      const later = new Date(chosenDate);
+      later.setDate(later.getDate() + 7);
+      matches = await (await fetch(
+        "/api/league-fixtures?league=" + fixtureFilter.league.id +
+        "&from=" + chosenDate + "&to=" + isoDate(later))).json();
+    } else {
+      // Everywhere, just the chosen day.
+      matches = await (await fetch(
+        "/api/fixtures?date=" + chosenDate + "&all=1")).json();
+    }
   } catch (error) {
     updated.textContent = "Could not reach the server";
     return;
   }
 
-  if (screen === "scores") {
-    liveCounts = {};
-    for (const match of matches) {
-      liveCounts[match.league.id] = (liveCounts[match.league.id] || 0) + 1;
-    }
+  list.innerHTML = "";
+  const bar = drawFilterBar();
+  list.appendChild(bar);
+  wireFilterBar();
 
-    if (matches.length === 0) {
-      list.innerHTML =
-        '<div class="empty">No matches in your leagues right now.<br><br>' +
-        'European games are usually on in your evening.</div>';
-      updated.textContent = "0 live - updated " + new Date().toLocaleTimeString();
-      drawProgress();
-      return;
-    }
-    xp = xp + 1;
-    saveProgress();
-    drawMatches(matches, false);
-    updated.textContent = matches.length + " live - updated " + new Date().toLocaleTimeString();
-  } else {
-    if (matches.length === 0) {
-      list.innerHTML = '<div class="empty">No games in your leagues that day.</div>';
-    } else {
-      matches.sort(function (a, b) {
-        return new Date(a.fixture.date) - new Date(b.fixture.date);
-      });
-      drawMatches(matches, true);
-    }
-    updated.textContent = matches.length + " games";
+  if (matches.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No games found.";
+    list.appendChild(empty);
+    updated.textContent = "";
+    return;
   }
 
+  matches.sort(function (a, b) {
+    return new Date(a.fixture.date) - new Date(b.fixture.date);
+  });
+
+  // drawMatches wipes the list, so draw first then put the bar back on top.
+  drawMatches(matches, true);
+  list.insertBefore(bar, list.firstChild);
+  wireFilterBar();
+
+  updated.textContent = matches.length + " games";
   drawProgress();
 }
 
 drawDates();
-drawPicker();
 drawProgress();
 refresh();
 
+// The ticker keeps live scores moving on its own, so only the
+// home screen needs periodic refreshing.
 setInterval(function () {
-  if (screen === "scores") refresh();
-}, 30000);
+  if (screen === "home") refresh();
+}, 120000);
 </script>
 </body>
 </html>
@@ -1883,7 +2436,10 @@ const server = http.createServer(async function (request, response) {
       return;
     }
     const all = await getFixturesFor(date);
-    const matches = onlyTheirLeagues(all, leagueIdsFrom(address));
+    // all=1 means every country, used by the Fixtures screen.
+    const matches = address.searchParams.get("all") === "1"
+      ? all
+      : onlyTheirLeagues(all, leagueIdsFrom(address));
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(matches));
     return;
@@ -1928,6 +2484,23 @@ const server = http.createServer(async function (request, response) {
     }
 
     const matches = await getLeagueFixtures(leagueId, from, to);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (address.pathname === "/api/team-fixtures") {
+    const teamId = Number(address.searchParams.get("team"));
+    const from = address.searchParams.get("from");
+    const to = address.searchParams.get("to");
+    const dateOk = /^\d{4}-\d{2}-\d{2}$/;
+
+    if (!teamId || !dateOk.test(from) || !dateOk.test(to)) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    const matches = await getTeamFixtures(teamId, from, to);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(matches));
     return;
