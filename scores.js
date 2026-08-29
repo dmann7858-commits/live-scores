@@ -360,10 +360,41 @@ const PAGE = `
     display: flex; align-items: center; justify-content: center;
     font-size: 14px; font-weight: 600;
   }
-  .xpRow { display: flex; align-items: center; gap: 8px; padding-bottom: 12px; }
-  .xpTrack { flex: 1; height: 5px; background: #042C53; border-radius: 3px; overflow: hidden; }
+  /* XP now sits small, on the right */
+  .xpRow {
+    display: flex; align-items: center; justify-content: flex-end;
+    gap: 6px; padding-bottom: 10px;
+  }
+  .xpTrack {
+    width: 90px; height: 4px; background: #042C53;
+    border-radius: 2px; overflow: hidden; flex-shrink: 0;
+  }
   .xpFill { height: 100%; background: #EF9F27; width: 0%; }
-  .xpText { font-size: 11px; color: #B5D4F4; }
+  .xpText { font-size: 10px; color: #B5D4F4; }
+
+  /* Rolling live scores across the header */
+  .ticker {
+    flex: 1; min-width: 0; overflow: hidden;
+    margin: 0 10px; height: 34px;
+    display: flex; align-items: center;
+  }
+  .tickerInner {
+    width: 100%; opacity: 1;
+    transition: opacity 0.35s;
+  }
+  .tickerInner.fade { opacity: 0; }
+  .tickerLine {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 13px; color: #fff; white-space: nowrap;
+  }
+  .tickerLine img { width: 16px; height: 16px; object-fit: contain; flex-shrink: 0; }
+  .tickerLine .nm {
+    overflow: hidden; text-overflow: ellipsis;
+    max-width: 90px;
+  }
+  .tickerLine .sc { font-weight: 600; }
+  .tickerLine .mn { color: #EF9F27; font-size: 11px; margin-left: 2px; }
+  .tickerQuiet { font-size: 12px; color: #85B7EB; }
 
   .dates { display: flex; }
   .dateBtn {
@@ -610,9 +641,14 @@ const PAGE = `
 
 <div class="header" id="mainHeader">
   <div class="headerTop">
-    <div style="display:flex; align-items:center; min-width:0">
+    <div style="display:flex; align-items:center; min-width:0; flex-shrink:0">
       <span class="burger" id="burger">&#9776;</span>
       <div class="title" id="screenTitle">Live scores</div>
+    </div>
+    <div class="ticker" id="ticker">
+      <div class="tickerInner" id="tickerInner">
+        <span class="tickerQuiet">&nbsp;</span>
+      </div>
     </div>
     <div class="badges">
       <div class="coins">&#9679; <span id="coins">0</span></div>
@@ -1025,6 +1061,82 @@ function drawLeagues() {
     list.appendChild(row);
   }
 }
+
+
+// ---------------------------------------------------------------
+// THE LIVE TICKER
+//
+// Cycles through every match being played in the world, one at a
+// time, across the top of the screen. Uses the same cached data
+// the scores list uses, so it costs no extra requests.
+// ---------------------------------------------------------------
+let tickerMatches = [];
+let tickerAt = 0;
+
+function drawTickerLine() {
+  const inner = document.getElementById("tickerInner");
+
+  if (tickerMatches.length === 0) {
+    inner.innerHTML = '<span class="tickerQuiet">No matches being played</span>';
+    return;
+  }
+
+  // Wrap around to the start when we reach the end.
+  if (tickerAt >= tickerMatches.length) tickerAt = 0;
+  const match = tickerMatches[tickerAt];
+
+  const clock = match.minute !== null ? match.minute + "'" : match.short;
+  const hg = match.hg === null ? "-" : match.hg;
+  const ag = match.ag === null ? "-" : match.ag;
+
+  inner.innerHTML =
+    '<div class="tickerLine">' +
+      (match.homeLogo ? '<img src="' + match.homeLogo + '" alt="">' : '') +
+      '<span class="nm">' + match.home + '</span>' +
+      '<span class="sc">' + hg + '-' + ag + '</span>' +
+      '<span class="nm">' + match.away + '</span>' +
+      (match.awayLogo ? '<img src="' + match.awayLogo + '" alt="">' : '') +
+      '<span class="mn">' + clock + '</span>' +
+    '</div>';
+}
+
+// Fade out, swap the match, fade back in.
+function advanceTicker() {
+  if (tickerMatches.length < 2) return;
+
+  const inner = document.getElementById("tickerInner");
+  inner.classList.add("fade");
+
+  setTimeout(function () {
+    tickerAt = tickerAt + 1;
+    drawTickerLine();
+    inner.classList.remove("fade");
+  }, 350);
+}
+
+async function loadTicker() {
+  try {
+    const response = await fetch("/api/ticker");
+    const fresh = await response.json();
+
+    // Keep our place in the list if the same games are still on.
+    const wasShowing = tickerMatches[tickerAt] ? tickerMatches[tickerAt].id : null;
+    tickerMatches = fresh;
+
+    if (wasShowing !== null) {
+      const stillThere = fresh.findIndex(function (m) { return m.id === wasShowing; });
+      tickerAt = stillThere === -1 ? 0 : stillThere;
+    }
+  } catch (error) {
+    // Leave whatever was there rather than blanking it.
+    return;
+  }
+  drawTickerLine();
+}
+
+loadTicker();
+setInterval(advanceTicker, 4000);   // next match every four seconds
+setInterval(loadTicker, 60000);     // refresh the list every minute
 
 
 // ---------------------------------------------------------------
@@ -1836,6 +1948,29 @@ const server = http.createServer(async function (request, response) {
     const scorers = await getTopScorers(leagueId);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(scorers));
+    return;
+  }
+
+  // Every live match in the world, not filtered by followed
+  // leagues. Shares the same cache, so it costs nothing extra.
+  if (address.pathname === "/api/ticker") {
+    const all = await getLiveScores();
+    const small = all.map(function (m) {
+      return {
+        id: m.fixture.id,
+        home: m.teams.home.name,
+        away: m.teams.away.name,
+        homeLogo: m.teams.home.logo,
+        awayLogo: m.teams.away.logo,
+        hg: m.goals.home,
+        ag: m.goals.away,
+        minute: m.fixture.status.elapsed,
+        short: m.fixture.status.short,
+        league: m.league.name,
+      };
+    });
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(small));
     return;
   }
 
