@@ -120,13 +120,28 @@ async function getLiveComments(matchId) {
 
   console.log("   " + comments.length + " live comments");
 
+  const homeName = String(entry && entry.match_hometeam_name || "").toLowerCase();
+  const awayName = String(entry && entry.match_awayteam_name || "").toLowerCase();
+
+  const sideOf = function (text) {
+    const lower = text.toLowerCase();
+    if (homeName && lower.startsWith(homeName)) return "home";
+    if (awayName && lower.startsWith(awayName)) return "away";
+    if (homeName && lower.includes(homeName)) return "home";
+    if (awayName && lower.includes(awayName)) return "away";
+    return null;
+  };
+
   const feed = comments.map(function (comment) {
     // Times arrive as "44:58", so take the minutes off the front.
-    const minute = parseInt(String(comment.time || "").split(":")[0], 10);
+    const clock = String(comment.time || "");
+    const minute = parseInt(clock.split(":")[0], 10);
     return {
       minute: Number.isNaN(minute) ? 0 : minute,
+      clock: clock,
       kind: kindOfComment(comment.text || ""),
       text: String(comment.text || "").trim(),
+      side: sideOf(String(comment.text || "")),
       live: true,
     };
   }).filter(function (moment) { return moment.text !== ""; });
@@ -138,18 +153,24 @@ async function getLiveComments(matchId) {
 // so it can get the right icon and colour.
 function kindOfComment(text) {
   const lower = text.toLowerCase();
+
+  // Order matters. "dangerous attack" must be caught before
+  // "attack", and "goal kick" must not be read as a goal.
   if (lower.includes("goal") && !lower.includes("goal kick")) return "goal";
+  if (lower.includes("red card")) return "red";
+  if (lower.includes("yellow")) return "yellow";
+  if (lower.includes("penalty")) return "penalty";
+  if (lower.includes("substitut")) return "sub";
+  if (lower.includes("dangerous")) return "danger";
   if (lower.includes("corner")) return "corner";
+  if (lower.includes("possession")) return "possession";
   if (lower.includes("attack")) return "attack";
   if (lower.includes("free kick")) return "freekick";
+  if (lower.includes("goal kick")) return "goalkick";
   if (lower.includes("throw")) return "throw";
   if (lower.includes("offside")) return "offside";
-  if (lower.includes("yellow")) return "yellow";
-  if (lower.includes("red card")) return "red";
-  if (lower.includes("substitut")) return "sub";
-  if (lower.includes("penalty")) return "penalty";
   if (lower.includes("shot") || lower.includes("save")) return "shot";
-  if (lower.includes("dangerous")) return "danger";
+  if (lower.includes("half time") || lower.includes("kick off")) return "start";
   return "note";
 }
 
@@ -842,6 +863,20 @@ const PAGE = `
   .evTeam { font-size: 12px; color: #999; }
 
   /* Commentary feed */
+  .vizBox {
+    background: #fff; padding: 12px 16px 8px;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .vizHead {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; color: #777; margin-bottom: 8px;
+  }
+  .vizKey { display: flex; align-items: center; font-size: 10px; color: #999; }
+  .vizKey i {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 2px; margin-right: 4px;
+  }
+
   .commRow {
     display: flex; gap: 12px; padding: 12px 16px;
     background: #fff; border-bottom: 1px solid #E8E8E4;
@@ -856,9 +891,13 @@ const PAGE = `
   .commRow.goal .commText { font-weight: 600; }
   .commRow.goal .commMin { color: #BA7517; font-weight: 600; }
   .commRow.red { background: #FDF0F0; }
-  .commRow.attack .commText, .commRow.danger .commText { color: #333; }
-  .commRow.corner .commMin, .commRow.attack .commMin { color: #185FA5; }
-  .commRow.note .commText { color: #666; }
+  .commRow.danger { background: #FFF4E8; }
+  .commRow.danger .commText { font-weight: 600; }
+  .commRow.corner .commMin, .commRow.attack .commMin,
+  .commRow.danger .commMin { color: #185FA5; }
+  .commRow.possession .commText, .commRow.throw .commText,
+  .commRow.goalkick .commText, .commRow.note .commText { color: #777; }
+  .commRow.possession, .commRow.throw, .commRow.goalkick { padding: 8px 16px; }
   .liveTag2 {
     display: inline-block; font-size: 10px; padding: 2px 7px;
     border-radius: 8px; background: #FAEEDA; color: #854F0B;
@@ -873,6 +912,30 @@ const PAGE = `
     padding: 0 8px 10px; font-size: 12px; color: #777;
   }
   .pitchNote b { font-weight: 600; color: #333; }
+  .sheets { display: flex; gap: 1px; background: #E8E8E4; }
+  .sheetCol { flex: 1; min-width: 0; background: #fff; }
+  .sheetHead {
+    padding: 9px 10px; font-size: 12px; font-weight: 600;
+    color: #fff; text-align: center;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sheetHead.home { background: #185FA5; }
+  .sheetHead.away { background: #BA7517; }
+  .sheetRow {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-bottom: 1px solid #F0F0EC;
+    font-size: 13px;
+  }
+  .sheetNum {
+    width: 20px; flex-shrink: 0; text-align: right;
+    color: #999; font-size: 12px;
+  }
+  .sheetName {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sheetGoal { font-size: 11px; }
+
   .extras {
     padding: 10px 16px; background: #F4F4F2;
     font-size: 12px; color: #666; line-height: 1.6;
@@ -2655,6 +2718,102 @@ function drawMatch(match) {
   if (matchTab === "comm") {
     const feed = match.commentary || [];
 
+    // ---- Momentum, worked out from the commentary ----
+    // Each kind of moment is worth a different amount, added up in
+    // five minute blocks. Home counts up, away counts down.
+    const WORTH = {
+      goal: 6, danger: 3, corner: 2, shot: 3,
+      attack: 1, penalty: 4, possession: 0.4, freekick: 0.5,
+    };
+
+    const blocks = new Array(19).fill(0);   // 0-5, 5-10 ... up to 95
+    let anyMomentum = false;
+
+    for (const moment of feed) {
+      if (!moment.side) continue;
+      const worth = WORTH[moment.kind];
+      if (!worth) continue;
+      const block = Math.min(18, Math.floor(moment.minute / 5));
+      blocks[block] += moment.side === "home" ? worth : -worth;
+      anyMomentum = true;
+    }
+
+    if (anyMomentum) {
+      // Scale so the tallest bar fills the space.
+      let biggest = 1;
+      for (const value of blocks) biggest = Math.max(biggest, Math.abs(value));
+
+      const W = 340;
+      const H = 64;
+      const mid = H / 2;
+      const barW = W / blocks.length;
+
+      let bars = "";
+      for (let i = 0; i < blocks.length; i++) {
+        const value = blocks[i];
+        if (value === 0) continue;
+        const height = Math.max(2, (Math.abs(value) / biggest) * (mid - 4));
+        const x = i * barW + 2;
+        const y = value > 0 ? mid - height : mid;
+        bars += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) +
+          '" width="' + (barW - 4).toFixed(1) + '" height="' + height.toFixed(1) +
+          '" fill="' + (value > 0 ? "#185FA5" : "#EF9F27") + '" rx="1"/>';
+      }
+
+      const box = document.createElement("div");
+      box.className = "vizBox";
+      box.innerHTML =
+        '<div class="vizHead">' +
+          '<span>Momentum</span>' +
+          '<span class="vizKey">' +
+            '<i style="background:#185FA5"></i>' + match.teams.home.name +
+            '<i style="background:#EF9F27;margin-left:10px"></i>' + match.teams.away.name +
+          '</span>' +
+        '</div>' +
+        '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
+          '<line x1="0" y1="' + mid + '" x2="' + W + '" y2="' + mid +
+            '" stroke="#DDD" stroke-width="1"/>' + bars +
+        '</svg>';
+      list.appendChild(box);
+    }
+
+    // ---- Timeline of the big moments ----
+    const bigOnes = feed.filter(function (m) {
+      return m.kind === "goal" || m.kind === "red" || m.kind === "yellow";
+    });
+
+    if (bigOnes.length > 0 || stateOf(match) !== "upcoming") {
+      const W = 340;
+      const H = 46;
+      const played = minuteOf(match) === null ? 90 : Math.min(90, minuteOf(match));
+      const at = function (minute) { return 8 + (Math.min(95, minute) / 95) * (W - 16); };
+
+      let marks = "";
+      for (const moment of bigOnes) {
+        const x = at(moment.minute);
+        if (moment.kind === "goal") {
+          marks += '<circle cx="' + x.toFixed(1) + '" cy="20" r="7" fill="#EF9F27"/>' +
+            '<text x="' + x.toFixed(1) + '" y="40" text-anchor="middle" ' +
+            'font-size="9" fill="#888">' + moment.minute + '</text>';
+        } else {
+          marks += '<rect x="' + (x - 2).toFixed(1) + '" y="13" width="4.5" height="14" rx="1" fill="' +
+            (moment.kind === "red" ? "#E24B4A" : "#EF9F27") + '"/>';
+        }
+      }
+
+      const box = document.createElement("div");
+      box.className = "vizBox";
+      box.innerHTML =
+        '<div class="vizHead"><span>Timeline</span></div>' +
+        '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
+          '<rect x="8" y="16" width="' + (W - 16) + '" height="8" rx="4" fill="#E4E4E0"/>' +
+          '<rect x="8" y="16" width="' + ((played / 95) * (W - 16)).toFixed(1) +
+            '" height="8" rx="4" fill="#185FA5"/>' +
+          marks +
+        '</svg>';
+      list.appendChild(box);
+    }
+
     if (feed.length <= 1) {
       list.innerHTML =
         '<div class="empty">Nothing has happened yet.<br><br>' +
@@ -2665,9 +2824,10 @@ function drawMatch(match) {
     const icons = {
       goal: "&#9917;", yellow: "&#129000;", red: "&#128308;",
       sub: "&#8646;", start: "&#9654;", end: "&#9209;",
-      corner: "&#9986;", attack: "&#8599;", freekick: "&#9678;",
-      throw: "&#8592;", offside: "&#9873;", penalty: "&#9899;",
-      shot: "&#10162;", danger: "&#9888;", note: "&#8226;",
+      corner: "&#9971;", attack: "&#8599;", freekick: "&#9678;",
+      throw: "&#8646;", offside: "&#9873;", penalty: "&#9899;",
+      shot: "&#10162;", danger: "&#10071;", note: "&#8226;",
+      possession: "&#9679;", goalkick: "&#9678;",
     };
 
     const heading = document.createElement("div");
@@ -2682,7 +2842,9 @@ function drawMatch(match) {
       const row = document.createElement("div");
       row.className = "commRow " + moment.kind;
       row.innerHTML =
-        '<div class="commMin">' + (moment.minute > 0 ? moment.minute + "'" : "") + '</div>' +
+        '<div class="commMin">' +
+          (moment.clock ? moment.clock : (moment.minute > 0 ? moment.minute + "'" : "")) +
+        '</div>' +
         '<div class="commIcon">' + (icons[moment.kind] || "&#8226;") + '</div>' +
         '<div class="commText">' + moment.text + '</div>';
       list.appendChild(row);
@@ -2726,7 +2888,10 @@ function drawMatch(match) {
     // One player badge: photo if we have it, shirt number if not.
     const badge = function (player, x, y, colour, textColour) {
       const safeName = player.name.replace(/[<>&]/g, "");
-      const shortName = safeName.length > 12 ? safeName.slice(0, 11) + "." : safeName;
+      // Surnames only, so they fit between the rows.
+      const bits = safeName.split(" ");
+      let shortName = bits.length > 1 ? bits[bits.length - 1] : safeName;
+      if (shortName.length > 10) shortName = shortName.slice(0, 9) + ".";
       const clipId = "clip" + Math.abs(x * 1000 + y);
 
       let inner;
@@ -2746,8 +2911,9 @@ function drawMatch(match) {
       const scored = scorers[safeName] ? ' &#9917;' : '';
 
       return inner +
-        '<text x="' + x + '" y="' + (y + 29) + '" text-anchor="middle" font-size="9" ' +
-        'fill="#FFFFFF">' + shortName + scored + '</text>';
+        '<text x="' + x + '" y="' + (y + 27) + '" text-anchor="middle" font-size="8.5" ' +
+        'fill="#FFFFFF" stroke="#1B3D08" stroke-width="2.5" paint-order="stroke" ' +
+        'font-weight="600">' + shortName + scored + '</text>';
     };
 
     // Home fills the top half, away the bottom.
@@ -2785,6 +2951,37 @@ function drawMatch(match) {
         '<span>' + (match.formations.away || "") + ' <b>' + match.teams.away.name + '</b></span>' +
       '</div>' + svg;
     list.appendChild(wrap);
+
+    // Full team sheets, side by side under the pitch.
+    const sheetOf = function (side) {
+      const all = [];
+      if (side.keeper) all.push(side.keeper);
+      for (const row of side.rows) for (const p of row) all.push(p);
+      return all;
+    };
+
+    const listOut = function (players) {
+      return players.map(function (p) {
+        const scored = scorers[p.name.trim()] ? ' <span class="sheetGoal">&#9917;</span>' : "";
+        return '<div class="sheetRow">' +
+          '<span class="sheetNum">' + (p.number || "") + '</span>' +
+          '<span class="sheetName">' + p.name + scored + '</span>' +
+        '</div>';
+      }).join("");
+    };
+
+    const sheets = document.createElement("div");
+    sheets.className = "sheets";
+    sheets.innerHTML =
+      '<div class="sheetCol">' +
+        '<div class="sheetHead home">' + match.teams.home.name + '</div>' +
+        listOut(sheetOf(pitch.home)) +
+      '</div>' +
+      '<div class="sheetCol">' +
+        '<div class="sheetHead away">' + match.teams.away.name + '</div>' +
+        listOut(sheetOf(pitch.away)) +
+      '</div>';
+    list.appendChild(sheets);
 
     const extras = match.extras || {};
     if (extras.stadium || extras.referee) {
@@ -3138,6 +3335,12 @@ goTo("home");
 setInterval(function () {
   if (screen === "home") refresh();
 }, 120000);
+
+// An open match refreshes on its own, so new commentary appears
+// without the person doing anything.
+setInterval(function () {
+  if (screen === "match" && matchTab === "comm") refresh();
+}, 30000);
 </script>
 </body>
 </html>
