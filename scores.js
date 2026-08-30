@@ -118,6 +118,79 @@ function readStatus(raw) {
     : { short: status, long: status, elapsed: null };
 }
 
+// Turns the goals, cards and substitutions into one list of
+// moments in time order, each with a line of text. The API does
+// not send written commentary on this plan, so we write it from
+// what actually happened.
+function buildCommentary(raw) {
+  const home = raw.match_hometeam_name;
+  const away = raw.match_awayteam_name;
+  const feed = [];
+
+  const minuteOf = function (value) {
+    const n = parseInt(String(value || "").replace("'", ""), 10);
+    return Number.isNaN(n) ? 0 : n;
+  };
+
+  for (const goal of (raw.goalscorer || [])) {
+    const isHome = Boolean(goal.home_scorer);
+    const scorer = isHome ? goal.home_scorer : goal.away_scorer;
+    if (!scorer) continue;
+
+    const own = String(goal.info || "").toLowerCase().includes("own goal");
+    const pen = String(goal.info || "").toLowerCase().includes("penalty");
+
+    let text = "GOAL! " + scorer.trim();
+    if (own) text = "OWN GOAL. " + scorer.trim();
+    else if (pen) text = "PENALTY SCORED. " + scorer.trim();
+
+    text += " for " + (isHome ? home : away) + ".";
+    if (goal.score) text += " It is " + goal.score.replace(/\s+/g, " ").trim() + ".";
+
+    feed.push({ minute: minuteOf(goal.time), kind: "goal", text: text });
+  }
+
+  for (const card of (raw.cards || [])) {
+    const isHome = Boolean(card.home_fault);
+    const player = (isHome ? card.home_fault : card.away_fault) || "";
+    if (!player) continue;
+
+    const red = String(card.card || "").toLowerCase().includes("red");
+    const text = (red ? "RED CARD. " : "Yellow card. ") + player.trim() +
+                 " of " + (isHome ? home : away) + ".";
+
+    feed.push({ minute: minuteOf(card.time), kind: red ? "red" : "yellow", text: text });
+  }
+
+  const subs = raw.substitutions || {};
+  for (const side of ["home", "away"]) {
+    for (const sub of (subs[side] || [])) {
+      const who = String(sub.substitution || "").trim();
+      if (!who) continue;
+      feed.push({
+        minute: minuteOf(sub.time),
+        kind: "sub",
+        text: "Substitution for " + (side === "home" ? home : away) + ": " + who + ".",
+      });
+    }
+  }
+
+  feed.sort(function (a, b) { return a.minute - b.minute; });
+
+  // Bookend it so the feed reads like a match rather than a list.
+  const status = readStatus(raw);
+  feed.unshift({ minute: 0, kind: "start", text: "Kick off. " + home + " against " + away + "." });
+
+  if (status.short === "FT") {
+    const score = (raw.match_hometeam_score || "0") + "-" + (raw.match_awayteam_score || "0");
+    feed.push({ minute: 91, kind: "end", text: "Full time. " + home + " " + score + " " + away + "." });
+  } else if (status.short === "HT") {
+    feed.push({ minute: 46, kind: "end", text: "Half time." });
+  }
+
+  return feed;
+}
+
 function translateMatch(raw) {
   const goals = raw.goalscorer || [];
 
@@ -155,6 +228,7 @@ function translateMatch(raw) {
         };
       }),
     statistics: raw.statistics || [],
+    commentary: buildCommentary(raw),
   };
 }
 
@@ -551,6 +625,23 @@ const PAGE = `
   .evIcon { font-size: 15px; width: 20px; }
   .evName { font-size: 14px; flex: 1; }
   .evTeam { font-size: 12px; color: #999; }
+
+  /* Commentary feed */
+  .commRow {
+    display: flex; gap: 12px; padding: 12px 16px;
+    background: #fff; border-bottom: 1px solid #E8E8E4;
+  }
+  .commMin {
+    width: 34px; flex-shrink: 0; font-size: 12px;
+    color: #777; padding-top: 2px;
+  }
+  .commIcon { width: 20px; flex-shrink: 0; font-size: 15px; }
+  .commText { flex: 1; font-size: 14px; line-height: 1.45; }
+  .commRow.goal { background: #FFF8EA; }
+  .commRow.goal .commText { font-weight: 600; }
+  .commRow.goal .commMin { color: #BA7517; font-weight: 600; }
+  .commRow.red { background: #FDF0F0; }
+  .commRow.start .commText, .commRow.end .commText { color: #555; font-style: italic; }
 
   .statBox { padding: 16px; background: #fff; }
   .stat { margin-bottom: 16px; }
@@ -2247,11 +2338,13 @@ function drawMatch(match) {
     '</div>' +
     '<div class="tabs">' +
       '<div class="tab' + (matchTab === "summary" ? " on" : "") + '" id="tabSummary">Summary</div>' +
+      '<div class="tab' + (matchTab === "comm" ? " on" : "") + '" id="tabComm">Commentary</div>' +
       '<div class="tab' + (matchTab === "stats" ? " on" : "") + '" id="tabStats">Stats</div>' +
     '</div>';
 
   document.getElementById("backBtn").onclick = closeMatch;
   document.getElementById("tabSummary").onclick = function () { matchTab = "summary"; drawMatch(match); };
+  document.getElementById("tabComm").onclick = function () { matchTab = "comm"; drawMatch(match); };
   document.getElementById("tabStats").onclick = function () { matchTab = "stats"; drawMatch(match); };
 
   list.innerHTML = "";
@@ -2270,6 +2363,34 @@ function drawMatch(match) {
         '<span class="evIcon">&#9917;</span>' +
         '<span class="evName">' + (event.player.name || "Unknown") + '</span>' +
         '<span class="evTeam">' + event.team.name + '</span>';
+      list.appendChild(row);
+    }
+    return;
+  }
+
+  if (matchTab === "comm") {
+    const feed = match.commentary || [];
+
+    if (feed.length <= 1) {
+      list.innerHTML =
+        '<div class="empty">Nothing has happened yet.<br><br>' +
+        'Goals, cards and substitutions appear here as they go in.</div>';
+      return;
+    }
+
+    const icons = {
+      goal: "&#9917;", yellow: "&#129000;", red: "&#128308;",
+      sub: "&#8646;", start: "&#9654;", end: "&#9209;",
+    };
+
+    // Newest at the top, the way commentary normally reads.
+    for (const moment of feed.slice().reverse()) {
+      const row = document.createElement("div");
+      row.className = "commRow " + moment.kind;
+      row.innerHTML =
+        '<div class="commMin">' + (moment.minute > 0 ? moment.minute + "'" : "") + '</div>' +
+        '<div class="commIcon">' + (icons[moment.kind] || "&#8226;") + '</div>' +
+        '<div class="commText">' + moment.text + '</div>';
       list.appendChild(row);
     }
     return;
