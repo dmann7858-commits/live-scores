@@ -66,6 +66,94 @@ async function askApi(action, extra) {
 }
 
 
+// Same as askApi, but accepts an object rather than a list.
+// The live comments endpoint answers with match ids as keys.
+async function askApiObject(action, extra) {
+  if (!API_KEY || API_KEY === "PASTE_YOUR_KEY_HERE") return null;
+
+  const url = BASE + "?action=" + action + (extra || "") + "&APIkey=" + API_KEY;
+  console.log("fetching: " + action + (extra || ""));
+
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    console.log("   !! could not reach the API: " + error.message);
+    return null;
+  }
+
+  console.log("   http status: " + response.status);
+
+  let data;
+  try {
+    data = await response.json();
+  } catch (error) {
+    return null;
+  }
+
+  // An error comes back as an object with an error number in it.
+  if (data && data.error) {
+    console.log("   !! API SAYS: " + JSON.stringify(data));
+    return null;
+  }
+
+  return data;
+}
+
+// Minute-by-minute commentary, if the plan includes it. Returns an
+// empty list rather than failing when it does not.
+async function getLiveComments(matchId) {
+  const name = "comments-" + matchId;
+  const hit = fromCache(name, 30);
+  if (hit) return hit;
+
+  const data = await askApiObject("get_live_odds_commnets", "&match_id=" + matchId);
+
+  if (!data || typeof data !== "object") {
+    console.log("   no live comments available");
+    return intoCache(name, []);
+  }
+
+  // The answer is keyed by match id, so dig the one match out.
+  const entry = data[String(matchId)] || Object.values(data)[0];
+  const comments = (entry && entry.live_comments) || [];
+
+  console.log("   " + comments.length + " live comments");
+
+  const feed = comments.map(function (comment) {
+    // Times arrive as "44:58", so take the minutes off the front.
+    const minute = parseInt(String(comment.time || "").split(":")[0], 10);
+    return {
+      minute: Number.isNaN(minute) ? 0 : minute,
+      kind: kindOfComment(comment.text || ""),
+      text: String(comment.text || "").trim(),
+      live: true,
+    };
+  }).filter(function (moment) { return moment.text !== ""; });
+
+  return intoCache(name, feed);
+}
+
+// Works out what sort of moment a line of commentary describes,
+// so it can get the right icon and colour.
+function kindOfComment(text) {
+  const lower = text.toLowerCase();
+  if (lower.includes("goal") && !lower.includes("goal kick")) return "goal";
+  if (lower.includes("corner")) return "corner";
+  if (lower.includes("attack")) return "attack";
+  if (lower.includes("free kick")) return "freekick";
+  if (lower.includes("throw")) return "throw";
+  if (lower.includes("offside")) return "offside";
+  if (lower.includes("yellow")) return "yellow";
+  if (lower.includes("red card")) return "red";
+  if (lower.includes("substitut")) return "sub";
+  if (lower.includes("penalty")) return "penalty";
+  if (lower.includes("shot") || lower.includes("save")) return "shot";
+  if (lower.includes("dangerous")) return "danger";
+  return "note";
+}
+
+
 // ---------------------------------------------------------------
 // TRANSLATION
 // apifootball sends one shape, the screens expect another. These
@@ -387,6 +475,22 @@ async function getMatch(fixtureId) {
   const hasLineup =
     (lineup.home && (lineup.home.starting_lineups || []).length > 0) ||
     (lineup.away && (lineup.away.starting_lineups || []).length > 0);
+
+  // Minute-by-minute commentary, live matches only.
+  if (String(raw.match_live || "").trim() === "1") {
+    const live = await getLiveComments(fixtureId);
+    if (live.length > 0) {
+      // Keep our own goal and card lines, drop the plain kick off
+      // marker since the real feed has its own.
+      const ours = (match.commentary || []).filter(function (m) {
+        return m.kind === "goal" || m.kind === "red" || m.kind === "yellow";
+      });
+      match.commentary = ours.concat(live).sort(function (a, b) {
+        return a.minute - b.minute;
+      });
+      match.hasLiveCommentary = true;
+    }
+  }
 
   if (hasLineup) {
     console.log("   line-up found, looking up squads");
@@ -752,6 +856,14 @@ const PAGE = `
   .commRow.goal .commText { font-weight: 600; }
   .commRow.goal .commMin { color: #BA7517; font-weight: 600; }
   .commRow.red { background: #FDF0F0; }
+  .commRow.attack .commText, .commRow.danger .commText { color: #333; }
+  .commRow.corner .commMin, .commRow.attack .commMin { color: #185FA5; }
+  .commRow.note .commText { color: #666; }
+  .liveTag2 {
+    display: inline-block; font-size: 10px; padding: 2px 7px;
+    border-radius: 8px; background: #FAEEDA; color: #854F0B;
+    margin-left: 8px;
+  }
   .commRow.start .commText, .commRow.end .commText { color: #555; font-style: italic; }
 
   /* Pitch view */
@@ -2553,7 +2665,17 @@ function drawMatch(match) {
     const icons = {
       goal: "&#9917;", yellow: "&#129000;", red: "&#128308;",
       sub: "&#8646;", start: "&#9654;", end: "&#9209;",
+      corner: "&#9986;", attack: "&#8599;", freekick: "&#9678;",
+      throw: "&#8592;", offside: "&#9873;", penalty: "&#9899;",
+      shot: "&#10162;", danger: "&#9888;", note: "&#8226;",
     };
+
+    const heading = document.createElement("div");
+    heading.className = "drawerHint";
+    heading.innerHTML = match.hasLiveCommentary
+      ? 'Live commentary <span class="liveTag2">minute by minute</span>'
+      : "Match events";
+    list.appendChild(heading);
 
     // Newest at the top, the way commentary normally reads.
     for (const moment of feed.slice().reverse()) {
@@ -3250,6 +3372,32 @@ const server = http.createServer(async function (request, response) {
       team: team ? team.team_name : null,
       player_count: team ? (team.players || []).length : 0,
       first_player: team && team.players ? team.players[0] : null,
+    }, null, 2));
+    return;
+  }
+
+  // Checks whether live commentary is included in the plan.
+  if (address.pathname === "/api/commentcheck") {
+    const live = await askApi("get_events", "&match_live=1");
+    if (live === null || live.length === 0) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "nothing live to test with" }, null, 2));
+      return;
+    }
+
+    const id = live[0].match_id;
+    const data = await askApiObject("get_live_odds_commnets", "&match_id=" + id);
+    const entry = data && (data[String(id)] || Object.values(data)[0]);
+    const comments = (entry && entry.live_comments) || [];
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      tested_match: live[0].match_hometeam_name + " v " + live[0].match_awayteam_name,
+      match_id: id,
+      available: comments.length > 0,
+      comment_count: comments.length,
+      sample: comments.slice(0, 8),
+      raw_if_empty: comments.length === 0 ? data : undefined,
     }, null, 2));
     return;
   }
