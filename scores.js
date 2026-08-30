@@ -336,7 +336,9 @@ function layOutSide(side, formation, squad) {
     };
   });
 
-  if (withInfo.length === 0) return { keeper: null, rows: [] };
+  if (withInfo.length === 0) {
+    return { keeper: null, rows: [], bench: [], coach: "", missing: [] };
+  }
 
   const keeper = withInfo[0];
   const outfield = withInfo.slice(1);
@@ -349,7 +351,27 @@ function layOutSide(side, formation, squad) {
     at += count;
   }
 
-  return { keeper: keeper, rows: rows };
+  // The bench and whoever is in charge.
+  const bench = (side.substitutes || []).map(function (player) {
+    const extra = squad[String(player.player_key)] || {};
+    return {
+      name: player.lineup_player,
+      number: player.lineup_number || extra.number || "",
+      image: extra.image || "",
+    };
+  });
+
+  const coachEntry = (side.coach || [])[0];
+  const coach = coachEntry ? coachEntry.lineup_player : "";
+
+  const missing = (side.missing_players || []).map(function (player) {
+    return player.lineup_player;
+  });
+
+  return {
+    keeper: keeper, rows: rows,
+    bench: bench, coach: coach, missing: missing,
+  };
 }
 
 function translateMatch(raw) {
@@ -864,9 +886,11 @@ const PAGE = `
 
   /* Commentary feed */
   .vizBox {
-    background: #fff; padding: 12px 16px 8px;
+    background: #fff; padding: 12px 16px 10px;
     border-bottom: 1px solid #E8E8E4;
   }
+  .vizInner { max-width: 520px; margin: 0 auto; }
+  .vizInner svg { display: block; }
   .vizHead {
     display: flex; align-items: center; justify-content: space-between;
     font-size: 11px; color: #777; margin-bottom: 8px;
@@ -935,6 +959,16 @@ const PAGE = `
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .sheetGoal { font-size: 11px; }
+  .sheetSub {
+    padding: 8px 10px; background: #F1EFE8;
+    font-size: 11px; color: #666; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .benchRow .sheetName { color: #666; }
+  .sheetNone { color: #999; font-size: 12px; }
+  .subMark { font-size: 9px; flex-shrink: 0; }
+  .subMark.off { color: #E24B4A; }
+  .subMark.on { color: #639922; }
 
   .extras {
     padding: 10px 16px; background: #F4F4F2;
@@ -2770,10 +2804,12 @@ function drawMatch(match) {
             '<i style="background:#EF9F27;margin-left:10px"></i>' + match.teams.away.name +
           '</span>' +
         '</div>' +
-        '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
-          '<line x1="0" y1="' + mid + '" x2="' + W + '" y2="' + mid +
-            '" stroke="#DDD" stroke-width="1"/>' + bars +
-        '</svg>';
+        '<div class="vizInner">' +
+          '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
+            '<line x1="0" y1="' + mid + '" x2="' + W + '" y2="' + mid +
+              '" stroke="#DDD" stroke-width="1"/>' + bars +
+          '</svg>' +
+        '</div>';
       list.appendChild(box);
     }
 
@@ -2789,15 +2825,29 @@ function drawMatch(match) {
       const at = function (minute) { return 8 + (Math.min(95, minute) / 95) * (W - 16); };
 
       let marks = "";
-      for (const moment of bigOnes) {
+      let lastLabelX = -100;
+
+      // Earliest first, so labels can be spaced from left to right.
+      const ordered = bigOnes.slice().sort(function (a, b) {
+        return a.minute - b.minute;
+      });
+
+      for (const moment of ordered) {
         const x = at(moment.minute);
+
         if (moment.kind === "goal") {
-          marks += '<circle cx="' + x.toFixed(1) + '" cy="20" r="7" fill="#EF9F27"/>' +
-            '<text x="' + x.toFixed(1) + '" y="40" text-anchor="middle" ' +
-            'font-size="9" fill="#888">' + moment.minute + '</text>';
+          marks += '<circle cx="' + x.toFixed(1) + '" cy="20" r="5.5" ' +
+            'fill="#EF9F27" stroke="#fff" stroke-width="1.5"/>';
+
+          // Only label it if there is room since the last one.
+          if (x - lastLabelX > 18) {
+            marks += '<text x="' + x.toFixed(1) + '" y="40" text-anchor="middle" ' +
+              'font-size="9" fill="#888">' + moment.minute + "'" + '</text>';
+            lastLabelX = x;
+          }
         } else {
-          marks += '<rect x="' + (x - 2).toFixed(1) + '" y="13" width="4.5" height="14" rx="1" fill="' +
-            (moment.kind === "red" ? "#E24B4A" : "#EF9F27") + '"/>';
+          marks += '<rect x="' + (x - 1.75).toFixed(1) + '" y="14" width="3.5" height="12" rx="1" fill="' +
+            (moment.kind === "red" ? "#E24B4A" : "#BA7517") + '"/>';
         }
       }
 
@@ -2805,12 +2855,14 @@ function drawMatch(match) {
       box.className = "vizBox";
       box.innerHTML =
         '<div class="vizHead"><span>Timeline</span></div>' +
-        '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
-          '<rect x="8" y="16" width="' + (W - 16) + '" height="8" rx="4" fill="#E4E4E0"/>' +
-          '<rect x="8" y="16" width="' + ((played / 95) * (W - 16)).toFixed(1) +
-            '" height="8" rx="4" fill="#185FA5"/>' +
-          marks +
-        '</svg>';
+        '<div class="vizInner">' +
+          '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
+            '<rect x="8" y="17" width="' + (W - 16) + '" height="6" rx="3" fill="#E4E4E0"/>' +
+            '<rect x="8" y="17" width="' + ((played / 95) * (W - 16)).toFixed(1) +
+              '" height="6" rx="3" fill="#185FA5"/>' +
+            marks +
+          '</svg>' +
+        '</div>';
       list.appendChild(box);
     }
 
@@ -2960,27 +3012,71 @@ function drawMatch(match) {
       return all;
     };
 
-    const listOut = function (players) {
+    // Who came off and who came on, so the sheet can mark them.
+    const cameOff = {};
+    const cameOn = {};
+    for (const moment of (match.commentary || [])) {
+      if (moment.kind !== "sub") continue;
+      const bits = String(moment.text).split(":");
+      const detail = bits.length > 1 ? bits[1] : moment.text;
+      const pair = detail.split(/\||,| in,| out/);
+      if (pair[0]) cameOff[pair[0].trim()] = moment.minute;
+      if (pair[1]) cameOn[pair[1].trim()] = moment.minute;
+    }
+
+    const listOut = function (players, onBench) {
+      if (players.length === 0) {
+        return '<div class="sheetRow sheetNone">None listed</div>';
+      }
       return players.map(function (p) {
-        const scored = scorers[p.name.trim()] ? ' <span class="sheetGoal">&#9917;</span>' : "";
-        return '<div class="sheetRow">' +
+        const clean = p.name.trim();
+        const scored = scorers[clean] ? ' <span class="sheetGoal">&#9917;</span>' : "";
+
+        let mark = "";
+        if (!onBench && cameOff[clean] !== undefined) {
+          mark = '<span class="subMark off">&#9660;</span>';
+        } else if (onBench && cameOn[clean] !== undefined) {
+          mark = '<span class="subMark on">&#9650;</span>';
+        }
+
+        return '<div class="sheetRow' + (onBench ? " benchRow" : "") + '">' +
           '<span class="sheetNum">' + (p.number || "") + '</span>' +
           '<span class="sheetName">' + p.name + scored + '</span>' +
+          mark +
         '</div>';
       }).join("");
+    };
+
+    const columnFor = function (side, team, which) {
+      let html =
+        '<div class="sheetHead ' + which + '">' + team + '</div>' +
+        listOut(sheetOf(side), false);
+
+      html += '<div class="sheetSub">Substitutes</div>' +
+              listOut(side.bench || [], true);
+
+      if (side.coach) {
+        html += '<div class="sheetSub">Manager</div>' +
+                '<div class="sheetRow"><span class="sheetNum"></span>' +
+                '<span class="sheetName">' + side.coach + '</span></div>';
+      }
+
+      if ((side.missing || []).length > 0) {
+        html += '<div class="sheetSub">Unavailable</div>' +
+          side.missing.map(function (n) {
+            return '<div class="sheetRow benchRow"><span class="sheetNum"></span>' +
+              '<span class="sheetName">' + n + '</span></div>';
+          }).join("");
+      }
+
+      return '<div class="sheetCol">' + html + '</div>';
     };
 
     const sheets = document.createElement("div");
     sheets.className = "sheets";
     sheets.innerHTML =
-      '<div class="sheetCol">' +
-        '<div class="sheetHead home">' + match.teams.home.name + '</div>' +
-        listOut(sheetOf(pitch.home)) +
-      '</div>' +
-      '<div class="sheetCol">' +
-        '<div class="sheetHead away">' + match.teams.away.name + '</div>' +
-        listOut(sheetOf(pitch.away)) +
-      '</div>';
+      columnFor(pitch.home, match.teams.home.name, "home") +
+      columnFor(pitch.away, match.teams.away.name, "away");
     list.appendChild(sheets);
 
     const extras = match.extras || {};
