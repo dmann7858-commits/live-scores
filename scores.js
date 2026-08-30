@@ -3159,6 +3159,69 @@ const server = http.createServer(async function (request, response) {
   // Lists every different match_status value the API is sending
   // today, with an example of each. This is how we find out what
   // words it actually uses for finished, half time and so on.
+  // Shows what the API really sends for one match: whether there
+  // is a line-up at all, and what the fields are called.
+  if (address.pathname === "/api/rawmatch") {
+    const id = address.searchParams.get("id");
+    if (!id) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "add ?id=MATCHID" }, null, 2));
+      return;
+    }
+
+    const raw = await askApi("get_events", "&match_id=" + id);
+
+    if (raw === null || raw.length === 0) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "nothing came back for that match" }, null, 2));
+      return;
+    }
+
+    const row = raw[0];
+    const lineup = row.lineup || {};
+    const homeStart = (lineup.home && lineup.home.starting_lineups) || [];
+    const awayStart = (lineup.away && lineup.away.starting_lineups) || [];
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      match: row.match_hometeam_name + " v " + row.match_awayteam_name,
+      status: row.match_status,
+      home_id: row.match_hometeam_id,
+      away_id: row.match_awayteam_id,
+      formations: {
+        home: row.match_hometeam_system,
+        away: row.match_awayteam_system,
+      },
+      lineup_present: Boolean(row.lineup),
+      home_starters: homeStart.length,
+      away_starters: awayStart.length,
+      first_home_player: homeStart[0] || null,
+      all_top_level_fields: Object.keys(row),
+    }, null, 2));
+    return;
+  }
+
+  // Shows whether a club's squad photos can be reached.
+  if (address.pathname === "/api/rawsquad") {
+    const teamId = address.searchParams.get("team");
+    if (!teamId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "add ?team=TEAMID" }, null, 2));
+      return;
+    }
+
+    const raw = await askApi("get_teams", "&team_id=" + teamId);
+    const team = raw && raw[0];
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      team: team ? team.team_name : null,
+      player_count: team ? (team.players || []).length : 0,
+      first_player: team && team.players ? team.players[0] : null,
+    }, null, 2));
+    return;
+  }
+
   if (address.pathname === "/api/statuses") {
     const date = address.searchParams.get("date") || isoToday();
     const raw = await askApi("get_events", "&from=" + date + "&to=" + date);
