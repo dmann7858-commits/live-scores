@@ -1185,26 +1185,66 @@ const PAGE = `
   /* Home board of favourite badges */
   .board { background: #fff; border-bottom: 1px solid #E8E8E4; }
   .boardHead {
-    padding: 10px 16px 8px; font-size: 12px;
-    color: #666; font-weight: 600;
+    padding: 12px 16px 8px; font-size: 11px;
+    color: #888; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
   }
   .slotRow {
-    display: grid; grid-template-columns: repeat(5, 1fr);
-    gap: 8px; padding: 0 12px 14px;
+    display: flex; gap: 14px; padding: 0 16px 12px;
   }
   .slot {
-    aspect-ratio: 1; border-radius: 12px; background: #F4F4F2;
+    width: 42px; height: 42px; border-radius: 50%;
+    background: #F4F4F2; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
     cursor: pointer; overflow: hidden;
+    border: 1px solid #E4E4E0;
   }
-  .slot img {
-    width: 74%; height: 74%; object-fit: contain;
-  }
+  .slot img { width: 26px; height: 26px; object-fit: contain; }
   .slot:active { background: #E8E8E4; }
   .slotEmpty {
-    border: 1.5px dashed #CFCFC9; background: transparent;
-    color: #BBB; font-size: 22px;
+    border: 1.5px dashed #D5D5D0; background: transparent;
+    color: #C4C4BE; font-size: 17px;
   }
+
+  /* Next games for followed clubs */
+  .upRow {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4; cursor: pointer;
+  }
+  .upCrest { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
+  .upTeams {
+    flex: 1; min-width: 0; font-size: 13px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .upWhen { font-size: 11px; color: #888; flex-shrink: 0; }
+
+  /* Live matches, three across */
+  .liveCount {
+    display: inline-block; margin-left: 6px; padding: 1px 7px;
+    border-radius: 8px; background: #FAEEDA; color: #854F0B;
+    font-size: 10px;
+  }
+  .liveGrid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 8px; padding: 0 12px 16px;
+  }
+  .liveCard {
+    background: #fff; border: 1px solid #E4E4E0;
+    border-radius: 10px; padding: 8px 8px 9px; cursor: pointer;
+  }
+  .liveCard:active { background: #F4F4F2; }
+  .lcTop {
+    font-size: 10px; color: #BA7517; font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .lcSide {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 6px; margin-bottom: 4px;
+  }
+  .lcSide:last-child { margin-bottom: 0; }
+  .lcSide img { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
+  .lcScore { font-size: 14px; font-weight: 600; }
 
   .homeCols { display: flex; gap: 1px; background: #E8E8E4; }
   .homeCol { flex: 1; min-width: 0; background: #F4F4F2; }
@@ -2696,6 +2736,101 @@ async function drawHome() {
       "Clubs open their fixtures, table and stats.<br>" +
       "Leagues go straight to the table.";
     list.appendChild(hint);
+    return;
+  }
+
+  // ---- Next two games for each followed club ----
+  if (favTeams.length > 0) {
+    const heading = document.createElement("div");
+    heading.className = "boardHead";
+    heading.textContent = "Coming up";
+    list.appendChild(heading);
+
+    const holder = document.createElement("div");
+    list.appendChild(holder);
+
+    for (const club of favTeams.slice(0, 5)) {
+      let season = [];
+      try {
+        season = await (await fetch("/api/team-season?team=" + club.id)).json();
+      } catch (error) {
+        continue;
+      }
+
+      // Anything not finished yet, earliest first, take two.
+      const next = season
+        .filter(function (m) { return stateOf(m) !== "finished"; })
+        .sort(function (a, b) {
+          return new Date(a.fixture.date) - new Date(b.fixture.date);
+        })
+        .slice(0, 2);
+
+      if (next.length === 0) continue;
+
+      for (const match of next) {
+        const kickoff = new Date(match.fixture.date);
+        const when = isNaN(kickoff) ? "" :
+          kickoff.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }) +
+          " " + kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+        const row = document.createElement("div");
+        row.className = "upRow";
+        row.innerHTML =
+          '<img class="upCrest" src="' + club.logo + '" alt="">' +
+          '<span class="upTeams">' +
+            match.teams.home.name + ' v ' + match.teams.away.name +
+          '</span>' +
+          '<span class="upWhen">' + when + '</span>';
+        row.onclick = function () { openMatch(match.fixture.id); };
+        holder.appendChild(row);
+      }
+    }
+  }
+
+  // ---- Live games, three across ----
+  let live = [];
+  try {
+    live = await (await fetch("/api/ticker")).json();
+  } catch (error) {
+    live = [];
+  }
+
+  if (live.length > 0) {
+    // Followed leagues first, then everyone else.
+    const mine = favLeagues.map(function (l) { return l.id; });
+    live.sort(function (a, b) {
+      const aMine = mine.includes(a.leagueId) ? 0 : 1;
+      const bMine = mine.includes(b.leagueId) ? 0 : 1;
+      return aMine - bMine;
+    });
+
+    const heading = document.createElement("div");
+    heading.className = "boardHead";
+    heading.innerHTML = 'Live now <span class="liveCount">' + live.length + '</span>';
+    list.appendChild(heading);
+
+    const grid = document.createElement("div");
+    grid.className = "liveGrid";
+    grid.innerHTML = live.slice(0, 15).map(function (m) {
+      const clock = m.minute !== null ? m.minute + "'" : (m.short || "LIVE");
+      return '<div class="liveCard" data-id="' + m.id + '">' +
+        '<div class="lcTop">' + clock + '</div>' +
+        '<div class="lcSide">' +
+          '<img src="' + m.homeLogo + '" alt="">' +
+          '<span class="lcScore">' + (m.hg === null ? "-" : m.hg) + '</span>' +
+        '</div>' +
+        '<div class="lcSide">' +
+          '<img src="' + m.awayLogo + '" alt="">' +
+          '<span class="lcScore">' + (m.ag === null ? "-" : m.ag) + '</span>' +
+        '</div>' +
+      '</div>';
+    }).join("");
+    list.appendChild(grid);
+
+    for (const card of grid.querySelectorAll(".liveCard")) {
+      const id = Number(card.getAttribute("data-id"));
+      card.onclick = function () { openMatch(id); };
+    }
   }
 }
 
@@ -3821,6 +3956,7 @@ const server = http.createServer(async function (request, response) {
         minute: m.fixture.status.elapsed,
         short: m.fixture.status.short,
         league: m.league.name,
+        leagueId: m.league.id,
       };
     });
     response.writeHead(200, { "Content-Type": "application/json" });
