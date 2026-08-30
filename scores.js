@@ -580,9 +580,16 @@ async function getSquad(teamId) {
   const byId = {};
   for (const player of (raw[0].players || [])) {
     byId[String(player.player_id)] = {
+      name: player.player_name || "",
       image: player.player_image || "",
       number: player.player_number || "",
       position: player.player_type || "",
+      goals: Number(player.player_goals) || 0,
+      assists: Number(player.player_assists) || 0,
+      yellow: Number(player.player_yellow_cards) || 0,
+      red: Number(player.player_red_cards) || 0,
+      played: Number(player.player_match_played) || 0,
+      rating: player.player_rating || "",
     };
   }
 
@@ -599,6 +606,20 @@ async function getTeamFixtures(teamId, from, to) {
     "&team_id=" + teamId + "&from=" + from + "&to=" + to);
   if (raw === null) return cache[name] ? cache[name].data : [];
 
+  return intoCache(name, raw.map(translateMatch));
+}
+
+// A club's whole season, kept for an hour.
+async function getSeason(teamId) {
+  const name = "season-" + teamId;
+  const hit = fromCache(name, 3600);
+  if (hit) return hit;
+
+  const span = seasonRange();
+  const raw = await askApi("get_events",
+    "&team_id=" + teamId + "&from=" + span.from + "&to=" + span.to);
+
+  if (raw === null) return cache[name] ? cache[name].data : [];
   return intoCache(name, raw.map(translateMatch));
 }
 
@@ -670,6 +691,16 @@ function onlyTheirLeagues(matches, leagueIds) {
   return matches.filter(function (match) {
     return leagueIds.includes(match.league.id);
   });
+}
+
+// Seasons run roughly July to June, so work out which one we are in.
+function seasonRange() {
+  const now = new Date();
+  const startYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  return {
+    from: startYear + "-07-01",
+    to: (startYear + 1) + "-06-30",
+  };
 }
 
 function isoToday() {
@@ -844,6 +875,8 @@ const PAGE = `
     display: flex; align-items: center; padding: 10px 16px;
     background: #fff; border-bottom: 1px solid #E8E8E4;
   }
+  .tableRow.meRow { background: #E6F1FB; }
+  .tableRow.meRow .colTeam span { font-weight: 600; }
   .colPos { width: 22px; font-size: 13px; color: #777; }
   .colTeam { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
   .colTeam span { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1064,6 +1097,38 @@ const PAGE = `
   }
   .lTab.on { color: #EF9F27; border-bottom-color: #EF9F27; }
 
+  /* Club player stats */
+  .statHead {
+    display: flex; align-items: center; padding: 8px 16px;
+    background: #E8E8E4; font-size: 11px; color: #555;
+  }
+  .statRow {
+    display: flex; align-items: center; padding: 9px 16px;
+    background: #fff; border-bottom: 1px solid #E8E8E4;
+  }
+  .shPlayer {
+    flex: 1; min-width: 0; display: flex;
+    align-items: center; gap: 9px;
+  }
+  .shPlayer img {
+    width: 28px; height: 28px; border-radius: 50%;
+    object-fit: cover; flex-shrink: 0; background: #F1EFE8;
+  }
+  .noFace {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: #E8E8E4; color: #777; font-size: 11px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .pName {
+    font-size: 14px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .shNum { width: 34px; text-align: center; font-size: 13px; color: #777; }
+  .shNum.strong { font-weight: 600; color: #1a1a1a; }
+  .shNum.yel { color: #BA7517; }
+  .shNum.red { color: #E24B4A; }
+
   .scorerRow {
     display: flex; align-items: center; gap: 12px;
     padding: 11px 16px; background: #fff;
@@ -1117,6 +1182,30 @@ const PAGE = `
   .navHome.on .navHomeLabel { color: #185FA5; }
 
   /* Two-column home screen */
+  /* Home board of favourite badges */
+  .board { background: #fff; border-bottom: 1px solid #E8E8E4; }
+  .boardHead {
+    padding: 10px 16px 8px; font-size: 12px;
+    color: #666; font-weight: 600;
+  }
+  .slotRow {
+    display: grid; grid-template-columns: repeat(5, 1fr);
+    gap: 8px; padding: 0 12px 14px;
+  }
+  .slot {
+    aspect-ratio: 1; border-radius: 12px; background: #F4F4F2;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; overflow: hidden;
+  }
+  .slot img {
+    width: 74%; height: 74%; object-fit: contain;
+  }
+  .slot:active { background: #E8E8E4; }
+  .slotEmpty {
+    border: 1.5px dashed #CFCFC9; background: transparent;
+    color: #BBB; font-size: 22px;
+  }
+
   .homeCols { display: flex; gap: 1px; background: #E8E8E4; }
   .homeCol { flex: 1; min-width: 0; background: #F4F4F2; }
   .colHead {
@@ -1407,7 +1496,8 @@ let chosenDate = isoDate(new Date());
 function goTo(name) {
   screen = name;
 
-  // Coming back from a league or match page.
+  // Coming back from a club, league or match page.
+  openClubInfo = null;
   document.getElementById("leagueHead").innerHTML = "";
   document.getElementById("matchHead").innerHTML = "";
   document.getElementById("mainHeader").style.display = "block";
@@ -1833,6 +1923,7 @@ function toggleFavTeam(team, league) {
   } else {
     favTeams.push({
       id: team.id, name: team.name, logo: team.logo,
+      leagueId: league ? league.id : null,
       leagueName: league ? league.name : "",
     });
   }
@@ -2545,116 +2636,175 @@ async function drawHome() {
   const list = document.getElementById("list");
   const updated = document.getElementById("updated");
   list.innerHTML = "";
-  updated.textContent = "Loading...";
+  updated.textContent = "";
 
-  const from = isoDate(new Date());
-  const later = new Date();
-  later.setDate(later.getDate() + 7);
-  const to = isoDate(later);
-
-  const hasFavourites = favTeams.length > 0 || favLeagues.length > 0;
-
-  // Left column: clubs. Right column: leagues.
-  let teamMatches = [];
-  let leagueMatches = [];
-
-  try {
-    if (hasFavourites) {
-      // Only the first few, to stay inside the hourly limit.
-      for (const team of favTeams.slice(0, 5)) {
-        const got = await (await fetch(
-          "/api/team-fixtures?team=" + team.id + "&from=" + from + "&to=" + to)).json();
-        teamMatches = teamMatches.concat(got);
-      }
-      for (const league of favLeagues.slice(0, 5)) {
-        const got = await (await fetch(
-          "/api/league-fixtures?league=" + league.id + "&from=" + from + "&to=" + to)).json();
-        leagueMatches = leagueMatches.concat(got);
-      }
-    } else {
-      // Nothing followed yet, so show the big leagues instead.
-      const grouped = countriesInOrder();
-      const picks = [];
-      for (const country of grouped.order.slice(0, grouped.pinnedCount)) {
-        const top = grouped.byCountry[country][0];
-        if (top) picks.push(top);
-      }
-      for (const league of picks.slice(0, 4)) {
-        const got = await (await fetch(
-          "/api/league-fixtures?league=" + league.id + "&from=" + from + "&to=" + to)).json();
-        leagueMatches = leagueMatches.concat(got);
+  // Five slots each. Badges only, no names, so nothing collides.
+  const slots = function (items, kind) {
+    let html = '<div class="slotRow">';
+    for (let i = 0; i < 5; i++) {
+      const item = items[i];
+      if (item) {
+        html += '<div class="slot" data-kind="' + kind + '" data-id="' + item.id + '">' +
+          '<img src="' + item.logo + '" alt="' + item.name + '">' +
+        '</div>';
+      } else {
+        html += '<div class="slot slotEmpty" data-kind="add">+</div>';
       }
     }
-  } catch (error) {
-    updated.textContent = "Could not reach the server";
+    return html + '</div>';
+  };
+
+  const board = document.createElement("div");
+  board.className = "board";
+  board.innerHTML =
+    '<div class="boardHead">Your clubs</div>' +
+    slots(favTeams.slice(0, 5), "club") +
+    '<div class="boardHead">Your leagues</div>' +
+    slots(favLeagues.slice(0, 5), "league");
+  list.appendChild(board);
+
+  for (const slot of board.querySelectorAll(".slot")) {
+    const kind = slot.getAttribute("data-kind");
+    const id = Number(slot.getAttribute("data-id"));
+
+    slot.onclick = function () {
+      if (kind === "add") {
+        favView = "countries";
+        goTo("favourites");
+        return;
+      }
+      if (kind === "club") {
+        const club = favTeams.find(function (t) { return t.id === id; });
+        if (club) openClub(club);
+        return;
+      }
+      // A league goes straight to its table.
+      const league = favLeagues.find(function (l) { return l.id === id; });
+      if (league) {
+        openLeague(league);
+        leagueTab = "table";
+        refresh();
+      }
+    };
+  }
+
+  if (favTeams.length === 0 && favLeagues.length === 0) {
+    const hint = document.createElement("div");
+    hint.className = "empty";
+    hint.innerHTML =
+      "Tap a plus to add your clubs and leagues.<br><br>" +
+      "Clubs open their fixtures, table and stats.<br>" +
+      "Leagues go straight to the table.";
+    list.appendChild(hint);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// THE CLUB SCREEN
+// Fixtures, table and player stats for one club.
+// ---------------------------------------------------------------
+let openClubInfo = null;
+let clubTab = "fixtures";
+
+function openClub(club) {
+  openClubInfo = club;
+  clubTab = "fixtures";
+  screen = "club";
+  document.getElementById("mainHeader").style.display = "none";
+  document.getElementById("leagueHead").innerHTML = "";
+  refresh();
+}
+
+function closeClub() {
+  openClubInfo = null;
+  document.getElementById("leagueHead").innerHTML = "";
+  document.getElementById("mainHeader").style.display = "block";
+  goTo("home");
+}
+
+function drawClubHead() {
+  const head = document.getElementById("leagueHead");
+  const club = openClubInfo;
+
+  const tabs = [["fixtures", "Fixtures"], ["table", "Table"], ["stats", "Stats"]];
+  let tabHtml = "";
+  for (const [key, label] of tabs) {
+    tabHtml += '<div class="lTab' + (clubTab === key ? " on" : "") +
+      '" data-tab="' + key + '">' + label + '</div>';
+  }
+
+  head.innerHTML =
+    '<div class="leagueHead">' +
+      '<div class="leagueHeadTop">' +
+        '<span class="back" id="clubBack">&#8592;</span>' +
+        '<img src="' + club.logo + '" alt="">' +
+        '<div class="txt">' +
+          '<div class="ln">' + club.name + '</div>' +
+          '<div class="cn">' + (club.leagueName || "") + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="leagueTabs">' + tabHtml + '</div>' +
+    '</div>';
+
+  document.getElementById("clubBack").onclick = closeClub;
+  for (const tab of head.querySelectorAll(".lTab")) {
+    tab.onclick = function () {
+      clubTab = this.getAttribute("data-tab");
+      refresh();
+    };
+  }
+}
+
+// Goals, assists and bookings for a squad.
+function drawClubStats(players) {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  const played = players.filter(function (p) {
+    return p.goals > 0 || p.assists > 0 || p.yellow > 0 || p.red > 0;
+  });
+
+  if (played.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No player stats yet.<br><br>' +
+      'These build up as the season goes on.</div>';
     return;
   }
 
-  teamMatches.sort(matchSort);
-  leagueMatches.sort(matchSort);
+  // Most involved first.
+  played.sort(function (a, b) {
+    const scoreA = a.goals * 3 + a.assists * 2;
+    const scoreB = b.goals * 3 + b.assists * 2;
+    if (scoreA !== scoreB) return scoreB - scoreA;
+    return (b.yellow + b.red) - (a.yellow + a.red);
+  });
 
-  // Drop any game already showing in the clubs column.
-  const seen = {};
-  for (const m of teamMatches) seen[m.fixture.id] = true;
-  leagueMatches = leagueMatches.filter(function (m) { return !seen[m.fixture.id]; });
+  const head = document.createElement("div");
+  head.className = "statHead";
+  head.innerHTML =
+    '<span class="shPlayer">Player</span>' +
+    '<span class="shNum">Gls</span>' +
+    '<span class="shNum">Ast</span>' +
+    '<span class="shNum">Yel</span>' +
+    '<span class="shNum">Red</span>';
+  list.appendChild(head);
 
-  const leftTitle = hasFavourites ? "Your teams" : "Coming up";
-  const rightTitle = hasFavourites ? "Your leagues" : "Top leagues";
-
-  const cols = document.createElement("div");
-  cols.className = "homeCols";
-  cols.innerHTML =
-    '<div class="homeCol">' +
-      '<div class="colHead">' + leftTitle + '</div>' +
-      (teamMatches.length === 0
-        ? '<div class="colEmpty">' +
-            (hasFavourites ? "No games in the next week."
-                           : "Star some clubs in Favourites.") + '</div>'
-        : teamMatches.slice(0, 20).map(miniMatchHtml).join("")) +
-    '</div>' +
-    '<div class="homeCol">' +
-      '<div class="colHead">' + rightTitle + '</div>' +
-      (leagueMatches.length === 0
-        ? '<div class="colEmpty">No games in the next week.</div>'
-        : leagueMatches.slice(0, 20).map(miniMatchHtml).join("")) +
-    '</div>';
-  list.appendChild(cols);
-  wireMiniBells();
-
-  updated.textContent = (teamMatches.length + leagueMatches.length) + " games in the next 7 days";
-
-  // Then the tables for followed leagues, underneath.
-  for (const league of favLeagues.slice(0, 3)) {
-    const heading = document.createElement("div");
-    heading.className = "colHead";
-    heading.textContent = league.name + " table";
-    list.appendChild(heading);
-
-    try {
-      const rows = await (await fetch("/api/table?league=" + league.id)).json();
-      const box = document.createElement("div");
-      list.appendChild(box);
-
-      if (rows.length === 0) {
-        box.className = "colEmpty";
-        box.textContent = "No table available.";
-      } else {
-        for (const entry of rows) {
-          const row = document.createElement("div");
-          row.className = "tableRow";
-          row.innerHTML =
-            '<span class="colPos">' + entry.rank + '</span>' +
-            '<span class="colTeam"><img src="' + entry.team.logo + '" alt="">' +
-              '<span>' + entry.team.name + '</span></span>' +
-            '<span class="colNum">' + entry.all.played + '</span>' +
-            '<span class="colNum">' + (entry.goalsDiff > 0 ? "+" : "") + entry.goalsDiff + '</span>' +
-            '<span class="colPts">' + entry.points + '</span>';
-          box.appendChild(row);
-        }
-      }
-    } catch (error) {
-      // Skip this table rather than breaking the whole screen.
-    }
+  for (const player of played) {
+    const row = document.createElement("div");
+    row.className = "statRow";
+    row.innerHTML =
+      '<span class="shPlayer">' +
+        (player.image
+          ? '<img src="' + player.image + '" alt="">'
+          : '<span class="noFace">' + (player.number || "") + '</span>') +
+        '<span class="pName">' + player.name + '</span>' +
+      '</span>' +
+      '<span class="shNum strong">' + player.goals + '</span>' +
+      '<span class="shNum">' + player.assists + '</span>' +
+      '<span class="shNum ' + (player.yellow > 0 ? "yel" : "") + '">' + player.yellow + '</span>' +
+      '<span class="shNum ' + (player.red > 0 ? "red" : "") + '">' + player.red + '</span>';
+    list.appendChild(row);
   }
 }
 
@@ -3269,6 +3419,64 @@ async function refresh() {
     }
   }
 
+  if (screen === "club") {
+    drawClubHead();
+    const club = openClubInfo;
+    updated.textContent = "Loading...";
+
+    try {
+      if (clubTab === "fixtures") {
+        const matches = await (await fetch("/api/team-season?team=" + club.id)).json();
+        if (matches.length === 0) {
+          list.innerHTML = '<div class="empty">No fixtures found for this season.</div>';
+          updated.textContent = "";
+          return;
+        }
+        matches.sort(function (a, b) {
+          return new Date(a.fixture.date) - new Date(b.fixture.date);
+        });
+        drawMatches(matches, true);
+        updated.textContent = matches.length + " games this season";
+
+      } else if (clubTab === "table") {
+        // Fall back to reading the league off a fixture if we did
+        // not store it when the club was favourited.
+        let leagueId = club.leagueId;
+        if (!leagueId) {
+          const matches = await (await fetch("/api/team-season?team=" + club.id)).json();
+          if (matches.length > 0) {
+            leagueId = matches[0].league.id;
+            club.leagueId = leagueId;
+            club.leagueName = matches[0].league.name;
+            saveFavourites();
+          }
+        }
+
+        if (!leagueId) {
+          list.innerHTML = '<div class="empty">Could not work out which league.</div>';
+          updated.textContent = "";
+          return;
+        }
+
+        const rows = await (await fetch("/api/table?league=" + leagueId)).json();
+        drawTable(rows);
+        // Mark where this club sits.
+        for (const row of list.querySelectorAll(".tableRow")) {
+          if (row.textContent.includes(club.name)) row.classList.add("meRow");
+        }
+        updated.textContent = club.leagueName || "";
+
+      } else {
+        const players = await (await fetch("/api/team-stats?team=" + club.id)).json();
+        drawClubStats(players);
+        updated.textContent = "";
+      }
+    } catch (error) {
+      updated.textContent = "Could not reach the server";
+    }
+    return;
+  }
+
   if (screen === "league") {
     drawLeagueHead();
     const id = openLeagueInfo.id;
@@ -3532,6 +3740,42 @@ const server = http.createServer(async function (request, response) {
     const matches = await getTeamFixtures(teamId, from, to);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (address.pathname === "/api/team-season") {
+    const teamId = Number(address.searchParams.get("team"));
+    if (!teamId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    const matches = await getSeason(teamId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (address.pathname === "/api/team-stats") {
+    const teamId = Number(address.searchParams.get("team"));
+    if (!teamId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+
+    const squad = await getSquad(teamId);
+    const players = Object.keys(squad).map(function (id) {
+      const p = squad[id];
+      return {
+        name: p.name, image: p.image, number: p.number,
+        position: p.position, goals: p.goals, assists: p.assists,
+        yellow: p.yellow, red: p.red, played: p.played,
+      };
+    });
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(players));
     return;
   }
 
