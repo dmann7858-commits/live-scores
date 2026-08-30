@@ -1167,6 +1167,37 @@ function stateOf(match) {
   return "upcoming";
 }
 
+// The minute a game is at. Uses the API's own figure when there is
+// one; otherwise works it out from the kick-off time, allowing
+// fifteen minutes for the interval.
+function minuteOf(match) {
+  if (match.fixture.status.elapsed !== null) {
+    return match.fixture.status.elapsed;
+  }
+  if (match.fixture.status.short === "HT") return 45;
+
+  const kickoff = new Date(match.fixture.date);
+  if (isNaN(kickoff)) return null;
+
+  const gone = Math.floor((Date.now() - kickoff.getTime()) / 60000);
+  if (gone < 0) return null;
+
+  // Before the break, the clock and real time match.
+  if (gone <= 45) return gone;
+  // During the interval.
+  if (gone <= 60) return 45;
+  // After it, take the fifteen minutes back off.
+  const playing = gone - 15;
+  return playing > 95 ? 90 : playing;
+}
+
+// True when the estimate came from the clock rather than the API,
+// so the screen can mark it as approximate.
+function minuteIsEstimated(match) {
+  return match.fixture.status.elapsed === null &&
+         match.fixture.status.short !== "HT";
+}
+
 // Live first, earliest minute at the top. Then games to come,
 // then today's results.
 function matchSort(a, b) {
@@ -1177,10 +1208,9 @@ function matchSort(a, b) {
   if (order[sa] !== order[sb]) return order[sa] - order[sb];
 
   if (sa === "live") {
-    // Half time counts as 45 so it sits in the right place.
-    const ma = a.fixture.status.elapsed === null ? 45 : a.fixture.status.elapsed;
-    const mb = b.fixture.status.elapsed === null ? 45 : b.fixture.status.elapsed;
-    return ma - mb;
+    const ma = minuteOf(a);
+    const mb = minuteOf(b);
+    return (ma === null ? 45 : ma) - (mb === null ? 45 : mb);
   }
 
   return new Date(a.fixture.date) - new Date(b.fixture.date);
@@ -1212,18 +1242,29 @@ function drawMatches(matches, showKickoffTimes) {
       lastLeague = match.league.name;
     }
 
+    // A game being played always shows its minute, whatever screen
+    // we are on. Only games yet to start show a kick-off time.
+    const state = stateOf(match);
     let when;
     let whenClass = "when";
 
-    if (showKickoffTimes) {
+    if (state === "live") {
+      const minute = minuteOf(match);
+      if (match.fixture.status.short === "HT") {
+        when = "HT";
+      } else if (minute === null) {
+        when = "LIVE";
+      } else {
+        // A tilde marks a minute we worked out ourselves.
+        when = (minuteIsEstimated(match) ? "~" : "") + minute + "'";
+      }
+    } else if (state === "finished") {
+      when = "FT";
+      whenClass = "when grey";
+    } else {
       const kickoff = new Date(match.fixture.date);
       when = isNaN(kickoff) ? "--:--"
         : kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      whenClass = "when grey";
-    } else if (match.fixture.status.elapsed !== null) {
-      when = match.fixture.status.elapsed + "'";
-    } else {
-      when = match.fixture.status.short;
       whenClass = "when grey";
     }
 
@@ -2122,8 +2163,14 @@ function miniMatchHtml(match) {
   let when;
 
   if (state === "live") {
-    when = match.fixture.status.elapsed === null
-      ? "Half time" : match.fixture.status.elapsed + "' LIVE";
+    const minute = minuteOf(match);
+    if (match.fixture.status.short === "HT") {
+      when = "Half time";
+    } else if (minute === null) {
+      when = "LIVE";
+    } else {
+      when = (minuteIsEstimated(match) ? "~" : "") + minute + "' LIVE";
+    }
   } else if (state === "finished") {
     when = "Full time";
   } else {
