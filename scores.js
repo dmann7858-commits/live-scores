@@ -452,8 +452,9 @@ const PAGE = `
     padding: 12px 16px; background: #fff;
     border-bottom: 1px solid #E8E8E4;
   }
-  .when { width: 44px; font-size: 12px; color: #BA7517; flex-shrink: 0; }
-  .when.grey { color: #777; }
+  .when { width: 44px; font-size: 12px; color: #BA7517; flex-shrink: 0; font-weight: 600; }
+  .when.grey { color: #777; font-weight: 400; }
+  .when.live { color: #BA7517; }
   .teams { flex: 1; min-width: 0; }
   .teamRow {
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -681,7 +682,13 @@ const PAGE = `
     background: #fff; padding: 10px 12px;
     border-bottom: 1px solid #E8E8E4;
   }
-  .miniWhen { font-size: 11px; color: #777; margin-bottom: 6px; }
+  .miniTop {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px; gap: 6px;
+  }
+  .miniWhen { font-size: 11px; color: #777; }
+  .miniWhen.liveNow { color: #BA7517; font-weight: 600; }
+  .miniBell { font-size: 14px; }
   .miniTeam {
     display: flex; align-items: center; gap: 6px;
     font-size: 13px; margin-bottom: 4px;
@@ -714,7 +721,20 @@ const PAGE = `
   .filterBar {
     display: flex; align-items: center; gap: 8px;
     padding: 10px 16px; background: #E8E8E4;
-    font-size: 13px;
+    font-size: 13px; flex-wrap: wrap;
+  }
+  .chips { display: flex; gap: 6px; width: 100%; }
+  .chip {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    gap: 5px; padding: 7px 6px; border-radius: 16px;
+    background: #fff; border: 1px solid #D5D5D0;
+    font-size: 12px; color: #555; cursor: pointer;
+    user-select: none; white-space: nowrap;
+  }
+  .chip.on { background: #185FA5; border-color: #185FA5; color: #fff; }
+  .chip .cIcon { font-size: 13px; }
+  .chip .cCount {
+    font-size: 10px; opacity: 0.75;
   }
   .filterBtn {
     background: #185FA5; color: #fff; border: none;
@@ -842,17 +862,87 @@ function drawProgress() {
   document.getElementById("xpText").textContent = intoLevel + " / 1000 xp";
 }
 
+// ---------------------------------------------------------------
+// GOAL ALERTS
+//
+// The browser can pop a notification while the app is open. Proper
+// background alerts need the phone app, but this works today.
+// ---------------------------------------------------------------
+let lastKnownScores = {};
+
+function notificationsAllowed() {
+  return typeof Notification !== "undefined" && Notification.permission === "granted";
+}
+
+async function askForNotifications() {
+  if (typeof Notification === "undefined") return false;
+  if (Notification.permission === "granted") return true;
+  if (Notification.permission === "denied") return false;
+  const answer = await Notification.requestPermission();
+  return answer === "granted";
+}
+
 function toggleAlert(fixtureId, element) {
   const position = alerts.indexOf(fixtureId);
+
   if (position === -1) {
     alerts.push(fixtureId);
-    element.classList.add("on");
+    if (element) element.classList.add("on");
+    // Ask the first time somebody turns one on.
+    askForNotifications();
   } else {
     alerts.splice(position, 1);
-    element.classList.remove("on");
+    if (element) element.classList.remove("on");
   }
+
   saveProgress();
+  // Keep every copy of that bell in step, since the same match can
+  // appear on more than one part of the screen.
+  syncBells(fixtureId);
 }
+
+function syncBells(fixtureId) {
+  const on = alerts.includes(fixtureId);
+  for (const card of document.querySelectorAll('[data-id="' + fixtureId + '"]')) {
+    const bell = card.querySelector(".bell");
+    if (bell) bell.classList.toggle("on", on);
+  }
+}
+
+// Runs on its own timer. Compares the score of every followed match
+// against what it saw last time and shouts about anything new.
+async function checkForGoals() {
+  if (alerts.length === 0) return;
+
+  let matches;
+  try {
+    matches = await (await fetch("/api/ticker")).json();
+  } catch (error) {
+    return;
+  }
+
+  for (const match of matches) {
+    if (!alerts.includes(match.id)) continue;
+
+    const now = (match.hg === null ? 0 : match.hg) + "-" +
+                (match.ag === null ? 0 : match.ag);
+    const before = lastKnownScores[match.id];
+
+    // Only shout when we have seen this game before and it changed.
+    if (before !== undefined && before !== now && notificationsAllowed()) {
+      const clock = match.minute !== null ? match.minute + "'" : match.short;
+      new Notification("GOAL - " + match.home + " " + now + " " + match.away, {
+        body: match.league + "  " + clock,
+        tag: "goal-" + match.id,
+      });
+    }
+
+    lastKnownScores[match.id] = now;
+  }
+}
+
+setInterval(checkForGoals, 30000);
+checkForGoals();
 
 
 // ---------------------------------------------------------------
@@ -938,6 +1028,53 @@ function drawDates() {
 
 
 // ---------------------------------------------------------------
+// MATCH STATE
+//
+// Every screen needs to know whether a game is coming up, being
+// played, or done. The API is not always consistent, so this works
+// it out from several clues rather than trusting one field.
+// ---------------------------------------------------------------
+function stateOf(match) {
+  const status = match.fixture.status;
+
+  if (status.elapsed !== null) return "live";
+  if (status.short === "HT") return "live";
+  if (status.short === "FT" || status.short === "AET" || status.short === "PEN") {
+    return "finished";
+  }
+  if (status.short === "PST" || status.short === "CANC") return "finished";
+
+  // No minute and no clear status, but both scores filled in and
+  // kick-off has passed - that is a finished game.
+  const hasScores = match.goals.home !== null && match.goals.away !== null;
+  const kickoff = new Date(match.fixture.date);
+  const started = !isNaN(kickoff) && kickoff.getTime() < Date.now();
+
+  if (hasScores && started) return "finished";
+  return "upcoming";
+}
+
+// Live first, earliest minute at the top. Then games to come,
+// then today's results.
+function matchSort(a, b) {
+  const order = { live: 0, upcoming: 1, finished: 2 };
+  const sa = stateOf(a);
+  const sb = stateOf(b);
+
+  if (order[sa] !== order[sb]) return order[sa] - order[sb];
+
+  if (sa === "live") {
+    // Half time counts as 45 so it sits in the right place.
+    const ma = a.fixture.status.elapsed === null ? 45 : a.fixture.status.elapsed;
+    const mb = b.fixture.status.elapsed === null ? 45 : b.fixture.status.elapsed;
+    return ma - mb;
+  }
+
+  return new Date(a.fixture.date) - new Date(b.fixture.date);
+}
+
+
+// ---------------------------------------------------------------
 // DRAWING MATCHES
 // ---------------------------------------------------------------
 function drawMatches(matches, showKickoffTimes) {
@@ -983,6 +1120,7 @@ function drawMatches(matches, showKickoffTimes) {
 
     const row = document.createElement("div");
     row.className = "match";
+    row.setAttribute("data-id", match.fixture.id);
     row.innerHTML =
       '<div class="' + whenClass + '">' + when + '</div>' +
       '<div class="teams">' +
@@ -1867,18 +2005,48 @@ function drawFavTeams() {
 // countries instead of sitting empty.
 // ---------------------------------------------------------------
 function miniMatchHtml(match) {
-  const kickoff = new Date(match.fixture.date);
-  const when = isNaN(kickoff) ? "" :
-    kickoff.toLocaleDateString([], { weekday: "short", day: "numeric" }) + " " +
-    kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const state = stateOf(match);
+  let when;
 
-  return '<div class="miniMatch">' +
-    '<div class="miniWhen">' + when + '</div>' +
+  if (state === "live") {
+    when = match.fixture.status.elapsed === null
+      ? "Half time" : match.fixture.status.elapsed + "' LIVE";
+  } else if (state === "finished") {
+    when = "Full time";
+  } else {
+    const kickoff = new Date(match.fixture.date);
+    when = isNaN(kickoff) ? "" :
+      kickoff.toLocaleDateString([], { weekday: "short", day: "numeric" }) + " " +
+      kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  const live = state === "live";
+  const isOn = alerts.includes(match.fixture.id);
+
+  return '<div class="miniMatch" data-id="' + match.fixture.id + '">' +
+    '<div class="miniTop">' +
+      '<span class="miniWhen' + (live ? " liveNow" : "") + '">' + when + '</span>' +
+      '<span class="bell miniBell' + (isOn ? " on" : "") + '">&#128276;</span>' +
+    '</div>' +
     '<div class="miniTeam"><img src="' + match.teams.home.logo + '" alt="">' +
       '<span>' + match.teams.home.name + '</span></div>' +
     '<div class="miniTeam"><img src="' + match.teams.away.logo + '" alt="">' +
       '<span>' + match.teams.away.name + '</span></div>' +
   '</div>';
+}
+
+// The mini cards are built as plain text, so their bells are
+// wired up afterwards.
+function wireMiniBells() {
+  for (const card of document.querySelectorAll(".miniMatch")) {
+    const id = Number(card.getAttribute("data-id"));
+    const bell = card.querySelector(".miniBell");
+    if (!bell) continue;
+    bell.onclick = function (event) {
+      event.stopPropagation();
+      toggleAlert(id, bell);
+    };
+  }
 }
 
 async function drawHome() {
@@ -1930,11 +2098,8 @@ async function drawHome() {
     return;
   }
 
-  function byKickoff(a, b) {
-    return new Date(a.fixture.date) - new Date(b.fixture.date);
-  }
-  teamMatches.sort(byKickoff);
-  leagueMatches.sort(byKickoff);
+  teamMatches.sort(matchSort);
+  leagueMatches.sort(matchSort);
 
   // Drop any game already showing in the clubs column.
   const seen = {};
@@ -1962,6 +2127,7 @@ async function drawHome() {
         : leagueMatches.slice(0, 20).map(miniMatchHtml).join("")) +
     '</div>';
   list.appendChild(cols);
+  wireMiniBells();
 
   updated.textContent = (teamMatches.length + leagueMatches.length) + " games in the next 7 days";
 
@@ -2138,20 +2304,37 @@ function drawMatch(match) {
 let fixtureFilter = null;   // { country, league } or null
 let filterStage = "off";    // off | country | league
 
-function drawFilterBar() {
+// Which kinds of match to show: all, upcoming, live or finished.
+let stateFilter = "all";
+
+function drawFilterBar(counts) {
   const bar = document.createElement("div");
   bar.className = "filterBar";
 
-  if (fixtureFilter) {
-    bar.innerHTML =
-      '<span class="filterNote">' + fixtureFilter.country +
+  const leagueRow = fixtureFilter
+    ? '<span class="filterNote">' + fixtureFilter.country +
       ' &rsaquo; ' + fixtureFilter.league.name + '</span>' +
-      '<span class="filterClear" id="clearFilter">Clear</span>';
-  } else {
-    bar.innerHTML =
-      '<button class="filterBtn" id="openFilter">Filter by league</button>' +
+      '<span class="filterClear" id="clearFilter">Clear</span>'
+    : '<button class="filterBtn" id="openFilter">Filter by league</button>' +
       '<span class="filterNote">Showing everywhere</span>';
-  }
+
+  const chip = function (key, icon, label, count) {
+    return '<div class="chip' + (stateFilter === key ? " on" : "") +
+      '" data-state="' + key + '">' +
+      '<span class="cIcon">' + icon + '</span>' + label +
+      (count === undefined ? "" : '<span class="cCount">' + count + '</span>') +
+      '</div>';
+  };
+
+  bar.innerHTML =
+    leagueRow +
+    '<div class="chips">' +
+      chip("all", "&#9776;", "All", counts.all) +
+      chip("upcoming", "&#128197;", "Fixtures", counts.upcoming) +
+      chip("live", "&#9679;", "Live", counts.live) +
+      chip("finished", "&#10003;", "Results", counts.finished) +
+    '</div>';
+
   return bar;
 }
 
@@ -2168,6 +2351,12 @@ function wireFilterBar() {
     clear.onclick = function () {
       fixtureFilter = null;
       filterStage = "off";
+      refresh();
+    };
+  }
+  for (const chip of document.querySelectorAll(".chip")) {
+    chip.onclick = function () {
+      stateFilter = this.getAttribute("data-state");
       refresh();
     };
   }
@@ -2259,9 +2448,7 @@ async function refresh() {
         later.setDate(later.getDate() + 14);
         const matches = await (await fetch(
           "/api/league-fixtures?league=" + id + "&from=" + from + "&to=" + isoDate(later))).json();
-        matches.sort(function (a, b) {
-          return new Date(a.fixture.date) - new Date(b.fixture.date);
-        });
+        matches.sort(matchSort);
         drawMatches(matches, true);
         updated.textContent = matches.length + " games in the next fortnight";
 
@@ -2372,36 +2559,34 @@ async function refresh() {
     return;
   }
 
-  list.innerHTML = "";
-  const bar = drawFilterBar();
-  list.appendChild(bar);
-  wireFilterBar();
+  // Count each kind so the chips can show numbers.
+  const counts = { all: matches.length, live: 0, upcoming: 0, finished: 0 };
+  for (const match of matches) counts[stateOf(match)]++;
 
-  if (matches.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = "No games found.";
-    list.appendChild(empty);
-    updated.textContent = "";
-    return;
+  const shown = stateFilter === "all"
+    ? matches
+    : matches.filter(function (m) { return stateOf(m) === stateFilter; });
+
+  shown.sort(matchSort);
+
+  // drawMatches clears the list, so draw first then put the bar on top.
+  if (shown.length === 0) {
+    list.innerHTML = '<div class="empty">Nothing to show here.</div>';
+  } else {
+    drawMatches(shown, true);
   }
 
-  matches.sort(function (a, b) {
-    return new Date(a.fixture.date) - new Date(b.fixture.date);
-  });
-
-  // drawMatches wipes the list, so draw first then put the bar back on top.
-  drawMatches(matches, true);
+  const bar = drawFilterBar(counts);
   list.insertBefore(bar, list.firstChild);
   wireFilterBar();
 
-  updated.textContent = matches.length + " games";
+  updated.textContent = shown.length + " of " + matches.length + " games";
   drawProgress();
 }
 
 drawDates();
 drawProgress();
-refresh();
+goTo("home");
 
 // The ticker keeps live scores moving on its own, so only the
 // home screen needs periodic refreshing.
