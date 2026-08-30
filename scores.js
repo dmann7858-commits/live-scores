@@ -78,29 +78,44 @@ function numberOrNull(value) {
 }
 
 function readStatus(raw) {
-  const status = (raw.match_status || "").trim();
+  const status = String(raw.match_status || "").trim();
+  const lower = status.toLowerCase();
 
-  // Empty means it has not kicked off yet.
-  if (status === "") {
-    return { short: "NS", long: "Not started", elapsed: null };
-  }
-  if (status === "Finished" || status === "FT") {
-    return { short: "FT", long: "Finished", elapsed: null };
-  }
-  if (status === "Half Time" || status === "HT") {
-    return { short: "HT", long: "Half time", elapsed: null };
-  }
-  if (status === "Postponed" || status === "Cancelled") {
-    return { short: "PST", long: status, elapsed: null };
-  }
+  // Some rows carry a separate live flag, so trust that first.
+  const liveFlag = String(raw.match_live || "").trim() === "1";
 
-  // Anything else is the minute, sometimes with a + on it.
+  // A bare number is the minute. So is something like "45+2".
   const minute = parseInt(status, 10);
-  if (!Number.isNaN(minute)) {
+  if (!Number.isNaN(minute) && /^\d/.test(status)) {
     return { short: "LIVE", long: "In play", elapsed: minute };
   }
 
-  return { short: status, long: status, elapsed: null };
+  if (lower === "" ) {
+    // Empty usually means not started, but if the live flag is set
+    // the game is on and the API just has no minute for it.
+    return liveFlag
+      ? { short: "LIVE", long: "In play", elapsed: null }
+      : { short: "NS", long: "Not started", elapsed: null };
+  }
+
+  if (lower.includes("half") || lower === "ht" || lower === "break") {
+    return { short: "HT", long: "Half time", elapsed: null };
+  }
+  if (lower.includes("finish") || lower === "ft" || lower === "ended" ||
+      lower.includes("after et") || lower === "aet" || lower === "pen" ||
+      lower.includes("full")) {
+    return { short: "FT", long: "Finished", elapsed: null };
+  }
+  if (lower.includes("postpon") || lower.includes("cancel") ||
+      lower.includes("abandon") || lower.includes("suspend")) {
+    return { short: "PST", long: status, elapsed: null };
+  }
+
+  // Something we have not seen before. If the live flag is on,
+  // treat it as being played.
+  return liveFlag
+    ? { short: "LIVE", long: status || "In play", elapsed: null }
+    : { short: status, long: status, elapsed: null };
 }
 
 function translateMatch(raw) {
@@ -323,6 +338,13 @@ function onlyTheirLeagues(matches, leagueIds) {
   return matches.filter(function (match) {
     return leagueIds.includes(match.league.id);
   });
+}
+
+function isoToday() {
+  const now = new Date();
+  return now.getFullYear() + "-" +
+    String(now.getMonth() + 1).padStart(2, "0") + "-" +
+    String(now.getDate()).padStart(2, "0");
 }
 
 function leagueIdsFrom(address) {
@@ -2753,6 +2775,44 @@ const server = http.createServer(async function (request, response) {
     const raw = await askApi("get_events", "&match_live=1");
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(raw ? raw.slice(0, 2) : null, null, 2));
+    return;
+  }
+
+  // Lists every different match_status value the API is sending
+  // today, with an example of each. This is how we find out what
+  // words it actually uses for finished, half time and so on.
+  if (address.pathname === "/api/statuses") {
+    const date = address.searchParams.get("date") || isoToday();
+    const raw = await askApi("get_events", "&from=" + date + "&to=" + date);
+
+    if (raw === null) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "no answer from the API" }, null, 2));
+      return;
+    }
+
+    const seen = {};
+    for (const row of raw) {
+      const key = JSON.stringify(row.match_status);
+      if (!seen[key]) {
+        seen[key] = {
+          match_status: row.match_status,
+          count: 0,
+          example: row.match_hometeam_name + " " + row.match_hometeam_score +
+                   "-" + row.match_awayteam_score + " " + row.match_awayteam_name,
+          match_time: row.match_time,
+          live: row.match_live,
+        };
+      }
+      seen[key].count++;
+    }
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      date: date,
+      total: raw.length,
+      statuses: Object.values(seen),
+    }, null, 2));
     return;
   }
 
