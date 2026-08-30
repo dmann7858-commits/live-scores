@@ -191,6 +191,58 @@ function buildCommentary(raw) {
   return feed;
 }
 
+// Splits "4-2-3-1" into rows of players in front of the keeper.
+function readFormation(text, howMany) {
+  const rows = String(text || "").split("-")
+    .map(function (n) { return parseInt(n, 10); })
+    .filter(function (n) { return !Number.isNaN(n) && n > 0; });
+
+  const total = rows.reduce(function (a, b) { return a + b; }, 0);
+
+  // Fall back to a sensible shape if the formation is missing or
+  // does not add up to the number of outfield players.
+  if (rows.length === 0 || total !== howMany) {
+    if (howMany === 10) return [4, 4, 2];
+    return [howMany];
+  }
+  return rows;
+}
+
+// Turns one side's line-up into players with a place on the pitch.
+function layOutSide(side, formation, squad) {
+  const starters = (side.starting_lineups || []).slice();
+
+  // lineup_position is 1 for the keeper, then up the pitch.
+  starters.sort(function (a, b) {
+    return Number(a.lineup_position) - Number(b.lineup_position);
+  });
+
+  const withInfo = starters.map(function (player) {
+    const extra = squad[String(player.player_key)] || {};
+    return {
+      name: player.lineup_player,
+      number: player.lineup_number || extra.number || "",
+      key: String(player.player_key),
+      image: extra.image || "",
+    };
+  });
+
+  if (withInfo.length === 0) return { keeper: null, rows: [] };
+
+  const keeper = withInfo[0];
+  const outfield = withInfo.slice(1);
+  const shape = readFormation(formation, outfield.length);
+
+  const rows = [];
+  let at = 0;
+  for (const count of shape) {
+    rows.push(outfield.slice(at, at + count));
+    at += count;
+  }
+
+  return { keeper: keeper, rows: rows };
+}
+
 function translateMatch(raw) {
   const goals = raw.goalscorer || [];
 
@@ -229,6 +281,17 @@ function translateMatch(raw) {
       }),
     statistics: raw.statistics || [],
     commentary: buildCommentary(raw),
+    formations: {
+      home: raw.match_hometeam_system || "",
+      away: raw.match_awayteam_system || "",
+    },
+    // Filled in later, once the squads have been looked up.
+    pitch: null,
+    extras: {
+      stadium: raw.match_stadium || "",
+      referee: raw.match_referee || "",
+      round: raw.match_round || "",
+    },
   };
 }
 
@@ -329,6 +392,31 @@ async function getLeagueFixtures(leagueId, from, to) {
   if (raw === null) return cache[name] ? cache[name].data : [];
 
   return intoCache(name, raw.map(translateMatch));
+}
+
+// A club's squad, kept for a day. Used to find player photos,
+// because the line-up data only carries names and keys.
+async function getSquad(teamId) {
+  const name = "squad-" + teamId;
+  const hit = fromCache(name, 86400);
+  if (hit) return hit;
+
+  const raw = await askApi("get_teams", "&team_id=" + teamId);
+  if (raw === null || raw.length === 0) {
+    return cache[name] ? cache[name].data : {};
+  }
+
+  // Key the players by their id so the line-up can look them up.
+  const byId = {};
+  for (const player of (raw[0].players || [])) {
+    byId[String(player.player_id)] = {
+      image: player.player_image || "",
+      number: player.player_number || "",
+      position: player.player_type || "",
+    };
+  }
+
+  return intoCache(name, byId);
 }
 
 // Fixtures for one club across a date range.
@@ -642,6 +730,18 @@ const PAGE = `
   .commRow.goal .commMin { color: #BA7517; font-weight: 600; }
   .commRow.red { background: #FDF0F0; }
   .commRow.start .commText, .commRow.end .commText { color: #555; font-style: italic; }
+
+  /* Pitch view */
+  .pitchWrap { background: #fff; padding: 12px 8px 16px; }
+  .pitchNote {
+    display: flex; justify-content: space-between;
+    padding: 0 8px 10px; font-size: 12px; color: #777;
+  }
+  .pitchNote b { font-weight: 600; color: #333; }
+  .extras {
+    padding: 10px 16px; background: #F4F4F2;
+    font-size: 12px; color: #666; line-height: 1.6;
+  }
 
   .statBox { padding: 16px; background: #fff; }
   .stat { margin-bottom: 16px; }
@@ -2386,12 +2486,14 @@ function drawMatch(match) {
     '<div class="tabs">' +
       '<div class="tab' + (matchTab === "summary" ? " on" : "") + '" id="tabSummary">Summary</div>' +
       '<div class="tab' + (matchTab === "comm" ? " on" : "") + '" id="tabComm">Commentary</div>' +
+      '<div class="tab' + (matchTab === "pitch" ? " on" : "") + '" id="tabPitch">Line-ups</div>' +
       '<div class="tab' + (matchTab === "stats" ? " on" : "") + '" id="tabStats">Stats</div>' +
     '</div>';
 
   document.getElementById("backBtn").onclick = closeMatch;
   document.getElementById("tabSummary").onclick = function () { matchTab = "summary"; drawMatch(match); };
   document.getElementById("tabComm").onclick = function () { matchTab = "comm"; drawMatch(match); };
+  document.getElementById("tabPitch").onclick = function () { matchTab = "pitch"; drawMatch(match); };
   document.getElementById("tabStats").onclick = function () { matchTab = "stats"; drawMatch(match); };
 
   list.innerHTML = "";
@@ -2439,6 +2541,114 @@ function drawMatch(match) {
         '<div class="commIcon">' + (icons[moment.kind] || "&#8226;") + '</div>' +
         '<div class="commText">' + moment.text + '</div>';
       list.appendChild(row);
+    }
+    return;
+  }
+
+  if (matchTab === "pitch") {
+    const pitch = match.pitch;
+
+    if (!pitch || (!pitch.home.keeper && !pitch.away.keeper)) {
+      list.innerHTML =
+        '<div class="empty">Line-ups not available.<br><br>' +
+        'They usually appear about an hour before kick off.</div>';
+      return;
+    }
+
+    // Anyone who scored gets a ball on their badge.
+    const scorers = {};
+    for (const event of (match.events || [])) {
+      if (event.player && event.player.name) {
+        scorers[event.player.name.trim()] = true;
+      }
+    }
+
+    const W = 340;
+    const H = 470;
+    let svg =
+      '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
+      '<title>Line-ups on the pitch</title>' +
+      '<desc>Both starting elevens laid out in their formations.</desc>' +
+      '<rect x="0" y="0" width="' + W + '" height="' + H + '" rx="6" fill="#2F6410"/>' +
+      '<g stroke="#C0DD97" stroke-width="1.4" fill="none" opacity="0.5">' +
+        '<rect x="8" y="8" width="' + (W - 16) + '" height="' + (H - 16) + '"/>' +
+        '<line x1="8" y1="' + (H / 2) + '" x2="' + (W - 8) + '" y2="' + (H / 2) + '"/>' +
+        '<circle cx="' + (W / 2) + '" cy="' + (H / 2) + '" r="42"/>' +
+        '<rect x="' + (W / 2 - 78) + '" y="8" width="156" height="52"/>' +
+        '<rect x="' + (W / 2 - 78) + '" y="' + (H - 60) + '" width="156" height="52"/>' +
+      '</g>';
+
+    // One player badge: photo if we have it, shirt number if not.
+    const badge = function (player, x, y, colour, textColour) {
+      const safeName = player.name.replace(/[<>&]/g, "");
+      const shortName = safeName.length > 12 ? safeName.slice(0, 11) + "." : safeName;
+      const clipId = "clip" + Math.abs(x * 1000 + y);
+
+      let inner;
+      if (player.image) {
+        inner =
+          '<clipPath id="' + clipId + '"><circle cx="' + x + '" cy="' + y + '" r="16"/></clipPath>' +
+          '<image href="' + player.image + '" x="' + (x - 16) + '" y="' + (y - 16) +
+          '" width="32" height="32" clip-path="url(#' + clipId + ')" preserveAspectRatio="xMidYMid slice"/>' +
+          '<circle cx="' + x + '" cy="' + y + '" r="16" fill="none" stroke="' + colour + '" stroke-width="2.5"/>';
+      } else {
+        inner =
+          '<circle cx="' + x + '" cy="' + y + '" r="16" fill="' + colour + '" stroke="#fff" stroke-width="2"/>' +
+          '<text x="' + x + '" y="' + (y + 4) + '" text-anchor="middle" font-size="12" ' +
+          'font-weight="600" fill="' + textColour + '">' + (player.number || "") + '</text>';
+      }
+
+      const scored = scorers[safeName] ? ' &#9917;' : '';
+
+      return inner +
+        '<text x="' + x + '" y="' + (y + 29) + '" text-anchor="middle" font-size="9" ' +
+        'fill="#FFFFFF">' + shortName + scored + '</text>';
+    };
+
+    // Home fills the top half, away the bottom.
+    const placeSide = function (side, topDown, colour, textColour) {
+      let out = "";
+      const bands = side.rows.length + 1;
+      const half = H / 2;
+
+      for (let r = 0; r <= side.rows.length; r++) {
+        const players = r === 0 ? [side.keeper] : side.rows[r - 1];
+        if (!players || players.length === 0 || !players[0]) continue;
+
+        const step = half / (bands + 0.4);
+        const y = topDown
+          ? 34 + r * step
+          : H - 34 - r * step;
+
+        for (let i = 0; i < players.length; i++) {
+          const x = (W / (players.length + 1)) * (i + 1);
+          out += badge(players[i], Math.round(x), Math.round(y), colour, textColour);
+        }
+      }
+      return out;
+    };
+
+    svg += placeSide(pitch.home, true, "#185FA5", "#FFFFFF");
+    svg += placeSide(pitch.away, false, "#EF9F27", "#412402");
+    svg += '</svg>';
+
+    const wrap = document.createElement("div");
+    wrap.className = "pitchWrap";
+    wrap.innerHTML =
+      '<div class="pitchNote">' +
+        '<span><b>' + match.teams.home.name + '</b> ' + (match.formations.home || "") + '</span>' +
+        '<span>' + (match.formations.away || "") + ' <b>' + match.teams.away.name + '</b></span>' +
+      '</div>' + svg;
+    list.appendChild(wrap);
+
+    const extras = match.extras || {};
+    if (extras.stadium || extras.referee) {
+      const info = document.createElement("div");
+      info.className = "extras";
+      info.innerHTML =
+        (extras.stadium ? "Ground: " + extras.stadium + "<br>" : "") +
+        (extras.referee ? "Referee: " + extras.referee : "");
+      list.appendChild(info);
     }
     return;
   }
