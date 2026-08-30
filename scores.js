@@ -373,12 +373,35 @@ async function getMatch(fixtureId) {
   const hit = fromCache(name, 60);
   if (hit) return hit;
 
-  const raw = await askApi("get_events", "&match_id=" + fixtureId);
-  if (raw === null || raw.length === 0) {
+  const result = await askApi("get_events", "&match_id=" + fixtureId);
+  if (result === null || result.length === 0) {
     return cache[name] ? cache[name].data : null;
   }
 
-  return intoCache(name, translateMatch(raw[0]));
+  const raw = result[0];
+  const match = translateMatch(raw);
+
+  // Look up both squads so the pitch can show faces. Cached for a
+  // day, so it is one extra call per club per day.
+  const lineup = raw.lineup || {};
+  const hasLineup =
+    (lineup.home && (lineup.home.starting_lineups || []).length > 0) ||
+    (lineup.away && (lineup.away.starting_lineups || []).length > 0);
+
+  if (hasLineup) {
+    console.log("   line-up found, looking up squads");
+    const homeSquad = raw.match_hometeam_id ? await getSquad(raw.match_hometeam_id) : {};
+    const awaySquad = raw.match_awayteam_id ? await getSquad(raw.match_awayteam_id) : {};
+
+    match.pitch = {
+      home: layOutSide(lineup.home || {}, raw.match_hometeam_system, homeSquad),
+      away: layOutSide(lineup.away || {}, raw.match_awayteam_system, awaySquad),
+    };
+  } else {
+    console.log("   no line-up in this response");
+  }
+
+  return intoCache(name, match);
 }
 
 // Fixtures for one league across a date range.
@@ -3162,11 +3185,19 @@ const server = http.createServer(async function (request, response) {
   // Shows what the API really sends for one match: whether there
   // is a line-up at all, and what the fields are called.
   if (address.pathname === "/api/rawmatch") {
-    const id = address.searchParams.get("id");
+    let id = address.searchParams.get("id");
+
+    // No id given, so pick a live match and use that.
     if (!id) {
-      response.writeHead(400, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: "add ?id=MATCHID" }, null, 2));
-      return;
+      const live = await askApi("get_events", "&match_live=1");
+      if (live === null || live.length === 0) {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({
+          error: "nothing live right now, so pass ?id=MATCHID instead",
+        }, null, 2));
+        return;
+      }
+      id = live[0].match_id;
     }
 
     const raw = await askApi("get_events", "&match_id=" + id);
@@ -3184,6 +3215,7 @@ const server = http.createServer(async function (request, response) {
 
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({
+      match_id: row.match_id,
       match: row.match_hometeam_name + " v " + row.match_awayteam_name,
       status: row.match_status,
       home_id: row.match_hometeam_id,
