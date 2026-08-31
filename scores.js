@@ -7,6 +7,12 @@
 const http = require("http");
 
 const API_KEY = process.env.APIFOOTBALL_KEY || "PASTE_YOUR_KEY_HERE";
+
+// Where accounts and saved progress live. Both come from settings
+// on the server, never from the code.
+const DB_URL = process.env.SUPABASE_URL || "";
+const DB_KEY = process.env.SUPABASE_SERVICE_KEY || "";
+const DB_ON = Boolean(DB_URL && DB_KEY);
 const PORT = process.env.PORT || 3000;
 const BASE = "https://apiv3.apifootball.com/";
 
@@ -18,6 +24,114 @@ const MY_LEAGUES = [
 ];
 
 const MY_LEAGUE_IDS = MY_LEAGUES.map(function (l) { return l.id; });
+
+
+// ---------------------------------------------------------------
+// ACCOUNTS AND SAVED PROGRESS
+//
+// The browser never talks to the database directly. It sends an
+// email and password here, gets a token back, and hands that token
+// over on every save.
+// ---------------------------------------------------------------
+async function dbCall(path, options) {
+  const settings = options || {};
+  const headers = Object.assign({
+    "apikey": DB_KEY,
+    "Content-Type": "application/json",
+  }, settings.headers || {});
+
+  if (!headers.Authorization) {
+    headers.Authorization = "Bearer " + DB_KEY;
+  }
+
+  const response = await fetch(DB_URL + path, {
+    method: settings.method || "GET",
+    headers: headers,
+    body: settings.body ? JSON.stringify(settings.body) : undefined,
+  });
+
+  let data = null;
+  try { data = await response.json(); } catch (error) { data = null; }
+
+  return { ok: response.ok, status: response.status, data: data };
+}
+
+// Creates an account and returns a token straight away.
+async function signUp(email, password) {
+  const result = await dbCall("/auth/v1/signup", {
+    method: "POST",
+    body: { email: email, password: password },
+  });
+
+  if (!result.ok) {
+    const message = (result.data && (result.data.msg || result.data.message ||
+      result.data.error_description)) || "Could not create that account";
+    return { error: message };
+  }
+
+  // Some projects need the email confirming before a token appears.
+  if (!result.data.access_token) {
+    return { needsConfirming: true };
+  }
+
+  return {
+    token: result.data.access_token,
+    userId: result.data.user && result.data.user.id,
+    email: email,
+  };
+}
+
+async function signIn(email, password) {
+  const result = await dbCall("/auth/v1/token?grant_type=password", {
+    method: "POST",
+    body: { email: email, password: password },
+  });
+
+  if (!result.ok || !result.data.access_token) {
+    return { error: "Wrong email or password" };
+  }
+
+  return {
+    token: result.data.access_token,
+    userId: result.data.user && result.data.user.id,
+    email: email,
+  };
+}
+
+// Checks a token is real and tells us whose it is.
+async function whoIs(token) {
+  const result = await dbCall("/auth/v1/user", {
+    headers: { Authorization: "Bearer " + token },
+  });
+
+  if (!result.ok || !result.data || !result.data.id) return null;
+  return { id: result.data.id, email: result.data.email };
+}
+
+async function loadProgress(userId) {
+  const result = await dbCall(
+    "/rest/v1/profiles?id=eq." + userId + "&select=data");
+
+  if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) {
+    return null;
+  }
+  return result.data[0].data || null;
+}
+
+async function saveProgressFor(userId, email, data) {
+  const result = await dbCall("/rest/v1/profiles", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates" },
+    body: [{
+      id: userId,
+      email: email,
+      data: data,
+      updated_at: new Date().toISOString(),
+    }],
+  });
+
+  return result.ok;
+}
 
 
 // ---------------------------------------------------------------
@@ -497,6 +611,25 @@ async function getTableFor(leagueId) {
     .sort(function (a, b) { return a.rank - b.rank; });
 
   return intoCache(name, rows);
+}
+
+// Just the score and the teams. No line-ups, no squad lookups, so
+// it costs one API call rather than three.
+async function getMatchLight(fixtureId) {
+  const name = "light-" + fixtureId;
+  const hit = fromCache(name, 60);
+  if (hit) return hit;
+
+  // If the full version is already cached, reuse it for free.
+  const full = cache["match-" + fixtureId];
+  if (full && (Date.now() - full.time) / 1000 < 60) return full.data;
+
+  const result = await askApi("get_events", "&match_id=" + fixtureId);
+  if (result === null || result.length === 0) {
+    return cache[name] ? cache[name].data : null;
+  }
+
+  return intoCache(name, translateMatch(result[0]));
 }
 
 async function getMatch(fixtureId) {
@@ -1223,6 +1356,46 @@ const PAGE = `
   }
   .upWhen { font-size: 11px; color: #888; flex-shrink: 0; }
 
+  /* Account panel */
+  .acctBox {
+    background: #fff; padding: 16px;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .acctHead { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .acctNote { font-size: 12px; color: #777; line-height: 1.5; margin-bottom: 12px; }
+  .acctField {
+    width: 100%; padding: 11px 12px; margin-bottom: 8px;
+    border: 1px solid #DDD; border-radius: 8px;
+    font-size: 15px; outline: none; background: #FAFAF8;
+  }
+  .acctField:focus { border-color: #185FA5; background: #fff; }
+  .acctButtons { display: flex; gap: 8px; margin-top: 4px; }
+  .acctBtn {
+    flex: 1; padding: 11px; border-radius: 8px; border: none;
+    background: #185FA5; color: #fff;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  .acctBtn.ghost {
+    background: #fff; color: #185FA5; border: 1px solid #185FA5;
+  }
+  .acctMsg { font-size: 12px; color: #777; margin-top: 10px; min-height: 16px; }
+  .acctMsg.bad { color: #C0392B; }
+  .acctIn { display: flex; align-items: center; gap: 10px; }
+  .acctTick {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: #639922; color: #fff; font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .acctWho {
+    flex: 1; min-width: 0; font-size: 14px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .acctOut {
+    background: none; border: none; color: #185FA5;
+    font-size: 13px; cursor: pointer; flex-shrink: 0;
+  }
+
   /* XP League screen */
   .profCard { background: #185FA5; padding: 16px; color: #fff; }
   .profTop { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
@@ -1636,6 +1809,7 @@ function tally(kind) {
 }
 
 function saveXpState() {
+  if (typeof pushProgress === "function") pushProgress();
   localStorage.setItem("xp", xp);
   localStorage.setItem("coins", coins);
   localStorage.setItem("streak", streak);
@@ -2247,6 +2421,7 @@ let favLeagues = JSON.parse(localStorage.getItem("favLeagues") || "[]");
 let favTeams = JSON.parse(localStorage.getItem("favTeams") || "[]");
 
 function saveFavourites() {
+  if (typeof pushProgress === "function") pushProgress();
   localStorage.setItem("favLeagues", JSON.stringify(favLeagues));
   localStorage.setItem("favTeams", JSON.stringify(favTeams));
 }
@@ -3182,7 +3357,7 @@ async function drawHome() {
       } else {
         // Not live, so ask for it. Cached on the server for a minute.
         try {
-          const match = await (await fetch("/api/match?id=" + id)).json();
+          const match = await (await fetch("/api/match?id=" + id + "&light=1")).json();
           if (!match) continue;
           const state = stateOf(match);
           const kickoff = new Date(match.fixture.date);
@@ -3322,6 +3497,78 @@ function drawXpScreen() {
   const intoLevel = xp % 1000;
 
   // ---- Who you are ----
+  // ---- Account ----
+  const account = document.createElement("div");
+  account.className = "acctBox";
+
+  if (signedIn()) {
+    account.innerHTML =
+      '<div class="acctIn">' +
+        '<span class="acctTick">&#10003;</span>' +
+        '<span class="acctWho">' + authEmail + '</span>' +
+        '<button class="acctOut" id="signOutBtn">Sign out</button>' +
+      '</div>' +
+      '<div class="acctNote">Progress saved to your account.</div>';
+  } else {
+    account.innerHTML =
+      '<div class="acctHead">Save your progress</div>' +
+      '<div class="acctNote">Right now everything is on this device only. ' +
+        'Sign in and it follows you to any phone.</div>' +
+      '<input class="acctField" id="acctEmail" type="email" ' +
+        'placeholder="Email" autocomplete="email">' +
+      '<input class="acctField" id="acctPass" type="password" ' +
+        'placeholder="Password, 8 characters or more" autocomplete="current-password">' +
+      '<div class="acctButtons">' +
+        '<button class="acctBtn" id="signInBtn">Sign in</button>' +
+        '<button class="acctBtn ghost" id="signUpBtn">Create account</button>' +
+      '</div>' +
+      '<div class="acctMsg" id="acctMsg"></div>';
+  }
+  list.appendChild(account);
+
+  const outButton = document.getElementById("signOutBtn");
+  if (outButton) {
+    outButton.onclick = function () {
+      signOut();
+      drawXpScreen();
+    };
+  }
+
+  const runAuth = async function (mode) {
+    const email = document.getElementById("acctEmail").value.trim();
+    const password = document.getElementById("acctPass").value;
+    const message = document.getElementById("acctMsg");
+
+    message.className = "acctMsg";
+    message.textContent = "Just a moment...";
+
+    let result;
+    try {
+      result = await doAuth(mode, email, password);
+    } catch (error) {
+      message.className = "acctMsg bad";
+      message.textContent = "Could not reach the server.";
+      return;
+    }
+
+    if (result.error) {
+      message.className = "acctMsg bad";
+      message.textContent = result.error;
+      return;
+    }
+    if (result.needsConfirming) {
+      message.className = "acctMsg";
+      message.textContent = "Check your email to confirm, then sign in.";
+      return;
+    }
+    drawXpScreen();
+  };
+
+  const inButton = document.getElementById("signInBtn");
+  if (inButton) inButton.onclick = function () { runAuth("signin"); };
+  const upButton = document.getElementById("signUpBtn");
+  if (upButton) upButton.onclick = function () { runAuth("signup"); };
+
   const card = document.createElement("div");
   card.className = "profCard";
   card.innerHTML =
@@ -3424,6 +3671,144 @@ function drawXpScreen() {
     "arrive once sign-in is added. Your XP, streak and shields are " +
     "saved on this device until then.";
   list.appendChild(note);
+}
+
+
+// ---------------------------------------------------------------
+// SIGNING IN, AND KEEPING PROGRESS SAFE
+//
+// Everything still works signed out - it just lives on this device.
+// Signing in copies it to the server so it follows the person
+// around and survives a cleared browser.
+// ---------------------------------------------------------------
+let authToken = localStorage.getItem("authToken") || "";
+let authEmail = localStorage.getItem("authEmail") || "";
+
+function signedIn() {
+  return Boolean(authToken);
+}
+
+// Everything worth keeping, in one lump.
+function gatherProgress() {
+  return {
+    xp: xp,
+    coins: coins,
+    streak: streak,
+    shields: shields,
+    alerts: alerts,
+    favTeams: favTeams,
+    favLeagues: favLeagues,
+    dailyCounts: dailyCounts,
+    weekCounts: weekCounts,
+    seasonCounts: seasonCounts,
+    claimed: claimed,
+    lastOpen: localStorage.getItem("lastOpen") || "",
+    lastSpin: localStorage.getItem("lastSpin") || "",
+  };
+}
+
+function applyProgress(data) {
+  if (!data) return;
+
+  // Whichever side has more XP wins, so signing in on a fresh
+  // phone does not wipe a long-standing account, and signing in
+  // after playing offline does not lose that either.
+  const theirs = Number(data.xp) || 0;
+  const mine = xp;
+
+  if (theirs >= mine) {
+    xp = theirs;
+    coins = Number(data.coins) || 0;
+    streak = Number(data.streak) || 0;
+    shields = Number(data.shields) || 0;
+    if (Array.isArray(data.alerts)) alerts = data.alerts;
+    if (Array.isArray(data.favTeams)) favTeams = data.favTeams;
+    if (Array.isArray(data.favLeagues)) favLeagues = data.favLeagues;
+    if (data.claimed) claimed = data.claimed;
+    if (data.dailyCounts && data.dailyCounts.day === todayKey) {
+      dailyCounts = data.dailyCounts;
+    }
+    if (data.weekCounts && data.weekCounts.week === thisWeek) {
+      weekCounts = data.weekCounts;
+    }
+    if (data.seasonCounts && data.seasonCounts.season === thisSeason) {
+      seasonCounts = data.seasonCounts;
+    }
+    if (data.lastOpen) localStorage.setItem("lastOpen", data.lastOpen);
+    if (data.lastSpin) localStorage.setItem("lastSpin", data.lastSpin);
+  }
+
+  saveXpState();
+  saveCounters();
+  saveFavourites();
+  saveProgress();
+  drawProgress();
+}
+
+// Pushes progress up. Quietly does nothing when signed out.
+let savePending = null;
+function pushProgress() {
+  if (!signedIn()) return;
+
+  // Wait a moment in case several things change at once.
+  clearTimeout(savePending);
+  savePending = setTimeout(async function () {
+    try {
+      await fetch("/api/progress", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + authToken,
+        },
+        body: JSON.stringify({ data: gatherProgress() }),
+      });
+    } catch (error) {
+      // Offline. It will go up next time something changes.
+    }
+  }, 2000);
+}
+
+async function pullProgress() {
+  if (!signedIn()) return;
+  try {
+    const response = await fetch("/api/progress", {
+      headers: { "Authorization": "Bearer " + authToken },
+    });
+    if (response.status === 401) { signOut(); return; }
+    const result = await response.json();
+    applyProgress(result.data);
+  } catch (error) {
+    // Offline. Carry on with what is on the device.
+  }
+}
+
+function signOut() {
+  authToken = "";
+  authEmail = "";
+  localStorage.removeItem("authToken");
+  localStorage.removeItem("authEmail");
+}
+
+async function doAuth(mode, email, password) {
+  const response = await fetch("/api/account", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: mode, email: email, password: password }),
+  });
+
+  const result = await response.json();
+  if (result.error) return result;
+
+  if (result.needsConfirming) return result;
+
+  authToken = result.token;
+  authEmail = result.email;
+  localStorage.setItem("authToken", authToken);
+  localStorage.setItem("authEmail", authEmail);
+
+  await pullProgress();
+  pushProgress();
+  return result;
 }
 
 
@@ -4503,6 +4888,12 @@ async function refresh() {
 
 drawDates();
 drawProgress();
+
+// If already signed in, fetch whatever the account has saved.
+if (signedIn()) {
+  pullProgress().then(function () { if (screen === "xp") drawXpScreen(); });
+}
+
 goTo("home");
 
 // The ticker keeps live scores moving on its own, so only the
@@ -4527,6 +4918,85 @@ setInterval(function () {
 // ---------------------------------------------------------------
 const server = http.createServer(async function (request, response) {
   const address = new URL(request.url, "http://localhost");
+
+  // ---- Accounts ----
+  if (address.pathname === "/api/account" && request.method === "POST") {
+    if (!DB_ON) {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Accounts are not set up yet" }));
+      return;
+    }
+
+    let body = "";
+    for await (const chunk of request) body += chunk;
+
+    let sent;
+    try { sent = JSON.parse(body); } catch (error) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Could not read that" }));
+      return;
+    }
+
+    const email = String(sent.email || "").trim().toLowerCase();
+    const password = String(sent.password || "");
+
+    if (!email.includes("@") || password.length < 8) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        error: "Need an email address and a password of at least 8 characters",
+      }));
+      return;
+    }
+
+    const result = sent.mode === "signup"
+      ? await signUp(email, password)
+      : await signIn(email, password);
+
+    response.writeHead(result.error ? 400 : 200,
+      { "Content-Type": "application/json" });
+    response.end(JSON.stringify(result));
+    return;
+  }
+
+  // ---- Saved progress ----
+  if (address.pathname === "/api/progress") {
+    if (!DB_ON) {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Accounts are not set up yet" }));
+      return;
+    }
+
+    const token = String(request.headers.authorization || "").replace("Bearer ", "");
+    const who = token ? await whoIs(token) : null;
+
+    if (!who) {
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Please sign in again" }));
+      return;
+    }
+
+    if (request.method === "GET") {
+      const data = await loadProgress(who.id);
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ data: data }));
+      return;
+    }
+
+    let body = "";
+    for await (const chunk of request) body += chunk;
+
+    let sent;
+    try { sent = JSON.parse(body); } catch (error) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Could not read that" }));
+      return;
+    }
+
+    const saved = await saveProgressFor(who.id, who.email, sent.data || {});
+    response.writeHead(saved ? 200 : 500, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ saved: saved }));
+    return;
+  }
 
   if (address.pathname === "/api/scores") {
     const all = await getLiveScores();
@@ -4573,7 +5043,10 @@ const server = http.createServer(async function (request, response) {
       response.end("null");
       return;
     }
-    const match = await getMatch(fixtureId);
+    // light=1 skips the line-up and squad work.
+    const match = address.searchParams.get("light") === "1"
+      ? await getMatchLight(fixtureId)
+      : await getMatch(fixtureId);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(match));
     return;
