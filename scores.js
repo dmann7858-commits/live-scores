@@ -119,6 +119,8 @@ async function loadProgress(userId) {
 }
 
 async function saveProgressFor(userId, email, data) {
+  // xp is kept in its own column as well, because the league has
+  // to sort by it and you cannot sort inside a lump of JSON.
   const result = await dbCall("/rest/v1/profiles", {
     method: "POST",
     headers: { Prefer: "resolution=merge-duplicates" },
@@ -126,11 +128,171 @@ async function saveProgressFor(userId, email, data) {
       id: userId,
       email: email,
       data: data,
+      xp: Number(data && data.xp) || 0,
       updated_at: new Date().toISOString(),
     }],
   });
 
   return result.ok;
+}
+
+
+// ---------------------------------------------------------------
+// THE WEEKLY LEAGUE
+//
+// Everyone sits in a small group inside a division. XP earned
+// during the week decides who goes up and who goes down. There is
+// no scheduled job - the week is settled the first time somebody
+// looks, which keeps it simple and costs nothing.
+// ---------------------------------------------------------------
+const GROUP_SIZE = 20;
+const PROMOTE = 5;      // top five go up
+const RELEGATE = 5;     // bottom five go down
+const TOP_DIVISION = 10;
+
+// Monday of the week a date falls in, as a plain key.
+function weekKeyServer(date) {
+  const d = new Date(date);
+  const day = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - day);
+  return d.toISOString().slice(0, 10);
+}
+
+// Reads one profile row.
+async function getProfile(userId) {
+  const result = await dbCall(
+    "/rest/v1/profiles?id=eq." + userId +
+    "&select=id,email,name,division,group_key,week_key,week_start_xp,xp,last_result");
+
+  if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) {
+    return null;
+  }
+  return result.data[0];
+}
+
+async function updateProfile(userId, fields) {
+  const result = await dbCall("/rest/v1/profiles?id=eq." + userId, {
+    method: "PATCH",
+    body: fields,
+  });
+  return result.ok;
+}
+
+// Finds a group in this division with room in it, or starts a new
+// one. Groups are named like "2026-08-31|4|2".
+async function findGroup(division, week) {
+  for (let number = 1; number <= 200; number++) {
+    const key = week + "|" + division + "|" + number;
+    const result = await dbCall(
+      "/rest/v1/profiles?group_key=eq." + encodeURIComponent(key) + "&select=id");
+
+    const count = result.ok && Array.isArray(result.data) ? result.data.length : 0;
+    if (count < GROUP_SIZE) return key;
+  }
+  return week + "|" + division + "|overflow";
+}
+
+// Works out last week's finishing order and moves people up or down.
+async function settleWeek(profile) {
+  const finishedKey = profile.group_key;
+  if (!finishedKey) return { moved: null };
+
+  const result = await dbCall(
+    "/rest/v1/profiles?group_key=eq." + encodeURIComponent(finishedKey) +
+    "&select=id,xp,week_start_xp");
+
+  if (!result.ok || !Array.isArray(result.data)) return { moved: null };
+
+  const table = result.data.map(function (row) {
+    return {
+      id: row.id,
+      earned: Math.max(0, (Number(row.xp) || 0) - (Number(row.week_start_xp) || 0)),
+    };
+  }).sort(function (a, b) { return b.earned - a.earned; });
+
+  const place = table.findIndex(function (row) { return row.id === profile.id; });
+  if (place === -1) return { moved: null };
+
+  const position = place + 1;
+  let division = Number(profile.division) || 1;
+  let moved = "stayed";
+
+  // Too few people to run promotion fairly.
+  if (table.length >= 8) {
+    if (position <= PROMOTE && division < TOP_DIVISION) {
+      division = division + 1;
+      moved = "promoted";
+    } else if (position > table.length - RELEGATE && division > 1) {
+      division = division - 1;
+      moved = "relegated";
+    }
+  }
+
+  return {
+    moved: moved,
+    position: position,
+    outOf: table.length,
+    earned: table[place].earned,
+    division: division,
+  };
+}
+
+// Makes sure a profile is in the right week, settling the old one
+// on the way through. Returns the profile as it now stands.
+async function rollWeek(userId) {
+  const profile = await getProfile(userId);
+  if (!profile) return null;
+
+  const week = weekKeyServer(new Date());
+
+  // Already up to date.
+  if (profile.week_key === week && profile.group_key) return profile;
+
+  let division = Number(profile.division) || 1;
+  let lastResult = null;
+
+  if (profile.week_key && profile.group_key) {
+    const outcome = await settleWeek(profile);
+    if (outcome.moved) {
+      division = outcome.division;
+      lastResult = {
+        week: profile.week_key,
+        moved: outcome.moved,
+        position: outcome.position,
+        outOf: outcome.outOf,
+        earned: outcome.earned,
+      };
+    }
+  }
+
+  const group = await findGroup(division, week);
+
+  await updateProfile(userId, {
+    division: division,
+    group_key: group,
+    week_key: week,
+    week_start_xp: Number(profile.xp) || 0,
+    last_result: lastResult,
+  });
+
+  return await getProfile(userId);
+}
+
+// The table everybody in that group sees.
+async function groupTable(groupKey) {
+  const result = await dbCall(
+    "/rest/v1/profiles?group_key=eq." + encodeURIComponent(groupKey) +
+    "&select=id,name,xp,week_start_xp");
+
+  if (!result.ok || !Array.isArray(result.data)) return [];
+
+  return result.data.map(function (row) {
+    return {
+      id: row.id,
+      name: row.name || "Player",
+      earned: Math.max(0, (Number(row.xp) || 0) - (Number(row.week_start_xp) || 0)),
+    };
+  }).sort(function (a, b) { return b.earned - a.earned; });
 }
 
 
@@ -1355,6 +1517,53 @@ const PAGE = `
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .upWhen { font-size: 11px; color: #888; flex-shrink: 0; }
+
+  /* Weekly league table */
+  .leagueTime { float: right; color: #999; font-weight: 400; text-transform: none; }
+  .movedBox {
+    padding: 10px 16px; font-size: 13px; font-weight: 600;
+  }
+  .movedBox.up { background: #EAF3DE; color: #27500A; }
+  .movedBox.down { background: #FCEBEB; color: #791F1F; }
+  .lgRow {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid #F0F0EC;
+    border-left: 3px solid transparent;
+  }
+  .lgRow.up { border-left-color: #639922; }
+  .lgRow.down { border-left-color: #E24B4A; }
+  .lgYou { background: #E6F1FB; }
+  .lgYou .lgName { font-weight: 700; }
+  .lgPos { width: 22px; font-size: 13px; color: #888; }
+  .lgName {
+    flex: 1; min-width: 0; font-size: 14px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .lgXp { font-size: 14px; font-weight: 600; }
+  .lgKey {
+    display: flex; gap: 16px; padding: 9px 16px;
+    background: #F4F4F2; font-size: 11px; color: #777;
+  }
+  .lgKey i {
+    display: inline-block; width: 9px; height: 3px;
+    margin-right: 5px; vertical-align: middle;
+  }
+  .upDot { background: #639922; }
+  .downDot { background: #E24B4A; }
+  .nameRow {
+    display: flex; gap: 8px; padding: 12px 16px;
+    border-top: 1px solid #E8E8E4;
+  }
+  .nameField {
+    flex: 1; min-width: 0; padding: 9px 11px;
+    border: 1px solid #DDD; border-radius: 8px;
+    font-size: 14px; outline: none;
+  }
+  .nameBtn {
+    background: #185FA5; color: #fff; border: none;
+    padding: 9px 18px; border-radius: 8px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+  }
 
   /* Account panel */
   .acctBox {
@@ -3644,6 +3853,103 @@ function drawXpScreen() {
   earnBox.innerHTML = earnRows;
   list.appendChild(earnBox);
 
+  // ---- This week's league ----
+  if (signedIn()) {
+    const leagueBox = document.createElement("div");
+    leagueBox.className = "listBox";
+    leagueBox.innerHTML = '<div class="boxHead">This week</div>' +
+      '<div class="colEmpty">Loading your league...</div>';
+    list.appendChild(leagueBox);
+
+    (async function () {
+      let data;
+      try {
+        const response = await fetch("/api/league", {
+          headers: { "Authorization": "Bearer " + authToken },
+        });
+        data = await response.json();
+      } catch (error) {
+        leagueBox.innerHTML = '<div class="boxHead">This week</div>' +
+          '<div class="colEmpty">Could not load the league.</div>';
+        return;
+      }
+
+      if (data.error) {
+        leagueBox.innerHTML = '<div class="boxHead">This week</div>' +
+          '<div class="colEmpty">' + data.error + '</div>';
+        return;
+      }
+
+      const divName = DIVISIONS[Math.max(0, data.division - 1)].name;
+      const ends = new Date(data.weekEnds);
+      const hoursLeft = Math.max(0, Math.round((ends - Date.now()) / 3600000));
+      const timeLeft = hoursLeft > 48
+        ? Math.round(hoursLeft / 24) + " days left"
+        : hoursLeft + " hours left";
+
+      let html =
+        '<div class="boxHead">' + divName + ' division ' +
+          '<span class="leagueTime">' + timeLeft + '</span>' +
+        '</div>';
+
+      // Tell them what happened last week, once.
+      if (data.lastResult && data.lastResult.moved !== "stayed") {
+        const up = data.lastResult.moved === "promoted";
+        html += '<div class="movedBox ' + (up ? "up" : "down") + '">' +
+          (up ? "Promoted" : "Relegated") + ' &middot; finished ' +
+          data.lastResult.position + ' of ' + data.lastResult.outOf +
+          ' with ' + data.lastResult.earned + ' XP' +
+        '</div>';
+      }
+
+      if (data.table.length <= 1) {
+        html += '<div class="colEmpty">You are the first one here. ' +
+          'More people will join this group as they sign up.</div>';
+      }
+
+      for (const row of data.table) {
+        const zone = row.position <= data.promoteAt ? "up"
+          : (row.position > data.table.length - data.relegateAt &&
+             data.table.length >= 8 ? "down" : "");
+
+        html +=
+          '<div class="lgRow ' + zone + (row.you ? " lgYou" : "") + '">' +
+            '<span class="lgPos">' + row.position + '</span>' +
+            '<span class="lgName">' + row.name + (row.you ? " (you)" : "") + '</span>' +
+            '<span class="lgXp">' + row.earned.toLocaleString() + '</span>' +
+          '</div>';
+      }
+
+      html += '<div class="lgKey">' +
+        '<span><i class="upDot"></i>Promotion</span>' +
+        '<span><i class="downDot"></i>Relegation</span>' +
+      '</div>';
+
+      // Let them choose the name others see.
+      html += '<div class="nameRow">' +
+        '<input class="nameField" id="lgName" maxlength="18" placeholder="Your name in the league" value="' +
+          (data.name || "") + '">' +
+        '<button class="nameBtn" id="lgNameBtn">Save</button>' +
+      '</div>';
+
+      leagueBox.innerHTML = html;
+
+      document.getElementById("lgNameBtn").onclick = async function () {
+        const name = document.getElementById("lgName").value.trim();
+        if (!name) return;
+        await fetch("/api/league", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + authToken,
+          },
+          body: JSON.stringify({ name: name }),
+        });
+        drawXpScreen();
+      };
+    })();
+  }
+
   // ---- The ladder ----
   const ladder = document.createElement("div");
   ladder.className = "listBox";
@@ -4995,6 +5301,74 @@ const server = http.createServer(async function (request, response) {
     const saved = await saveProgressFor(who.id, who.email, sent.data || {});
     response.writeHead(saved ? 200 : 500, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ saved: saved }));
+    return;
+  }
+
+  // ---- The weekly league ----
+  if (address.pathname === "/api/league") {
+    if (!DB_ON) {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Leagues are not set up yet" }));
+      return;
+    }
+
+    const token = String(request.headers.authorization || "").replace("Bearer ", "");
+    const who = token ? await whoIs(token) : null;
+
+    if (!who) {
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Sign in to join a league" }));
+      return;
+    }
+
+    // Let someone set the name others see.
+    if (request.method === "POST") {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+
+      let sent;
+      try { sent = JSON.parse(body); } catch (error) { sent = {}; }
+
+      const name = String(sent.name || "").trim().slice(0, 18);
+      if (name) await updateProfile(who.id, { name: name });
+    }
+
+    const profile = await rollWeek(who.id);
+    if (!profile) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "No profile saved yet" }));
+      return;
+    }
+
+    const table = await groupTable(profile.group_key);
+    const place = table.findIndex(function (row) { return row.id === who.id; });
+
+    // Only send back what the screen needs, and no email addresses.
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      division: Number(profile.division) || 1,
+      name: profile.name || "",
+      position: place === -1 ? null : place + 1,
+      table: table.map(function (row, index) {
+        return {
+          position: index + 1,
+          name: row.name,
+          earned: row.earned,
+          you: row.id === who.id,
+        };
+      }),
+      promoteAt: PROMOTE,
+      relegateAt: RELEGATE,
+      lastResult: profile.last_result || null,
+      weekEnds: (function () {
+        const d = new Date();
+        const daysLeft = (7 - ((d.getUTCDay() + 6) % 7)) % 7 || 7;
+        const end = new Date(d);
+        end.setUTCDate(end.getUTCDate() + daysLeft);
+        end.setUTCHours(0, 0, 0, 0);
+        return end.toISOString();
+      })(),
+    }));
     return;
   }
 
