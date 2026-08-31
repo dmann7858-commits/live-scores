@@ -1223,6 +1223,85 @@ const PAGE = `
   }
   .upWhen { font-size: 11px; color: #888; flex-shrink: 0; }
 
+  /* XP League screen */
+  .profCard { background: #185FA5; padding: 16px; color: #fff; }
+  .profTop { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  .profRing {
+    width: 58px; height: 58px; border-radius: 50%;
+    background: #EF9F27; color: #412402; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700;
+  }
+  .profWho { min-width: 0; }
+  .profDiv { font-size: 19px; font-weight: 600; }
+  .profSub { font-size: 12px; color: #B5D4F4; margin-top: 2px; }
+  .profBar {
+    height: 6px; background: #042C53; border-radius: 3px;
+    overflow: hidden; margin-bottom: 6px;
+  }
+  .profFill { height: 100%; background: #EF9F27; }
+  .profBarText { font-size: 11px; color: #B5D4F4; margin-bottom: 14px; }
+  .profStats { display: flex; gap: 8px; }
+  .profStats > div {
+    flex: 1; background: #042C53; border-radius: 8px;
+    padding: 9px 6px; text-align: center;
+  }
+  .profStats b { display: block; font-size: 17px; }
+  .profStats span { font-size: 10px; color: #85B7EB; }
+  .boostFlag {
+    margin-top: 10px; padding: 7px; border-radius: 8px;
+    background: #EF9F27; color: #412402;
+    font-size: 12px; font-weight: 600; text-align: center;
+  }
+
+  .spinBox {
+    background: #fff; padding: 16px; text-align: center;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .spinHead { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .spinSub { font-size: 12px; color: #777; margin-bottom: 12px; }
+  .spinDone { font-size: 12px; color: #999; }
+  .spinWon {
+    font-size: 18px; font-weight: 700; color: #BA7517;
+    margin: 8px 0 10px;
+  }
+  .spinBtn {
+    background: #EF9F27; color: #412402; border: none;
+    padding: 11px 34px; border-radius: 22px;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    min-width: 150px;
+  }
+  .spinBtn:disabled { background: #F1DDBE; cursor: default; }
+
+  .listBox { background: #fff; border-bottom: 1px solid #E8E8E4; }
+  .boxHead {
+    padding: 11px 16px 9px; font-size: 11px; color: #888;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+    background: #F4F4F2;
+  }
+  .earnRow {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 16px; border-bottom: 1px solid #F0F0EC;
+  }
+  .earnLabel { flex: 1; font-size: 14px; }
+  .earnCap { font-size: 12px; color: #999; }
+  .earnXp { font-size: 13px; font-weight: 600; color: #BA7517; width: 38px; text-align: right; }
+  .earnDone .earnLabel, .earnDone .earnXp { color: #BBB; }
+  .earnDone .earnCap { color: #639922; }
+
+  .rung {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid #F0F0EC;
+  }
+  .rungNum {
+    width: 22px; font-size: 12px; color: #AAA; text-align: center;
+  }
+  .rungName { flex: 1; font-size: 14px; }
+  .rungReq { font-size: 11px; color: #999; }
+  .rungNow { background: #FFF8EA; }
+  .rungNow .rungName { font-weight: 700; color: #BA7517; }
+  .rungLocked .rungName, .rungLocked .rungNum { color: #C4C4BE; }
+
   /* Games the person is following */
   .followRow {
     display: flex; align-items: center; gap: 12px;
@@ -1420,6 +1499,96 @@ let xp = load("xp", 0);
 let coins = load("coins", 0);
 let alerts = JSON.parse(localStorage.getItem("alerts") || "[]");
 
+// ---------------------------------------------------------------
+// XP, STREAKS AND DAILY LIMITS
+//
+// Everything that earns XP has a daily cap, so nobody can farm it
+// by tapping through matches. The caps reset at midnight.
+// ---------------------------------------------------------------
+const DIVISIONS = [
+  { name: "Rookie",       from: 0 },
+  { name: "Amateur",      from: 3 },
+  { name: "Semi-Pro",     from: 6 },
+  { name: "Professional", from: 10 },
+  { name: "National",     from: 15 },
+  { name: "Continental",  from: 21 },
+  { name: "Elite",        from: 28 },
+  { name: "Champions",    from: 36 },
+  { name: "World Class",  from: 45 },
+  { name: "Legend",       from: 55 },
+];
+
+// What each action is worth. No daily limits - people earn as
+// much as they use the app.
+const EARNINGS = {
+  daily:   { xp: 5,  once: true, label: "Open the app" },
+  match:   { xp: 5,  label: "Look at a match centre" },
+  club:    { xp: 5,  label: "Check one of your clubs" },
+  table:   { xp: 3,  label: "Look at a league table" },
+  streak:  { xp: 50, once: true, label: "Seven days in a row" },
+};
+
+let streak = load("streak", 0);
+let shields = load("shields", 0);
+let boostUntil = load("boostUntil", 0);
+let boostSize = load("boostSize", 1);
+
+let dailyCounts = JSON.parse(localStorage.getItem("dailyCounts") || "null");
+const todayKey = new Date().toDateString();
+
+if (!dailyCounts || dailyCounts.day !== todayKey) {
+  dailyCounts = { day: todayKey };
+}
+
+function saveXpState() {
+  localStorage.setItem("xp", xp);
+  localStorage.setItem("coins", coins);
+  localStorage.setItem("streak", streak);
+  localStorage.setItem("shields", shields);
+  localStorage.setItem("boostUntil", boostUntil);
+  localStorage.setItem("boostSize", boostSize);
+  localStorage.setItem("dailyCounts", JSON.stringify(dailyCounts));
+}
+
+function boostActive() {
+  return Date.now() < boostUntil;
+}
+
+function currentMultiplier() {
+  return boostActive() ? boostSize : 1;
+}
+
+// The one way XP is ever added. Returns how much was given.
+function earn(kind) {
+  const rule = EARNINGS[kind];
+  if (!rule) return 0;
+
+  const used = dailyCounts[kind] || 0;
+
+  // A couple of things only pay once a day - opening the app and
+  // the weekly streak bonus. Everything else is unlimited.
+  if (rule.once && used >= 1) return 0;
+
+  dailyCounts[kind] = used + 1;
+  const amount = rule.xp * currentMultiplier();
+  xp = xp + amount;
+  saveXpState();
+  drawProgress();
+  return amount;
+}
+
+function levelNow() {
+  return Math.floor(xp / 1000) + 1;
+}
+
+function divisionFor(level) {
+  let found = DIVISIONS[0];
+  for (const division of DIVISIONS) {
+    if (level >= division.from) found = division;
+  }
+  return found;
+}
+
 // The key is versioned, so switching data provider does not leave
 // old league numbers behind that mean nothing any more.
 let myLeagues = JSON.parse(localStorage.getItem("myLeagues_v2") || "null");
@@ -1433,17 +1602,32 @@ if (leagueNames === null) {
   for (const l of LEAGUES) leagueNames[l.id] = l.name;
 }
 
-const today = new Date().toDateString();
-if (localStorage.getItem("lastOpen") !== today) {
-  xp = xp + 5;
+// First visit of the day: streak, daily XP and a coin or two.
+const lastOpen = localStorage.getItem("lastOpen");
+if (lastOpen !== todayKey) {
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  // A day missed resets the streak.
+  streak = (lastOpen === yesterday.toDateString()) ? streak + 1 : 1;
+
+  xp = xp + EARNINGS.daily.xp;
   coins = coins + 2;
-  localStorage.setItem("lastOpen", today);
+  dailyCounts.daily = 1;
+
+  // Every seventh day pays a bonus.
+  if (streak > 0 && streak % 7 === 0) {
+    xp = xp + EARNINGS.streak.xp;
+    coins = coins + 10;
+  }
+
+  localStorage.setItem("lastOpen", todayKey);
+  saveXpState();
 }
 
 function saveProgress() {
-  localStorage.setItem("xp", xp);
-  localStorage.setItem("coins", coins);
   localStorage.setItem("alerts", JSON.stringify(alerts));
+  saveXpState();
 }
 
 function saveLeagues() {
@@ -2387,6 +2571,7 @@ let openLeagueInfo = null;
 let leagueTab = "table";
 
 function openLeague(league) {
+  earn("table");
   openLeagueInfo = league;
   leagueTab = "table";
   screen = "league";
@@ -2972,6 +3157,175 @@ function shortName(name) {
 
 
 // ---------------------------------------------------------------
+// THE DAILY SPIN
+//
+// One free spin a day. Rewards are deliberately modest so nobody
+// can build up anything worth much.
+// ---------------------------------------------------------------
+const SPIN_PRIZES = [
+  { chance: 34, kind: "xp",     amount: 25,  text: "+25 XP" },
+  { chance: 24, kind: "xp",     amount: 50,  text: "+50 XP" },
+  { chance: 16, kind: "coins",  amount: 15,  text: "+15 coins" },
+  { chance: 12, kind: "boost",  amount: 2, hours: 1, text: "Double XP for an hour" },
+  { chance: 8,  kind: "xp",     amount: 100, text: "+100 XP" },
+  { chance: 4,  kind: "boost",  amount: 2, hours: 24, text: "Double XP for a day" },
+  { chance: 2,  kind: "shield", amount: 1,  text: "Relegation shield" },
+];
+
+function pickPrize() {
+  const total = SPIN_PRIZES.reduce(function (sum, p) { return sum + p.chance; }, 0);
+  let roll = Math.random() * total;
+  for (const prize of SPIN_PRIZES) {
+    roll -= prize.chance;
+    if (roll <= 0) return prize;
+  }
+  return SPIN_PRIZES[0];
+}
+
+function spinUsedToday() {
+  return localStorage.getItem("lastSpin") === todayKey;
+}
+
+function takeSpin() {
+  const prize = pickPrize();
+
+  if (prize.kind === "xp") {
+    xp = xp + prize.amount;
+  } else if (prize.kind === "coins") {
+    coins = coins + prize.amount;
+  } else if (prize.kind === "boost") {
+    boostSize = prize.amount;
+    boostUntil = Date.now() + prize.hours * 3600000;
+  } else if (prize.kind === "shield") {
+    // Only one at a time, so they cannot be stockpiled.
+    shields = Math.min(1, shields + 1);
+  }
+
+  localStorage.setItem("lastSpin", todayKey);
+  saveXpState();
+  drawProgress();
+  return prize;
+}
+
+
+// ---------------------------------------------------------------
+// THE XP LEAGUE SCREEN
+// ---------------------------------------------------------------
+function drawXpScreen() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  const level = levelNow();
+  const division = divisionFor(level);
+  const intoLevel = xp % 1000;
+
+  // ---- Who you are ----
+  const card = document.createElement("div");
+  card.className = "profCard";
+  card.innerHTML =
+    '<div class="profTop">' +
+      '<div class="profRing"><span>' + level + '</span></div>' +
+      '<div class="profWho">' +
+        '<div class="profDiv">' + division.name + '</div>' +
+        '<div class="profSub">Level ' + level + ' &middot; ' + xp.toLocaleString() + ' XP total</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="profBar"><div class="profFill" style="width:' + (intoLevel / 10) + '%"></div></div>' +
+    '<div class="profBarText">' + intoLevel + ' / 1000 to level ' + (level + 1) + '</div>' +
+    '<div class="profStats">' +
+      '<div><b>' + streak + '</b><span>day streak</span></div>' +
+      '<div><b>' + coins + '</b><span>coins</span></div>' +
+      '<div><b>' + shields + '</b><span>shields</span></div>' +
+    '</div>' +
+    (boostActive()
+      ? '<div class="boostFlag">' + boostSize + '\u00d7 XP active</div>' : "");
+  list.appendChild(card);
+
+  // ---- Daily spin ----
+  const spinBox = document.createElement("div");
+  spinBox.className = "spinBox";
+  spinBox.innerHTML = spinUsedToday()
+    ? '<div class="spinHead">Daily spin</div>' +
+      '<div class="spinDone">Come back tomorrow for another spin.</div>'
+    : '<div class="spinHead">Daily spin</div>' +
+      '<div class="spinSub">One free spin every day.</div>' +
+      '<button class="spinBtn" id="spinBtn">Spin</button>';
+  list.appendChild(spinBox);
+
+  const button = document.getElementById("spinBtn");
+  if (button) {
+    button.onclick = function () {
+      button.disabled = true;
+      button.textContent = "...";
+
+      // A brief flicker through the prizes before it settles.
+      let ticks = 0;
+      const rolling = setInterval(function () {
+        button.textContent = SPIN_PRIZES[ticks % SPIN_PRIZES.length].text;
+        ticks++;
+        if (ticks > 12) {
+          clearInterval(rolling);
+          const prize = takeSpin();
+          spinBox.innerHTML =
+            '<div class="spinHead">Daily spin</div>' +
+            '<div class="spinWon">' + prize.text + '</div>' +
+            '<div class="spinDone">Come back tomorrow for another spin.</div>';
+        }
+      }, 90);
+    };
+  }
+
+  // ---- How to earn ----
+  const earnBox = document.createElement("div");
+  earnBox.className = "listBox";
+  let earnRows = '<div class="boxHead">Earning XP today</div>';
+  for (const key of Object.keys(EARNINGS)) {
+    const rule = EARNINGS[key];
+    const used = dailyCounts[key] || 0;
+    const done = rule.once && used >= 1;
+    earnRows +=
+      '<div class="earnRow' + (done ? " earnDone" : "") + '">' +
+        '<span class="earnLabel">' + rule.label + '</span>' +
+        '<span class="earnCap">' +
+          (used > 0 ? used + " today" : "") +
+        '</span>' +
+        '<span class="earnXp">+' + rule.xp + '</span>' +
+      '</div>';
+  }
+  earnBox.innerHTML = earnRows;
+  list.appendChild(earnBox);
+
+  // ---- The ladder ----
+  const ladder = document.createElement("div");
+  ladder.className = "listBox";
+  let rungs = '<div class="boxHead">Divisions</div>';
+
+  for (let i = DIVISIONS.length - 1; i >= 0; i--) {
+    const step = DIVISIONS[i];
+    const here = step.name === division.name;
+    const reached = level >= step.from;
+    rungs +=
+      '<div class="rung' + (here ? " rungNow" : "") + (reached ? "" : " rungLocked") + '">' +
+        '<span class="rungNum">' + (i + 1) + '</span>' +
+        '<span class="rungName">' + step.name + '</span>' +
+        '<span class="rungReq">' + (step.from === 0 ? "Start" : "Level " + step.from) + '</span>' +
+      '</div>';
+  }
+  ladder.innerHTML = rungs;
+  list.appendChild(ladder);
+
+  // ---- Honest note about what is not built ----
+  const note = document.createElement("div");
+  note.className = "extras";
+  note.innerHTML =
+    "Weekly leagues, promotion and the cup need accounts, so they " +
+    "arrive once sign-in is added. Your XP, streak and shields are " +
+    "saved on this device until then.";
+  list.appendChild(note);
+}
+
+
+// ---------------------------------------------------------------
 // THE CLUB SCREEN
 // Fixtures, table and player stats for one club.
 // ---------------------------------------------------------------
@@ -2979,6 +3333,7 @@ let openClubInfo = null;
 let clubTab = "fixtures";
 
 function openClub(club) {
+  earn("club");
   openClubInfo = club;
   clubTab = "fixtures";
   screen = "club";
@@ -3088,6 +3443,7 @@ let matchTab = "summary";
 let previousScreen = "scores";
 
 function openMatch(fixtureId) {
+  earn("match");
   previousScreen = screen;
   openFixtureId = fixtureId;
   matchTab = "summary";
@@ -3835,8 +4191,7 @@ async function refresh() {
 
   if (screen === "xp") {
     updated.textContent = "";
-    list.innerHTML =
-      '<div class="empty">XP League<br><br>Coming soon.</div>';
+    drawXpScreen();
     return;
   }
 
