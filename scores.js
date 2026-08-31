@@ -849,7 +849,10 @@ const PAGE = `
   .teamName span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .crest { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; }
   .goals { font-size: 15px; font-weight: 600; flex-shrink: 0; }
-  .bell { font-size: 17px; color: #ccc; cursor: pointer; flex-shrink: 0; user-select: none; }
+  .bell {
+    font-size: 19px; color: #D5D5D0; cursor: pointer;
+    flex-shrink: 0; user-select: none;
+  }
   .bell.on { color: #EF9F27; }
 
   .leagueItem {
@@ -1219,6 +1222,27 @@ const PAGE = `
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .upWhen { font-size: 11px; color: #888; flex-shrink: 0; }
+
+  /* Games the person is following */
+  .followRow {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4; cursor: pointer;
+  }
+  .fWhen { width: 52px; flex-shrink: 0; font-size: 11px; color: #888; }
+  .fWhen.liveNow { color: #BA7517; font-weight: 600; }
+  .fTeams { flex: 1; min-width: 0; }
+  .fLine {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 5px;
+  }
+  .fLine:last-child { margin-bottom: 0; }
+  .fLine img { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
+  .fName {
+    flex: 1; min-width: 0; font-size: 14px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fScore { font-size: 14px; font-weight: 600; flex-shrink: 0; }
 
   /* Live matches, three across */
   .liveCount {
@@ -1760,7 +1784,7 @@ function drawMatches(matches, showKickoffTimes) {
           '<div class="goals">' + awayGoals + '</div>' +
         '</div>' +
       '</div>' +
-      '<div class="bell' + (isOn ? ' on' : '') + '">&#128276;</div>';
+      '<div class="bell' + (isOn ? ' on' : '') + '">&#9733;</div>';
 
     const bell = row.querySelector(".bell");
     bell.onclick = function (event) {
@@ -2654,7 +2678,7 @@ function miniMatchHtml(match) {
   return '<div class="miniMatch" data-id="' + match.fixture.id + '">' +
     '<div class="miniTop">' +
       '<span class="miniWhen' + (live ? " liveNow" : "") + '">' + when + '</span>' +
-      '<span class="bell miniBell' + (isOn ? " on" : "") + '">&#128276;</span>' +
+      '<span class="bell miniBell' + (isOn ? " on" : "") + '">&#9733;</span>' +
     '</div>' +
     '<div class="miniTeam"><img src="' + match.teams.home.logo + '" alt="">' +
       '<span>' + match.teams.home.name + '</span></div>' +
@@ -2837,6 +2861,88 @@ async function drawHome() {
     for (const card of grid.querySelectorAll(".liveCard")) {
       const id = Number(card.getAttribute("data-id"));
       card.onclick = function () { openMatch(id); };
+    }
+  }
+
+  // ---- Matches the person has starred ----
+  if (alerts.length > 0) {
+    const heading = document.createElement("div");
+    heading.className = "boardHead";
+    heading.innerHTML =
+      'Following <span class="liveCount">' + alerts.length + '</span>';
+    list.appendChild(heading);
+
+    const holder = document.createElement("div");
+    list.appendChild(holder);
+
+    // Anything already in the live feed costs nothing to reuse.
+    const known = {};
+    for (const m of live) known[m.id] = m;
+
+    let shown = 0;
+
+    for (const id of alerts.slice(0, 8)) {
+      let card = null;
+
+      if (known[id]) {
+        const m = known[id];
+        card = {
+          home: m.home, away: m.away,
+          homeLogo: m.homeLogo, awayLogo: m.awayLogo,
+          hg: m.hg, ag: m.ag,
+          when: m.minute !== null ? m.minute + "'" : (m.short || "LIVE"),
+          live: true,
+        };
+      } else {
+        // Not live, so ask for it. Cached on the server for a minute.
+        try {
+          const match = await (await fetch("/api/match?id=" + id)).json();
+          if (!match) continue;
+          const state = stateOf(match);
+          const kickoff = new Date(match.fixture.date);
+          card = {
+            home: match.teams.home.name, away: match.teams.away.name,
+            homeLogo: match.teams.home.logo, awayLogo: match.teams.away.logo,
+            hg: match.goals.home, ag: match.goals.away,
+            when: state === "finished" ? "FT"
+              : (isNaN(kickoff) ? "" :
+                 kickoff.toLocaleDateString([], { weekday: "short", day: "numeric" }) +
+                 " " + kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
+            live: state === "live",
+          };
+        } catch (error) {
+          continue;
+        }
+      }
+
+      const row = document.createElement("div");
+      row.className = "followRow";
+      row.innerHTML =
+        '<span class="fWhen' + (card.live ? " liveNow" : "") + '">' + card.when + '</span>' +
+        '<span class="fTeams">' +
+          '<span class="fLine">' +
+            '<img src="' + card.homeLogo + '" alt="">' +
+            '<span class="fName">' + card.home + '</span>' +
+            '<span class="fScore">' + (card.hg === null ? "-" : card.hg) + '</span>' +
+          '</span>' +
+          '<span class="fLine">' +
+            '<img src="' + card.awayLogo + '" alt="">' +
+            '<span class="fName">' + card.away + '</span>' +
+            '<span class="fScore">' + (card.ag === null ? "-" : card.ag) + '</span>' +
+          '</span>' +
+        '</span>' +
+        '<span class="bell on">&#9733;</span>';
+
+      row.onclick = function () { openMatch(id); };
+      holder.appendChild(row);
+      shown++;
+    }
+
+    if (shown === 0) {
+      const none = document.createElement("div");
+      none.className = "colEmpty";
+      none.textContent = "Could not load your followed games.";
+      holder.appendChild(none);
     }
   }
 }
@@ -3754,12 +3860,17 @@ async function refresh() {
   let matches = [];
   try {
     if (fixtureFilter && fixtureFilter.league) {
-      // One league, the whole week.
+      // Fetch the week in one call, since that caches well, then
+      // show only the day that is selected.
       const later = new Date(chosenDate);
       later.setDate(later.getDate() + 7);
-      matches = await (await fetch(
+      const week = await (await fetch(
         "/api/league-fixtures?league=" + fixtureFilter.league.id +
         "&from=" + chosenDate + "&to=" + isoDate(later))).json();
+
+      matches = week.filter(function (m) {
+        return String(m.fixture.date).slice(0, 10) === chosenDate;
+      });
     } else {
       // Everywhere, just the chosen day.
       matches = await (await fetch(
