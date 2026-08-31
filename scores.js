@@ -1190,16 +1190,17 @@ const PAGE = `
     text-transform: uppercase; letter-spacing: 0.4px;
   }
   .slotRow {
-    display: flex; gap: 14px; padding: 0 16px 12px;
+    display: grid; grid-template-columns: repeat(5, 1fr);
+    gap: 10px; padding: 0 14px 14px;
   }
   .slot {
-    width: 42px; height: 42px; border-radius: 50%;
-    background: #F4F4F2; flex-shrink: 0;
+    width: 100%; aspect-ratio: 1; border-radius: 50%;
+    background: #F4F4F2;
     display: flex; align-items: center; justify-content: center;
     cursor: pointer; overflow: hidden;
     border: 1px solid #E4E4E0;
   }
-  .slot img { width: 26px; height: 26px; object-fit: contain; }
+  .slot img { width: 62%; height: 62%; object-fit: contain; }
   .slot:active { background: #E8E8E4; }
   .slotEmpty {
     border: 1.5px dashed #D5D5D0; background: transparent;
@@ -1227,11 +1228,11 @@ const PAGE = `
   }
   .liveGrid {
     display: grid; grid-template-columns: repeat(3, 1fr);
-    gap: 8px; padding: 0 12px 16px;
+    gap: 7px; padding: 0 14px 16px;
   }
   .liveCard {
     background: #fff; border: 1px solid #E4E4E0;
-    border-radius: 10px; padding: 8px 8px 9px; cursor: pointer;
+    border-radius: 10px; padding: 7px 7px 8px; cursor: pointer;
   }
   .liveCard:active { background: #F4F4F2; }
   .lcTop {
@@ -1243,8 +1244,12 @@ const PAGE = `
     gap: 6px; margin-bottom: 4px;
   }
   .lcSide:last-child { margin-bottom: 0; }
-  .lcSide img { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
-  .lcScore { font-size: 14px; font-weight: 600; }
+  .lcSide img { width: 16px; height: 16px; object-fit: contain; flex-shrink: 0; }
+  .lcTag {
+    flex: 1; min-width: 0; font-size: 11px; color: #555;
+    letter-spacing: 0.3px;
+  }
+  .lcScore { font-size: 14px; font-weight: 600; flex-shrink: 0; }
 
   .homeCols { display: flex; gap: 1px; background: #E8E8E4; }
   .homeCol { flex: 1; min-width: 0; background: #F4F4F2; }
@@ -2817,10 +2822,12 @@ async function drawHome() {
         '<div class="lcTop">' + clock + '</div>' +
         '<div class="lcSide">' +
           '<img src="' + m.homeLogo + '" alt="">' +
+          '<span class="lcTag">' + shortName(m.home) + '</span>' +
           '<span class="lcScore">' + (m.hg === null ? "-" : m.hg) + '</span>' +
         '</div>' +
         '<div class="lcSide">' +
           '<img src="' + m.awayLogo + '" alt="">' +
+          '<span class="lcTag">' + shortName(m.away) + '</span>' +
           '<span class="lcScore">' + (m.ag === null ? "-" : m.ag) + '</span>' +
         '</div>' +
       '</div>';
@@ -2832,6 +2839,29 @@ async function drawHome() {
       card.onclick = function () { openMatch(id); };
     }
   }
+}
+
+
+// Makes a three letter tag out of a club name, the way the
+// scoreboards do it. "Real Madrid" becomes RMA, "Celtic" CEL.
+const NAME_NOISE = [
+  "fc", "sc", "cf", "afc", "ac", "as", "sv", "cd", "ca", "sk",
+  "fk", "bk", "if", "sp", "ud", "rc", "us", "ss", "club", "de",
+];
+
+function shortName(name) {
+  const words = String(name || "")
+    .replace(/[.]/g, "")
+    .split(/\s+/)
+    .filter(function (word) {
+      return word && !NAME_NOISE.includes(word.toLowerCase());
+    });
+
+  if (words.length === 0) return "???";
+  if (words.length === 1) return words[0].slice(0, 3).toUpperCase();
+
+  // First letter of the first word, first two of the second.
+  return (words[0][0] + words[1].slice(0, 2)).toUpperCase();
 }
 
 
