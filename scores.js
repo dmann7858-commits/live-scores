@@ -1302,6 +1302,46 @@ const PAGE = `
   .rungNow .rungName { font-weight: 700; color: #BA7517; }
   .rungLocked .rungName, .rungLocked .rungNum { color: #C4C4BE; }
 
+  /* Challenges */
+  .chGroup {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 12px 16px 9px; background: #F4F4F2;
+    border-top: 1px solid #E8E8E4;
+  }
+  .chTitle {
+    font-size: 12px; font-weight: 700; color: #444;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .chNote { font-size: 11px; color: #999; }
+  .chRow {
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .chTop {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin-bottom: 8px;
+  }
+  .chText { font-size: 14px; flex: 1; min-width: 0; }
+  .chXp { font-size: 13px; font-weight: 600; color: #BA7517; flex-shrink: 0; }
+  .chBar {
+    height: 6px; background: #EDEDE9; border-radius: 3px;
+    overflow: hidden; margin-bottom: 7px;
+  }
+  .chFill { height: 100%; background: #185FA5; }
+  .chBottom {
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .chCount { font-size: 11px; color: #888; }
+  .chTodo { font-size: 11px; color: #AAA; }
+  .chDone { font-size: 11px; color: #639922; font-weight: 600; }
+  .chClaim {
+    background: #EF9F27; color: #412402; border: none;
+    padding: 5px 16px; border-radius: 14px;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .chTaken { opacity: 0.55; }
+  .chTaken .chFill { background: #639922; }
+
   /* Games the person is following */
   .followRow {
     display: flex; align-items: center; gap: 12px;
@@ -1540,6 +1580,61 @@ if (!dailyCounts || dailyCounts.day !== todayKey) {
   dailyCounts = { day: todayKey };
 }
 
+// ---------------------------------------------------------------
+// COUNTERS
+//
+// Three timescales: today, this week, and the whole season. The
+// challenges read from these.
+// ---------------------------------------------------------------
+
+// Weeks start on Monday. This gives a key like "2026-W35".
+function weekKeyOf(date) {
+  const d = new Date(date);
+  const day = (d.getDay() + 6) % 7;          // Monday = 0
+  d.setDate(d.getDate() - day);              // back to Monday
+  return d.getFullYear() + "-W" +
+    String(Math.ceil(((d - new Date(d.getFullYear(), 0, 1)) / 86400000 + 1) / 7))
+      .padStart(2, "0");
+}
+
+// Seasons run July to June, same as the fixture lists.
+function seasonKeyOf(date) {
+  const d = new Date(date);
+  const start = d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1;
+  return start + "/" + String(start + 1).slice(2);
+}
+
+const thisWeek = weekKeyOf(new Date());
+const thisSeason = seasonKeyOf(new Date());
+
+let weekCounts = JSON.parse(localStorage.getItem("weekCounts") || "null");
+if (!weekCounts || weekCounts.week !== thisWeek) {
+  weekCounts = { week: thisWeek, days: [] };
+}
+
+let seasonCounts = JSON.parse(localStorage.getItem("seasonCounts") || "null");
+if (!seasonCounts || seasonCounts.season !== thisSeason) {
+  seasonCounts = { season: thisSeason, days: 0 };
+}
+
+// Rewards already taken, keyed by challenge and the period it
+// belonged to, so dailies can be claimed again tomorrow.
+let claimed = JSON.parse(localStorage.getItem("claimed") || "{}");
+
+function saveCounters() {
+  localStorage.setItem("weekCounts", JSON.stringify(weekCounts));
+  localStorage.setItem("seasonCounts", JSON.stringify(seasonCounts));
+  localStorage.setItem("claimed", JSON.stringify(claimed));
+}
+
+// Adds one to today, this week and this season all at once.
+function tally(kind) {
+  dailyCounts[kind] = (dailyCounts[kind] || 0) + 1;
+  weekCounts[kind] = (weekCounts[kind] || 0) + 1;
+  seasonCounts[kind] = (seasonCounts[kind] || 0) + 1;
+  saveCounters();
+}
+
 function saveXpState() {
   localStorage.setItem("xp", xp);
   localStorage.setItem("coins", coins);
@@ -1569,7 +1664,7 @@ function earn(kind) {
   // the weekly streak bonus. Everything else is unlimited.
   if (rule.once && used >= 1) return 0;
 
-  dailyCounts[kind] = used + 1;
+  tally(kind);
   const amount = rule.xp * currentMultiplier();
   xp = xp + amount;
   saveXpState();
@@ -1621,8 +1716,13 @@ if (lastOpen !== todayKey) {
     coins = coins + 10;
   }
 
+  // Note the day, for challenges counting how often someone comes back.
+  if (!weekCounts.days.includes(todayKey)) weekCounts.days.push(todayKey);
+  seasonCounts.days = (seasonCounts.days || 0) + 1;
+
   localStorage.setItem("lastOpen", todayKey);
   saveXpState();
+  saveCounters();
 }
 
 function saveProgress() {
@@ -1675,6 +1775,7 @@ function toggleAlert(fixtureId, element) {
   if (position === -1) {
     alerts.push(fixtureId);
     if (element) element.classList.add("on");
+    tally("star");
     // Ask the first time somebody turns one on.
     askForNotifications();
   } else {
@@ -3202,6 +3303,7 @@ function takeSpin() {
   }
 
   localStorage.setItem("lastSpin", todayKey);
+  tally("spin");
   saveXpState();
   drawProgress();
   return prize;
@@ -3322,6 +3424,146 @@ function drawXpScreen() {
     "arrive once sign-in is added. Your XP, streak and shields are " +
     "saved on this device until then.";
   list.appendChild(note);
+}
+
+
+// ---------------------------------------------------------------
+// CHALLENGES
+//
+// Four groups. Dailies reset at midnight, weeklies on Monday, and
+// the season goals run until June. The season ones are set high
+// enough that only someone using the app most days will finish
+// them, but low enough that they will finish them before May.
+// ---------------------------------------------------------------
+const CHALLENGES = [
+  // ---- Every day ----
+  { id: "d1", group: "daily", text: "Open the app",
+    target: 1,  xp: 10,  read: function () { return dailyCounts.daily || 0; } },
+  { id: "d2", group: "daily", text: "Look at 3 match centres",
+    target: 3,  xp: 20,  read: function () { return dailyCounts.match || 0; } },
+  { id: "d3", group: "daily", text: "Check one of your clubs",
+    target: 1,  xp: 15,  read: function () { return dailyCounts.club || 0; } },
+  { id: "d4", group: "daily", text: "Take your daily spin",
+    target: 1,  xp: 15,  read: function () { return dailyCounts.spin || 0; } },
+
+  // ---- This week, the gentle ones ----
+  { id: "we1", group: "weekEasy", text: "Visit on 3 different days",
+    target: 3,  xp: 60,  read: function () { return (weekCounts.days || []).length; } },
+  { id: "we2", group: "weekEasy", text: "Look at 15 match centres",
+    target: 15, xp: 60,  read: function () { return weekCounts.match || 0; } },
+  { id: "we3", group: "weekEasy", text: "Star 3 matches to follow",
+    target: 3,  xp: 50,  read: function () { return weekCounts.star || 0; } },
+  { id: "we4", group: "weekEasy", text: "Look at 5 league tables",
+    target: 5,  xp: 50,  read: function () { return weekCounts.table || 0; } },
+
+  // ---- This week, the ones that take effort ----
+  { id: "wh1", group: "weekHard", text: "Visit every day this week",
+    target: 7,  xp: 200, read: function () { return (weekCounts.days || []).length; } },
+  { id: "wh2", group: "weekHard", text: "Look at 60 match centres",
+    target: 60, xp: 200, read: function () { return weekCounts.match || 0; } },
+  { id: "wh3", group: "weekHard", text: "Check your clubs 20 times",
+    target: 20, xp: 175, read: function () { return weekCounts.club || 0; } },
+  { id: "wh4", group: "weekHard", text: "Look at 25 league tables",
+    target: 25, xp: 175, read: function () { return weekCounts.table || 0; } },
+
+  // ---- The whole season ----
+  { id: "s1", group: "season", text: "Visit on 150 days",
+    target: 150,  xp: 2500, read: function () { return seasonCounts.days || 0; } },
+  { id: "s2", group: "season", text: "Look at 1,000 match centres",
+    target: 1000, xp: 3000, read: function () { return seasonCounts.match || 0; } },
+  { id: "s3", group: "season", text: "Reach a 60 day streak",
+    target: 60,   xp: 2500, read: function () { return streak; } },
+  { id: "s4", group: "season", text: "Follow 250 matches",
+    target: 250,  xp: 2000, read: function () { return seasonCounts.star || 0; } },
+  { id: "s5", group: "season", text: "Reach level 30",
+    target: 30,   xp: 3500, read: function () { return levelNow(); } },
+  { id: "s6", group: "season", text: "Take 120 daily spins",
+    target: 120,  xp: 2000, read: function () { return seasonCounts.spin || 0; } },
+];
+
+// The period a challenge belongs to, so dailies can come round again.
+function periodOf(group) {
+  if (group === "daily") return todayKey;
+  if (group === "season") return thisSeason;
+  return thisWeek;
+}
+
+function claimKey(challenge) {
+  return challenge.id + "|" + periodOf(challenge.group);
+}
+
+function isClaimed(challenge) {
+  return Boolean(claimed[claimKey(challenge)]);
+}
+
+function claim(challenge) {
+  if (isClaimed(challenge)) return;
+  if (challenge.read() < challenge.target) return;
+
+  claimed[claimKey(challenge)] = true;
+  xp = xp + challenge.xp * currentMultiplier();
+  saveXpState();
+  saveCounters();
+  drawProgress();
+}
+
+function drawChallenges() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  const groups = [
+    ["daily",    "Today",            "Resets at midnight"],
+    ["weekEasy", "This week",        "Resets Monday"],
+    ["weekHard", "This week - hard", "Resets Monday"],
+    ["season",   "Season " + thisSeason, "Runs until June"],
+  ];
+
+  for (const [key, title, note] of groups) {
+    const mine = CHALLENGES.filter(function (c) { return c.group === key; });
+    const done = mine.filter(function (c) { return isClaimed(c); }).length;
+
+    const head = document.createElement("div");
+    head.className = "chGroup";
+    head.innerHTML =
+      '<span class="chTitle">' + title + '</span>' +
+      '<span class="chNote">' + done + ' / ' + mine.length + ' &middot; ' + note + '</span>';
+    list.appendChild(head);
+
+    for (const challenge of mine) {
+      const at = Math.min(challenge.read(), challenge.target);
+      const ready = at >= challenge.target;
+      const taken = isClaimed(challenge);
+      const pct = (at / challenge.target) * 100;
+
+      const row = document.createElement("div");
+      row.className = "chRow" + (taken ? " chTaken" : "");
+      row.innerHTML =
+        '<div class="chTop">' +
+          '<span class="chText">' + challenge.text + '</span>' +
+          '<span class="chXp">+' + challenge.xp + '</span>' +
+        '</div>' +
+        '<div class="chBar"><div class="chFill" style="width:' + pct + '%"></div></div>' +
+        '<div class="chBottom">' +
+          '<span class="chCount">' + at.toLocaleString() + ' / ' +
+            challenge.target.toLocaleString() + '</span>' +
+          (taken
+            ? '<span class="chDone">Claimed</span>'
+            : (ready
+                ? '<button class="chClaim">Claim</button>'
+                : '<span class="chTodo">In progress</span>')) +
+        '</div>';
+
+      const button = row.querySelector(".chClaim");
+      if (button) {
+        button.onclick = function () {
+          claim(challenge);
+          drawChallenges();
+        };
+      }
+
+      list.appendChild(row);
+    }
+  }
 }
 
 
@@ -4197,9 +4439,7 @@ async function refresh() {
 
   if (screen === "challenges") {
     updated.textContent = "";
-    list.innerHTML =
-      '<div class="empty">Challenges<br><br>' +
-      'Daily, weekly and season goals.<br>Coming soon.</div>';
+    drawChallenges();
     return;
   }
 
