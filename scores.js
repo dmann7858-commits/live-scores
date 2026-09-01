@@ -2080,6 +2080,7 @@ body { background: #F5F6F8; color: #111827; }
       </div>
     </div>
     <div class="badges">
+      <span class="cog" id="cogBtn" style="display:none">&#9881;</span>
       <div class="coins">&#9679; <span id="coins">0</span></div>
       <div class="level" id="level">1</div>
     </div>
