@@ -1336,46 +1336,46 @@ const PAGE = `
   .shade.open { opacity: 1; pointer-events: auto; }
   .drawer {
     position: fixed; top: 0; left: 0; bottom: 0; width: 280px;
-    max-width: 82vw; background: #EF9F27; z-index: 50;
+    max-width: 82vw; background: #FFFFFF; z-index: 50;
     transform: translateX(-100%); transition: transform 0.22s;
     display: flex; flex-direction: column;
   }
   .drawer.open { transform: translateX(0); }
   .drawerTop {
-    background: #185FA5; color: #fff; padding: 16px;
+    background: #0B1E3D; color: #fff;
+    padding: calc(16px + env(safe-area-inset-top, 0px)) 16px 16px;
     display: flex; align-items: center; justify-content: space-between;
     flex-shrink: 0;
   }
   .drawerTop span:first-child { font-size: 16px; font-weight: 500; }
   .drawerClose { font-size: 20px; cursor: pointer; user-select: none; }
   .drawerBody { overflow-y: auto; flex: 1; }
-  /* Dark brown reads well on the yellow and matches the level badge. */
   .drawerHint {
-    padding: 8px 16px; background: #C97F14;
-    font-size: 11px; color: #2B1700; text-transform: uppercase;
+    padding: 9px 16px; background: #F0F1F4;
+    font-size: 11px; color: #6B7280; text-transform: uppercase;
     letter-spacing: 0.4px; font-weight: 700;
   }
   .countryItem {
     display: flex; align-items: center; gap: 10px;
     padding: 12px 16px; cursor: pointer;
-    border-bottom: 1px solid rgba(43, 23, 0, 0.18);
+    border-bottom: 1px solid #ECEEF1;
   }
   .countryItem img {
     width: 18px; height: 18px; object-fit: contain;
     flex-shrink: 0; border-radius: 2px;
   }
   .countryItem .cname {
-    flex: 1; font-size: 14px; color: #2B1700; font-weight: 600;
+    flex: 1; font-size: 14px; color: #111827; font-weight: 600;
   }
-  .countryItem .arrow { font-size: 11px; color: #5C3300; }
-  .countryItem:hover { background: #E8940F; }
+  .countryItem .arrow { font-size: 11px; color: #9CA3AF; }
+  .countryItem:hover { background: #F5F6F8; }
   .leagueChild {
-    padding: 10px 16px 10px 44px; font-size: 13px;
-    color: #2B1700; font-weight: 500;
-    cursor: pointer; background: #DE9220;
-    border-bottom: 1px solid rgba(43, 23, 0, 0.16);
+    padding: 11px 16px 11px 44px; font-size: 13px;
+    color: #374151; font-weight: 500;
+    cursor: pointer; background: #F8F9FB;
+    border-bottom: 1px solid #ECEEF1;
   }
-  .leagueChild:hover { background: #C97F14; }
+  .leagueChild:hover { background: #EFF6FF; }
 
   /* League screen */
   .leagueHead { background: #185FA5; padding: 12px 16px 0; }
@@ -1902,9 +1902,18 @@ body {
   font-weight: 600; flex-shrink: 0;
 }
 
-.ticker { height: 30px; }
-.tickerLine { font-size: 12px; }
-.tickerLine .mn { color: #4ADE80; }
+.ticker {
+  height: auto; margin: 0 0 12px; flex: none; width: 100%;
+  padding: 8px 12px; background: #16305A; border-radius: 10px;
+}
+.tickerLine { font-size: 14px; gap: 8px; justify-content: center; }
+.tickerLine img { width: 18px; height: 18px; }
+.tickerLine .nm { max-width: none; }
+.tickerLine .sc {
+  padding: 0 6px; font-size: 15px;
+}
+.tickerLine .mn { color: #4ADE80; font-weight: 600; }
+.tickerQuiet { display: block; text-align: center; }
 
 .dates { border-top: 1px solid #16305A; }
 .dateBtn { color: #8FA6C4; border-radius: 8px 8px 0 0; }
@@ -2093,20 +2102,17 @@ body {
       <span class="burger" id="burger">&#9776;</span>
       <div class="title" id="screenTitle">Live scores</div>
     </div>
-    <div class="ticker" id="ticker">
-      <div class="tickerInner" id="tickerInner">
-        <span class="tickerQuiet">&nbsp;</span>
-      </div>
-    </div>
+
     <div class="badges">
       <span class="cog" id="cogBtn" style="display:none">&#9881;</span>
       <div class="coins">&#9679; <span id="coins">0</span></div>
       <div class="level" id="level">1</div>
     </div>
   </div>
-  <div class="xpRow">
-    <div class="xpTrack"><div class="xpFill" id="xpFill"></div></div>
-    <div class="xpText"><span id="xpText">0 / 1000 xp</span></div>
+  <div class="ticker" id="ticker">
+    <div class="tickerInner" id="tickerInner">
+      <span class="tickerQuiet">&nbsp;</span>
+    </div>
   </div>
   <div class="dates" id="dates" style="display:none"></div>
   <div id="pickerBox" style="display:none"></div>
@@ -2357,12 +2363,10 @@ function leagueParam() {
 }
 
 function drawProgress() {
-  const level = Math.floor(xp / 1000) + 1;
-  const intoLevel = xp % 1000;
-  document.getElementById("level").textContent = level;
+  // The level badge and coins are all that show in the bar now.
+  // The full XP breakdown lives on the XP League screen.
+  document.getElementById("level").textContent = Math.floor(xp / 1000) + 1;
   document.getElementById("coins").textContent = coins;
-  document.getElementById("xpFill").style.width = (intoLevel / 10) + "%";
-  document.getElementById("xpText").textContent = intoLevel + " / 1000 xp";
 }
 
 // ---------------------------------------------------------------
