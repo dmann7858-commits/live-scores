@@ -1026,7 +1026,9 @@ const PAGE = `
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0B1E3D">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Live Scores</title>
 <style>
   * { box-sizing: border-box; }
@@ -1872,16 +1874,26 @@ const PAGE = `
    THE LOOK
    Dark navy chrome, light grey page, white cards.
    ============================================================= */
-body { background: #F5F6F8; color: #111827; }
+html { background: #0B1E3D; }
+body {
+  background: #F5F6F8; color: #111827;
+  /* Clear of the home bar at the bottom of newer phones. */
+  padding-bottom: calc(86px + env(safe-area-inset-bottom, 0px));
+}
 
-.header { background: #0B1E3D; padding: 12px 16px 0; }
-.title { font-size: 17px; font-weight: 600; }
+.header {
+  background: #0B1E3D;
+  /* The top padding leaves the clock and battery their own space. */
+  padding: calc(14px + env(safe-area-inset-top, 0px)) 16px 0;
+}
+.headerTop { margin-bottom: 12px; }
+.title { font-size: 18px; font-weight: 600; }
 .burger { color: #fff; }
 .cog { color: #8FA6C4; }
 .coins { background: #16305A; color: #FFC24A; }
 .level { background: #F5A623; color: #3A2400; font-weight: 700; }
 
-.xpRow { justify-content: flex-start; gap: 10px; padding-bottom: 12px; }
+.xpRow { justify-content: flex-start; gap: 10px; padding-bottom: 14px; }
 .xpTrack { flex: 1; width: auto; height: 6px; background: #16305A; border-radius: 3px; }
 .xpFill { background: #F5A623; }
 .xpText { font-size: 11px; color: #8FA6C4; order: 2; }
@@ -1968,13 +1980,20 @@ body { background: #F5F6F8; color: #111827; }
 .lcTop { color: #16A34A; }
 
 /* ---- Bottom bar ---- */
-.nav { background: #0B1E3D; border-top: none; padding: 9px 0 11px; }
-.navItem { color: #7C93B4; }
+.nav {
+  background: #0B1E3D; border-top: none;
+  padding: 12px 0 calc(14px + env(safe-area-inset-bottom, 0px));
+}
+.navItem { color: #7C93B4; font-size: 11px; }
+.navIcon { font-size: 20px; margin-bottom: 4px; }
 .navItem.on { color: #F5A623; }
 .navHomeBall {
+  width: 58px; height: 58px; font-size: 28px;
+  margin: -28px auto 3px;
   background: #1E6FD9; border: 5px solid #0B1E3D;
   box-shadow: 0 0 0 3px rgba(30,111,217,0.25);
 }
+.navHomeLabel { font-size: 11px; }
 .navHome.on .navHomeBall { background: #1E6FD9; }
 .navHomeLabel { color: #7C93B4; }
 .navHome.on .navHomeLabel { color: #fff; }
