@@ -1518,6 +1518,26 @@ const PAGE = `
   }
   .upWhen { font-size: 11px; color: #888; flex-shrink: 0; }
 
+  /* Settings */
+  .setRow {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 14px; padding: 13px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .setTap { cursor: pointer; }
+  .setTap:active { background: #F4F4F2; }
+  .setLabel { font-size: 14px; }
+  .setRight {
+    font-size: 13px; color: #888; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 60%;
+  }
+  .setNote {
+    padding: 10px 16px 14px; font-size: 12px;
+    color: #888; line-height: 1.5; background: #F4F4F2;
+  }
+  .setDanger .setLabel { color: #C0392B; font-weight: 600; }
+
   /* Weekly league table */
   .leagueTime { float: right; color: #999; font-weight: 400; text-transform: none; }
   .movedBox {
@@ -1847,6 +1867,194 @@ const PAGE = `
   }
   .filterNote { flex: 1; color: #555; font-size: 12px; }
   .filterClear { color: #B33; font-size: 12px; cursor: pointer; }
+
+/* =============================================================
+   THE LOOK
+   Dark navy chrome, light grey page, white cards.
+   ============================================================= */
+body { background: #F5F6F8; color: #111827; }
+
+.header { background: #0B1E3D; padding: 12px 16px 0; }
+.title { font-size: 17px; font-weight: 600; }
+.burger { color: #fff; }
+.cog { color: #8FA6C4; }
+.coins { background: #16305A; color: #FFC24A; }
+.level { background: #F5A623; color: #3A2400; font-weight: 700; }
+
+.xpRow { justify-content: flex-start; gap: 10px; padding-bottom: 12px; }
+.xpTrack { flex: 1; width: auto; height: 6px; background: #16305A; border-radius: 3px; }
+.xpFill { background: #F5A623; }
+.xpText { font-size: 11px; color: #8FA6C4; order: 2; }
+.xpRow::before {
+  content: "Level"; font-size: 11px; color: #F5A623;
+  font-weight: 600; flex-shrink: 0;
+}
+
+.ticker { height: 30px; }
+.tickerLine { font-size: 12px; }
+.tickerLine .mn { color: #4ADE80; }
+
+.dates { border-top: 1px solid #16305A; }
+.dateBtn { color: #8FA6C4; border-radius: 8px 8px 0 0; }
+.dateBtn.on { color: #fff; background: #1E6FD9; border-bottom-color: transparent; }
+
+/* ---- Cards instead of flat rows ---- */
+.updated { color: #6B7280; font-size: 12px; }
+
+.leagueRow, .countryRow {
+  background: transparent; padding: 14px 16px 8px;
+  font-size: 12px; color: #374151; font-weight: 600;
+}
+
+.match {
+  background: #fff; margin: 0 12px 8px; border-radius: 12px;
+  border: 1px solid #ECEEF1; border-bottom: 1px solid #ECEEF1;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.when { color: #16A34A; font-weight: 600; }
+.when.grey { color: #9CA3AF; }
+.crest { width: 20px; height: 20px; }
+.teamName { font-size: 14px; }
+.goals { font-size: 15px; }
+
+/* ---- Filter chips ---- */
+.filterBar { background: transparent; padding: 12px 12px 6px; }
+.chips { gap: 7px; }
+.chip {
+  background: #fff; border: 1px solid #E5E7EB; color: #4B5563;
+  border-radius: 18px; padding: 8px 4px; font-weight: 500;
+}
+.chip.on { background: #1E6FD9; border-color: #1E6FD9; color: #fff; }
+.chip[data-state="live"].on { background: #16A34A; border-color: #16A34A; }
+.chip[data-state="finished"].on { background: #6B7280; border-color: #6B7280; }
+.chip .cCount { opacity: 0.8; }
+.filterBtn { background: #1E6FD9; border-radius: 18px; }
+
+/* ---- Home board ---- */
+.board { background: transparent; border: none; }
+.boardHead {
+  padding: 16px 16px 10px; color: #6B7280;
+  font-size: 11px; letter-spacing: 0.5px;
+}
+.slotRow { gap: 9px; padding: 0 12px 8px; }
+.slot {
+  aspect-ratio: auto; height: auto; border-radius: 12px;
+  background: #fff; border: 1px solid #ECEEF1;
+  flex-direction: column; gap: 5px; padding: 10px 4px 8px;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.slot img { width: 30px; height: 30px; }
+.slotName {
+  font-size: 9px; color: #4B5563; text-align: center;
+  width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; line-height: 1.2;
+}
+.slotEmpty {
+  border: 1.5px dashed #D1D5DB; background: transparent;
+  box-shadow: none; min-height: 62px; justify-content: center;
+}
+
+.upRow {
+  background: #fff; margin: 0 12px 8px; border-radius: 12px;
+  border: 1px solid #ECEEF1; box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+  padding: 12px 14px;
+}
+.followRow, .liveCard {
+  background: #fff; border-radius: 12px; border: 1px solid #ECEEF1;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.followRow { margin: 0 12px 8px; }
+.liveCount { background: #DCFCE7; color: #166534; }
+.lcTop { color: #16A34A; }
+
+/* ---- Bottom bar ---- */
+.nav { background: #0B1E3D; border-top: none; padding: 9px 0 11px; }
+.navItem { color: #7C93B4; }
+.navItem.on { color: #F5A623; }
+.navHomeBall {
+  background: #1E6FD9; border: 5px solid #0B1E3D;
+  box-shadow: 0 0 0 3px rgba(30,111,217,0.25);
+}
+.navHome.on .navHomeBall { background: #1E6FD9; }
+.navHomeLabel { color: #7C93B4; }
+.navHome.on .navHomeLabel { color: #fff; }
+
+/* ---- Match centre ---- */
+.matchHead, .leagueHead { background: #0B1E3D; }
+.bigScore .clock { color: #4ADE80; }
+.tabs { background: #fff; }
+.tab.on { color: #1E6FD9; border-bottom-color: #1E6FD9; }
+.lTab.on { color: #F5A623; border-bottom-color: #F5A623; }
+.commRow, .event, .statBox, .vizBox { border-bottom-color: #ECEEF1; }
+
+/* ---- Tables ---- */
+.tableHead, .statHead { background: #F0F1F4; color: #6B7280; }
+.tableRow, .statRow { border-bottom-color: #ECEEF1; }
+.tableRow.meRow { background: #EFF6FF; }
+
+/* ---- Challenges as cards ---- */
+.chGroup { background: transparent; border-top: none; padding: 18px 16px 8px; }
+.chTitle { color: #374151; }
+.chRow {
+  background: #fff; margin: 0 12px 9px; border-radius: 12px;
+  border: 1px solid #ECEEF1; border-bottom: 1px solid #ECEEF1;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+  display: flex; gap: 12px; align-items: flex-start;
+}
+.chIcon {
+  width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; background: #EFF6FF;
+}
+.chBody { flex: 1; min-width: 0; }
+.chXp { color: #F5A623; }
+.chFill { background: #1E6FD9; }
+.chTaken .chFill { background: #16A34A; }
+.chDone { color: #16A34A; }
+.chClaim { background: #F5A623; color: #3A2400; }
+
+/* ---- XP screen ---- */
+.acctBox { border-bottom: 1px solid #ECEEF1; }
+.profCard {
+  background: #0B1E3D; margin: 12px; border-radius: 14px;
+  padding: 18px;
+}
+.profRing { background: #F5A623; }
+.profStats > div { background: #16305A; border-radius: 10px; }
+.profStats span { color: #8FA6C4; }
+
+.spinBox {
+  background: #fff; margin: 0 12px 12px; border-radius: 14px;
+  border: 1px solid #ECEEF1; border-bottom: 1px solid #ECEEF1;
+  display: flex; align-items: center; gap: 16px; text-align: left;
+}
+.spinWheel { width: 92px; height: 92px; flex-shrink: 0; }
+.spinRight { flex: 1; min-width: 0; }
+.spinHead { font-size: 16px; }
+.spinBtn { background: #F5A623; color: #3A2400; min-width: 0; padding: 10px 22px; }
+
+.listBox { background: transparent; }
+.boxHead { background: transparent; color: #6B7280; padding: 16px 16px 8px; }
+.earnRow, .rung {
+  background: #fff; border-bottom: 1px solid #ECEEF1;
+}
+.earnXp { color: #F5A623; }
+.earnIcon {
+  width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; background: #EFF6FF;
+}
+
+.lgRow { background: #fff; border-bottom: 1px solid #ECEEF1; }
+.lgAvatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: #E5E7EB; color: #6B7280; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px;
+}
+.lgYou { background: #EFF6FF; }
+.lgYou .lgName { color: #1E6FD9; }
+.setRow { border-bottom-color: #ECEEF1; }
 </style>
 </head>
 <body>
@@ -2254,16 +2462,18 @@ function goTo(name) {
   document.getElementById("dates").style.display = name === "fixtures" ? "flex" : "none";
   document.getElementById("pickerBox").style.display = "none";
   document.getElementById("searchArea").style.display = "none";
+  document.getElementById("cogBtn").style.display = name === "home" ? "inline" : "none";
 
   const titles = {
     favourites: "Favourites", fixtures: "Fixtures", home: "Home",
-    xp: "XP League", challenges: "Challenges",
+    xp: "XP League", challenges: "Challenges", settings: "Settings",
   };
   document.getElementById("screenTitle").textContent = titles[name] || "Live scores";
 
   refresh();
 }
 
+document.getElementById("cogBtn").onclick = function () { goTo("settings"); };
 document.getElementById("navFavourites").onclick = function () { favView = "countries"; goTo("favourites"); };
 document.getElementById("navFixtures").onclick = function () { goTo("fixtures"); };
 document.getElementById("navHome").onclick = function () { goTo("home"); };
@@ -3383,8 +3593,11 @@ async function drawHome() {
     for (let i = 0; i < 5; i++) {
       const item = items[i];
       if (item) {
+        const short = item.name.length > 11
+          ? item.name.slice(0, 10) + "." : item.name;
         html += '<div class="slot" data-kind="' + kind + '" data-id="' + item.id + '">' +
-          '<img src="' + item.logo + '" alt="' + item.name + '">' +
+          '<img src="' + item.logo + '" alt="">' +
+          '<span class="slotName">' + short + '</span>' +
         '</div>';
       } else {
         html += '<div class="slot slotEmpty" data-kind="add">+</div>';
@@ -3800,14 +4013,41 @@ function drawXpScreen() {
   list.appendChild(card);
 
   // ---- Daily spin ----
+  // A simple eight-segment wheel, drawn rather than an image.
+  const wheelSvg = (function () {
+    let wedges = "";
+    for (let i = 0; i < 8; i++) {
+      const a1 = (i * 45 - 90) * Math.PI / 180;
+      const a2 = ((i + 1) * 45 - 90) * Math.PI / 180;
+      const x1 = 50 + 44 * Math.cos(a1);
+      const y1 = 50 + 44 * Math.sin(a1);
+      const x2 = 50 + 44 * Math.cos(a2);
+      const y2 = 50 + 44 * Math.sin(a2);
+      wedges += '<path d="M50 50 L' + x1.toFixed(1) + ' ' + y1.toFixed(1) +
+        ' A44 44 0 0 1 ' + x2.toFixed(1) + ' ' + y2.toFixed(1) + ' Z" fill="' +
+        (i % 2 ? "#1E6FD9" : "#DCE9FB") + '"/>';
+    }
+    return '<svg class="spinWheel" viewBox="0 0 100 100" role="img">' +
+      '<title>Daily spin wheel</title>' + wedges +
+      '<circle cx="50" cy="50" r="44" fill="none" stroke="#0B1E3D" stroke-width="3"/>' +
+      '<circle cx="50" cy="50" r="7" fill="#fff" stroke="#0B1E3D" stroke-width="2.5"/>' +
+      '<path d="M50 2 L45 12 L55 12 Z" fill="#0B1E3D"/>' +
+    '</svg>';
+  })();
+
   const spinBox = document.createElement("div");
   spinBox.className = "spinBox";
-  spinBox.innerHTML = spinUsedToday()
-    ? '<div class="spinHead">Daily spin</div>' +
-      '<div class="spinDone">Come back tomorrow for another spin.</div>'
-    : '<div class="spinHead">Daily spin</div>' +
-      '<div class="spinSub">One free spin every day.</div>' +
-      '<button class="spinBtn" id="spinBtn">Spin</button>';
+  spinBox.innerHTML = wheelSvg + (spinUsedToday()
+    ? '<div class="spinRight">' +
+        '<div class="spinHead">Daily spin</div>' +
+        '<div class="spinDone">Come back tomorrow for another spin.</div>' +
+        '<button class="spinBtn" disabled style="margin-top:10px">Spun today &#10003;</button>' +
+      '</div>'
+    : '<div class="spinRight">' +
+        '<div class="spinHead">Daily spin</div>' +
+        '<div class="spinSub">One free spin every day.</div>' +
+        '<button class="spinBtn" id="spinBtn">Spin</button>' +
+      '</div>');
   list.appendChild(spinBox);
 
   const button = document.getElementById("spinBtn");
@@ -3824,10 +4064,12 @@ function drawXpScreen() {
         if (ticks > 12) {
           clearInterval(rolling);
           const prize = takeSpin();
-          spinBox.innerHTML =
-            '<div class="spinHead">Daily spin</div>' +
-            '<div class="spinWon">' + prize.text + '</div>' +
-            '<div class="spinDone">Come back tomorrow for another spin.</div>';
+          spinBox.innerHTML = wheelSvg +
+            '<div class="spinRight">' +
+              '<div class="spinHead">Daily spin</div>' +
+              '<div class="spinWon">' + prize.text + '</div>' +
+              '<div class="spinDone">Come back tomorrow.</div>' +
+            '</div>';
         }
       }, 90);
     };
@@ -3841,8 +4083,13 @@ function drawXpScreen() {
     const rule = EARNINGS[key];
     const used = dailyCounts[key] || 0;
     const done = rule.once && used >= 1;
+    const icons = {
+      daily: "&#128241;", match: "&#9917;", club: "&#128085;",
+      table: "&#9776;", streak: "&#128197;",
+    };
     earnRows +=
       '<div class="earnRow' + (done ? " earnDone" : "") + '">' +
+        '<span class="earnIcon">' + (icons[key] || "&#9917;") + '</span>' +
         '<span class="earnLabel">' + rule.label + '</span>' +
         '<span class="earnCap">' +
           (used > 0 ? used + " today" : "") +
@@ -3915,6 +4162,9 @@ function drawXpScreen() {
         html +=
           '<div class="lgRow ' + zone + (row.you ? " lgYou" : "") + '">' +
             '<span class="lgPos">' + row.position + '</span>' +
+            '<span class="lgAvatar">' +
+              (row.name ? row.name.slice(0, 1).toUpperCase() : "?") +
+            '</span>' +
             '<span class="lgName">' + row.name + (row.you ? " (you)" : "") + '</span>' +
             '<span class="lgXp">' + row.earned.toLocaleString() + '</span>' +
           '</div>';
@@ -4119,6 +4369,112 @@ async function doAuth(mode, email, password) {
 
 
 // ---------------------------------------------------------------
+// SETTINGS
+// ---------------------------------------------------------------
+function drawSettings() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  const section = function (title) {
+    const head = document.createElement("div");
+    head.className = "boxHead";
+    head.textContent = title;
+    list.appendChild(head);
+  };
+
+  const row = function (label, right, onTap) {
+    const item = document.createElement("div");
+    item.className = "setRow" + (onTap ? " setTap" : "");
+    item.innerHTML =
+      '<span class="setLabel">' + label + '</span>' +
+      '<span class="setRight">' + (right || "") + '</span>';
+    if (onTap) item.onclick = onTap;
+    list.appendChild(item);
+    return item;
+  };
+
+  // ---- Account ----
+  section("Account");
+  if (signedIn()) {
+    row("Signed in as", authEmail);
+    row("Sign out", "&rsaquo;", function () {
+      signOut();
+      drawSettings();
+    });
+  } else {
+    row("Not signed in", "&rsaquo;", function () { goTo("xp"); });
+    const note = document.createElement("div");
+    note.className = "setNote";
+    note.textContent =
+      "Your progress is only on this device. Sign in from the XP League tab to keep it safe.";
+    list.appendChild(note);
+  }
+
+  // ---- Alerts ----
+  section("Alerts");
+  const permission = (typeof Notification === "undefined")
+    ? "Not supported"
+    : (Notification.permission === "granted" ? "On"
+       : Notification.permission === "denied" ? "Blocked" : "Off");
+
+  row("Goal notifications", permission, async function () {
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission === "default") {
+      await askForNotifications();
+      drawSettings();
+    }
+  });
+  row("Matches followed", String(alerts.length));
+
+  const alertNote = document.createElement("div");
+  alertNote.className = "setNote";
+  alertNote.textContent =
+    "Alerts arrive while the app is open. Background alerts come with the phone app.";
+  list.appendChild(alertNote);
+
+  // ---- What you follow ----
+  section("Following");
+  row("Clubs", String(favTeams.length), function () {
+    favView = "countries";
+    goTo("favourites");
+  });
+  row("Leagues", String(favLeagues.length), function () {
+    favView = "countries";
+    goTo("favourites");
+  });
+
+  // ---- Legal ----
+  section("About");
+  row("Privacy policy", "&rsaquo;", function () {
+    window.open("/privacy", "_blank");
+  });
+  row("Football data", "apifootball.com");
+  row("Version", "1.0");
+
+  // ---- Clearing up ----
+  section("Data");
+  const clearRow = row("Clear this device", "&rsaquo;", function () {
+    if (clearRow.getAttribute("data-armed") === "yes") {
+      localStorage.clear();
+      location.reload();
+      return;
+    }
+    clearRow.setAttribute("data-armed", "yes");
+    clearRow.querySelector(".setLabel").textContent = "Tap again to confirm";
+    clearRow.querySelector(".setRight").textContent = "";
+    clearRow.classList.add("setDanger");
+  });
+
+  const clearNote = document.createElement("div");
+  clearNote.className = "setNote";
+  clearNote.textContent = signedIn()
+    ? "This wipes the app on this phone. Your account keeps everything, so signing back in restores it."
+    : "This wipes everything. Without an account there is no way to get it back.";
+  list.appendChild(clearNote);
+}
+
+
+// ---------------------------------------------------------------
 // CHALLENGES
 //
 // Four groups. Dailies reset at midnight, weeklies on Monday, and
@@ -4171,6 +4527,15 @@ const CHALLENGES = [
   { id: "s6", group: "season", text: "Take 120 daily spins",
     target: 120,  xp: 2000, read: function () { return seasonCounts.spin || 0; } },
 ];
+
+// A symbol for each challenge, so the list is easier to scan.
+const CHALLENGE_ICONS = {
+  d1: "&#128241;", d2: "&#9917;", d3: "&#128085;", d4: "&#127920;",
+  we1: "&#128197;", we2: "&#9917;", we3: "&#9733;", we4: "&#9776;",
+  wh1: "&#128197;", wh2: "&#9917;", wh3: "&#128085;", wh4: "&#9776;",
+  s1: "&#128197;", s2: "&#9917;", s3: "&#128293;", s4: "&#9733;",
+  s5: "&#9889;", s6: "&#127920;",
+};
 
 // The period a challenge belongs to, so dailies can come round again.
 function periodOf(group) {
@@ -4229,19 +4594,22 @@ function drawChallenges() {
       const row = document.createElement("div");
       row.className = "chRow" + (taken ? " chTaken" : "");
       row.innerHTML =
-        '<div class="chTop">' +
-          '<span class="chText">' + challenge.text + '</span>' +
-          '<span class="chXp">+' + challenge.xp + '</span>' +
-        '</div>' +
-        '<div class="chBar"><div class="chFill" style="width:' + pct + '%"></div></div>' +
-        '<div class="chBottom">' +
-          '<span class="chCount">' + at.toLocaleString() + ' / ' +
-            challenge.target.toLocaleString() + '</span>' +
-          (taken
-            ? '<span class="chDone">Claimed</span>'
-            : (ready
-                ? '<button class="chClaim">Claim</button>'
-                : '<span class="chTodo">In progress</span>')) +
+        '<div class="chIcon">' + (CHALLENGE_ICONS[challenge.id] || "&#9917;") + '</div>' +
+        '<div class="chBody">' +
+          '<div class="chTop">' +
+            '<span class="chText">' + challenge.text + '</span>' +
+            '<span class="chXp">+' + challenge.xp + '</span>' +
+          '</div>' +
+          '<div class="chBar"><div class="chFill" style="width:' + pct + '%"></div></div>' +
+          '<div class="chBottom">' +
+            '<span class="chCount">' + at.toLocaleString() + ' / ' +
+              challenge.target.toLocaleString() + '</span>' +
+            (taken
+              ? '<span class="chDone">Claimed</span>'
+              : (ready
+                  ? '<button class="chClaim">Claim</button>'
+                  : '<span class="chTodo">In progress</span>')) +
+          '</div>' +
         '</div>';
 
       const button = row.querySelector(".chClaim");
@@ -5125,6 +5493,12 @@ async function refresh() {
   if (screen === "xp") {
     updated.textContent = "";
     drawXpScreen();
+    return;
+  }
+
+  if (screen === "settings") {
+    updated.textContent = "";
+    drawSettings();
     return;
   }
 
