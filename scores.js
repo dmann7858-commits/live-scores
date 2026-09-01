@@ -1050,6 +1050,7 @@ const PAGE = `
     font-size: 13px; color: #FAC775;
   }
   .level {
+    cursor: pointer;
     width: 34px; height: 34px; border-radius: 50%;
     background: #EF9F27; color: #412402;
     display: flex; align-items: center; justify-content: center;
@@ -1520,7 +1521,88 @@ const PAGE = `
   }
   .upWhen { font-size: 11px; color: #888; flex-shrink: 0; }
 
-  /* Settings */
+  /* Profile screen */
+.profHead {
+  background: #0B1E3D; color: #fff; margin: 12px;
+  border-radius: 14px; padding: 18px;
+  display: flex; align-items: center; gap: 16px;
+}
+.profCrest {
+  width: 66px; height: 66px; border-radius: 50%;
+  background: #16305A; flex-shrink: 0; position: relative;
+  display: flex; align-items: center; justify-content: center;
+}
+.profCrest img { width: 44px; height: 44px; object-fit: contain; }
+.profLevelBig { font-size: 26px; font-weight: 700; color: #F5A623; }
+.profLevelTag {
+  position: absolute; right: -3px; bottom: -3px;
+  min-width: 24px; height: 24px; padding: 0 5px;
+  border-radius: 12px; background: #F5A623; color: #3A2400;
+  font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid #0B1E3D;
+}
+.profNameBox { min-width: 0; }
+.profNick { font-size: 19px; font-weight: 600; }
+.profUnder { font-size: 12px; color: #8FA6C4; margin-top: 3px; }
+.profClub { font-size: 12px; color: #F5A623; margin-top: 4px; }
+
+.profGrid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 8px; padding: 0 12px 12px;
+}
+.profGrid.two { grid-template-columns: repeat(2, 1fr); }
+.profCell {
+  background: #fff; border: 1px solid #ECEEF1; border-radius: 12px;
+  padding: 12px 8px; text-align: center;
+}
+.profCell b { display: block; font-size: 17px; color: #111827; }
+.profCell span { font-size: 10px; color: #6B7280; }
+
+.trophyWrap {
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 0 12px 12px;
+}
+.trophy, .chipItem {
+  display: flex; align-items: center; gap: 7px;
+  background: #fff; border: 1px solid #ECEEF1;
+  border-radius: 18px; padding: 7px 13px; font-size: 12px;
+}
+.trophy span { font-size: 14px; }
+.chipItem img { width: 16px; height: 16px; object-fit: contain; }
+
+.badgePick {
+  display: flex; gap: 10px; padding: 0 16px 14px;
+}
+.pickOne {
+  width: 46px; height: 46px; border-radius: 50%;
+  background: #fff; border: 2px solid #ECEEF1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0;
+}
+.pickOne.on { border-color: #F5A623; }
+.pickOne img { width: 28px; height: 28px; object-fit: contain; }
+.pickLevel { font-size: 15px; font-weight: 700; color: #6B7280; }
+.pickOne.on .pickLevel { color: #F5A623; }
+
+.recentRow {
+  display: flex; align-items: center; gap: 8px;
+  background: #fff; margin: 0 12px 8px;
+  border: 1px solid #ECEEF1; border-radius: 12px;
+  padding: 11px 13px; font-size: 13px;
+}
+.recentStar { color: #F5A623; font-size: 13px; flex-shrink: 0; }
+.recentRow img { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
+.recentName {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.recentName.right { text-align: right; }
+.recentScore { font-weight: 700; flex-shrink: 0; }
+
+.level.hasCrest { background: #F5A623; padding: 3px; }
+.level.hasCrest img { width: 100%; height: 100%; object-fit: contain; }
+
+/* Settings */
   .setRow {
     display: flex; align-items: center; justify-content: space-between;
     gap: 14px; padding: 13px 16px; background: #fff;
@@ -2247,6 +2329,34 @@ if (!seasonCounts || seasonCounts.season !== thisSeason) {
   seasonCounts = { season: thisSeason, days: 0 };
 }
 
+// A record of XP earned each week, kept for the graph.
+let xpHistory = JSON.parse(localStorage.getItem("xpHistory") || "[]");
+let weekStartXp = load("weekStartXp", null);
+let bestDivision = load("bestDivision", 1);
+let badgeClub = JSON.parse(localStorage.getItem("badgeClub") || "null");
+
+// First run, or the week just turned over.
+if (weekStartXp === null) {
+  weekStartXp = xp;
+} else if (localStorage.getItem("weekStartKey") !== thisWeek) {
+  const lastWeek = localStorage.getItem("weekStartKey");
+  if (lastWeek) {
+    xpHistory.push({ week: lastWeek, xp: Math.max(0, xp - weekStartXp) });
+    // Two seasons of weeks is plenty to keep.
+    if (xpHistory.length > 80) xpHistory = xpHistory.slice(-80);
+  }
+  weekStartXp = xp;
+}
+localStorage.setItem("weekStartKey", thisWeek);
+
+function saveHistory() {
+  localStorage.setItem("xpHistory", JSON.stringify(xpHistory));
+  localStorage.setItem("weekStartXp", weekStartXp);
+  localStorage.setItem("bestDivision", bestDivision);
+  localStorage.setItem("badgeClub", JSON.stringify(badgeClub));
+}
+saveHistory();
+
 // Rewards already taken, keyed by challenge and the period it
 // belonged to, so dailies can be claimed again tomorrow.
 let claimed = JSON.parse(localStorage.getItem("claimed") || "{}");
@@ -2372,9 +2482,18 @@ function leagueParam() {
 }
 
 function drawProgress() {
-  // The level badge and coins are all that show in the bar now.
-  // The full XP breakdown lives on the XP League screen.
-  document.getElementById("level").textContent = Math.floor(xp / 1000) + 1;
+  const badge = document.getElementById("level");
+  const level = Math.floor(xp / 1000) + 1;
+
+  // Show the chosen club crest if there is one, otherwise the level.
+  if (badgeClub && badgeClub.logo) {
+    badge.innerHTML = '<img src="' + badgeClub.logo + '" alt="Profile">';
+    badge.classList.add("hasCrest");
+  } else {
+    badge.textContent = level;
+    badge.classList.remove("hasCrest");
+  }
+
   document.getElementById("coins").textContent = coins;
 }
 
@@ -2509,6 +2628,7 @@ function goTo(name) {
 }
 
 document.getElementById("cogBtn").onclick = function () { goTo("settings"); };
+document.getElementById("level").onclick = function () { goTo("profile"); };
 document.getElementById("navFavourites").onclick = function () { favView = "countries"; goTo("favourites"); };
 document.getElementById("navFixtures").onclick = function () { goTo("fixtures"); };
 document.getElementById("navHome").onclick = function () { goTo("home"); };
@@ -4292,6 +4412,10 @@ function gatherProgress() {
     claimed: claimed,
     lastOpen: localStorage.getItem("lastOpen") || "",
     lastSpin: localStorage.getItem("lastSpin") || "",
+    xpHistory: xpHistory,
+    weekStartXp: weekStartXp,
+    bestDivision: bestDivision,
+    badgeClub: badgeClub,
   };
 }
 
@@ -4324,6 +4448,11 @@ function applyProgress(data) {
     }
     if (data.lastOpen) localStorage.setItem("lastOpen", data.lastOpen);
     if (data.lastSpin) localStorage.setItem("lastSpin", data.lastSpin);
+    if (Array.isArray(data.xpHistory)) xpHistory = data.xpHistory;
+    if (typeof data.weekStartXp === "number") weekStartXp = data.weekStartXp;
+    if (data.bestDivision) bestDivision = data.bestDivision;
+    if (data.badgeClub) badgeClub = data.badgeClub;
+    saveHistory();
   }
 
   saveXpState();
@@ -4397,6 +4526,259 @@ async function doAuth(mode, email, password) {
   await pullProgress();
   pushProgress();
   return result;
+}
+
+
+// ---------------------------------------------------------------
+// THE PROFILE SCREEN
+//
+// Reached by tapping the badge in the top right.
+// ---------------------------------------------------------------
+let leagueSnapshot = null;   // filled in whenever the league loads
+
+// Things worth showing off, worked out from what we already track.
+function trophiesEarned() {
+  const won = [];
+  const level = levelNow();
+  const best = Math.max(bestDivision, divisionNumber());
+
+  if (level >= 5)  won.push({ icon: "&#127941;", text: "Reached level 5" });
+  if (level >= 15) won.push({ icon: "&#127941;", text: "Reached level 15" });
+  if (level >= 30) won.push({ icon: "&#127942;", text: "Reached level 30" });
+  if (streak >= 7)  won.push({ icon: "&#128293;", text: "Seven day streak" });
+  if (streak >= 30) won.push({ icon: "&#128293;", text: "Thirty day streak" });
+  if (best >= 4) won.push({ icon: "&#9889;", text: "Reached " + DIVISIONS[best - 1].name });
+  if ((seasonCounts.match || 0) >= 100) won.push({ icon: "&#9917;", text: "100 matches followed" });
+  if (xpHistory.length >= 10) won.push({ icon: "&#128197;", text: "Ten weeks played" });
+
+  return won;
+}
+
+function divisionNumber() {
+  return leagueSnapshot ? leagueSnapshot.division : 1;
+}
+
+function drawProfile() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  const level = levelNow();
+  const division = DIVISIONS[Math.max(0, divisionNumber() - 1)];
+  const club = badgeClub || favTeams[0] || null;
+
+  // ---- Who they are ----
+  const head = document.createElement("div");
+  head.className = "profHead";
+  head.innerHTML =
+    '<div class="profCrest">' +
+      (club
+        ? '<img src="' + club.logo + '" alt="">'
+        : '<span class="profLevelBig">' + level + '</span>') +
+      '<span class="profLevelTag">' + level + '</span>' +
+    '</div>' +
+    '<div class="profNameBox">' +
+      '<div class="profNick">' + (leagueSnapshot && leagueSnapshot.name
+        ? leagueSnapshot.name : "Set your name") + '</div>' +
+      '<div class="profUnder">' + division.name + ' division' +
+        (leagueSnapshot && leagueSnapshot.position
+          ? ' &middot; ' + leagueSnapshot.position + ' this week' : "") +
+      '</div>' +
+      (club ? '<div class="profClub">' + club.name + '</div>' : "") +
+    '</div>';
+  list.appendChild(head);
+
+  // ---- The numbers ----
+  const weeks = xpHistory.slice();
+  const thisWeekXp = Math.max(0, xp - weekStartXp);
+  const lastWeekXp = weeks.length > 0 ? weeks[weeks.length - 1].xp : 0;
+  const best = weeks.reduce(function (top, w) {
+    return Math.max(top, w.xp);
+  }, thisWeekXp);
+  const average = weeks.length > 0
+    ? Math.round(weeks.reduce(function (sum, w) { return sum + w.xp; }, 0) / weeks.length)
+    : thisWeekXp;
+
+  const stats = [
+    ["This week", thisWeekXp],
+    ["Last week", lastWeekXp],
+    ["Best week", best],
+    ["Weekly average", average],
+    ["Lifetime XP", xp],
+    ["Weeks played", weeks.length + 1],
+  ];
+
+  const statBox = document.createElement("div");
+  statBox.className = "profGrid";
+  statBox.innerHTML = stats.map(function (pair) {
+    return '<div class="profCell">' +
+      '<b>' + pair[1].toLocaleString() + '</b>' +
+      '<span>' + pair[0] + '</span>' +
+    '</div>';
+  }).join("");
+  list.appendChild(statBox);
+
+  const divBox = document.createElement("div");
+  divBox.className = "profGrid two";
+  divBox.innerHTML =
+    '<div class="profCell"><b>' + division.name + '</b><span>Division now</span></div>' +
+    '<div class="profCell"><b>' +
+      DIVISIONS[Math.max(0, Math.max(bestDivision, divisionNumber()) - 1)].name +
+    '</b><span>Best reached</span></div>';
+  list.appendChild(divBox);
+
+  // ---- The graph ----
+  const shown = weeks.slice(-10).concat([{ week: thisWeek, xp: thisWeekXp }]);
+
+  const graphBox = document.createElement("div");
+  graphBox.className = "vizBox";
+
+  if (shown.length < 2) {
+    graphBox.innerHTML =
+      '<div class="vizHead"><span>XP by week</span></div>' +
+      '<div class="colEmpty">The graph fills in as the weeks go by.</div>';
+  } else {
+    const W = 320;
+    const H = 110;
+    const top = Math.max.apply(null, shown.map(function (w) { return w.xp; })) || 1;
+    const step = W / shown.length;
+
+    let bars = "";
+    let labels = "";
+    for (let i = 0; i < shown.length; i++) {
+      const value = shown[i].xp;
+      const height = Math.max(2, (value / top) * (H - 26));
+      const x = i * step + 3;
+      const last = i === shown.length - 1;
+      bars += '<rect x="' + x.toFixed(1) + '" y="' + (H - 18 - height).toFixed(1) +
+        '" width="' + (step - 6).toFixed(1) + '" height="' + height.toFixed(1) +
+        '" rx="2" fill="' + (last ? "#F5A623" : "#1E6FD9") + '"/>';
+      labels += '<text x="' + (x + (step - 6) / 2).toFixed(1) + '" y="' + (H - 5) +
+        '" text-anchor="middle" font-size="8" fill="#9CA3AF">' +
+        (last ? "now" : (i + 1)) + '</text>';
+    }
+
+    graphBox.innerHTML =
+      '<div class="vizHead"><span>XP by week</span>' +
+        '<span class="vizKey">best ' + top.toLocaleString() + '</span></div>' +
+      '<div class="vizInner">' +
+        '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
+          '<title>XP earned each week</title>' + bars + labels +
+        '</svg>' +
+      '</div>';
+  }
+  list.appendChild(graphBox);
+
+  // ---- Trophies ----
+  const won = trophiesEarned();
+  const trophyHead = document.createElement("div");
+  trophyHead.className = "boxHead";
+  trophyHead.textContent = "Trophies";
+  list.appendChild(trophyHead);
+
+  const trophyBox = document.createElement("div");
+  trophyBox.className = "trophyWrap";
+  trophyBox.innerHTML = won.length === 0
+    ? '<div class="colEmpty">Nothing won yet. Keep playing.</div>'
+    : won.map(function (t) {
+        return '<div class="trophy"><span>' + t.icon + '</span>' + t.text + '</div>';
+      }).join("");
+  list.appendChild(trophyBox);
+
+  // ---- Which badge shows in the bar ----
+  if (favTeams.length > 0) {
+    const pickHead = document.createElement("div");
+    pickHead.className = "boxHead";
+    pickHead.textContent = "Badge in the top bar";
+    list.appendChild(pickHead);
+
+    const picker = document.createElement("div");
+    picker.className = "badgePick";
+    picker.innerHTML =
+      '<div class="pickOne' + (badgeClub ? "" : " on") + '" data-id="none">' +
+        '<span class="pickLevel">' + level + '</span>' +
+      '</div>' +
+      favTeams.slice(0, 5).map(function (team) {
+        return '<div class="pickOne' +
+          (badgeClub && badgeClub.id === team.id ? " on" : "") +
+          '" data-id="' + team.id + '">' +
+          '<img src="' + team.logo + '" alt="' + team.name + '">' +
+        '</div>';
+      }).join("");
+    list.appendChild(picker);
+
+    for (const option of picker.querySelectorAll(".pickOne")) {
+      option.onclick = function () {
+        const id = this.getAttribute("data-id");
+        badgeClub = id === "none"
+          ? null
+          : favTeams.find(function (t) { return String(t.id) === id; }) || null;
+        saveHistory();
+        pushProgress();
+        drawProgress();
+        drawProfile();
+      };
+    }
+  }
+
+  // ---- What they follow ----
+  const followHead = document.createElement("div");
+  followHead.className = "boxHead";
+  followHead.textContent = "Follows";
+  list.appendChild(followHead);
+
+  const follows = document.createElement("div");
+  follows.className = "trophyWrap";
+  follows.innerHTML =
+    favTeams.map(function (t) {
+      return '<div class="chipItem"><img src="' + t.logo + '" alt="">' + t.name + '</div>';
+    }).join("") +
+    favLeagues.map(function (l) {
+      return '<div class="chipItem"><img src="' + l.logo + '" alt="">' + l.name + '</div>';
+    }).join("");
+  if (favTeams.length === 0 && favLeagues.length === 0) {
+    follows.innerHTML = '<div class="colEmpty">Nothing followed yet.</div>';
+  }
+  list.appendChild(follows);
+
+  // ---- Recently starred matches ----
+  const recentHead = document.createElement("div");
+  recentHead.className = "boxHead";
+  recentHead.textContent = "Recently starred";
+  list.appendChild(recentHead);
+
+  const recentBox = document.createElement("div");
+  recentBox.innerHTML = alerts.length === 0
+    ? '<div class="colEmpty">No matches starred yet.</div>'
+    : '<div class="colEmpty">Loading...</div>';
+  list.appendChild(recentBox);
+
+  if (alerts.length > 0) {
+    (async function () {
+      const wanted = alerts.slice(-5).reverse();
+      let rows = "";
+
+      for (const id of wanted) {
+        try {
+          const match = await (await fetch("/api/match?id=" + id + "&light=1")).json();
+          if (!match) continue;
+          const hg = match.goals.home === null ? "-" : match.goals.home;
+          const ag = match.goals.away === null ? "-" : match.goals.away;
+          rows += '<div class="recentRow">' +
+            '<span class="recentStar">&#9733;</span>' +
+            '<img src="' + match.teams.home.logo + '" alt="">' +
+            '<span class="recentName">' + match.teams.home.name + '</span>' +
+            '<span class="recentScore">' + hg + ' - ' + ag + '</span>' +
+            '<span class="recentName right">' + match.teams.away.name + '</span>' +
+            '<img src="' + match.teams.away.logo + '" alt="">' +
+          '</div>';
+        } catch (error) {
+          // Skip that one.
+        }
+      }
+
+      recentBox.innerHTML = rows || '<div class="colEmpty">Could not load them.</div>';
+    })();
+  }
 }
 
 
@@ -5528,8 +5910,31 @@ async function refresh() {
     return;
   }
 
-  if (screen === "settings") {
+  if (screen === "profile") {
     updated.textContent = "";
+    // Fetch the league standing first, so the profile can show
+    // the division and this week's position.
+    if (signedIn() && !leagueSnapshot) {
+      try {
+        const response = await fetch("/api/league", {
+          headers: { "Authorization": "Bearer " + authToken },
+        });
+        const data = await response.json();
+        if (!data.error) {
+          leagueSnapshot = data;
+          bestDivision = Math.max(bestDivision, data.division || 1);
+          saveHistory();
+        }
+      } catch (error) {
+        // Carry on without it.
+      }
+    }
+    drawProfile();
+    return;
+  }
+
+  if (screen === "settings") {
+    updated.textContent = "",
     drawSettings();
     return;
   }
