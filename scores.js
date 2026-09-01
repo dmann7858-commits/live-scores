@@ -1029,7 +1029,7 @@ const PAGE = `
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0B1E3D">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Live Scores</title>
+<title>GoalFlash</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -1887,7 +1887,13 @@ body {
   padding: calc(14px + env(safe-area-inset-top, 0px)) 16px 0;
 }
 .headerTop { margin-bottom: 12px; }
-.title { font-size: 18px; font-weight: 600; }
+.brand { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.brandBolt { font-size: 17px; line-height: 1; }
+.brandName {
+  font-size: 19px; font-weight: 700; color: #fff;
+  letter-spacing: -0.3px; white-space: nowrap;
+}
+.brandName span { color: #F5A623; }
 .burger { color: #fff; }
 .cog { color: #8FA6C4; }
 .coins { background: #16305A; color: #FFC24A; }
@@ -2100,7 +2106,10 @@ body {
   <div class="headerTop">
     <div style="display:flex; align-items:center; min-width:0; flex-shrink:0">
       <span class="burger" id="burger">&#9776;</span>
-      <div class="title" id="screenTitle">Live scores</div>
+      <div class="brand">
+        <span class="brandBolt">&#9889;</span>
+        <span class="brandName">Goal<span>Flash</span></span>
+      </div>
     </div>
 
     <div class="badges">
@@ -2493,11 +2502,8 @@ function goTo(name) {
   document.getElementById("searchArea").style.display = "none";
   document.getElementById("cogBtn").style.display = name === "home" ? "inline" : "none";
 
-  const titles = {
-    favourites: "Favourites", fixtures: "Fixtures", home: "Home",
-    xp: "XP League", challenges: "Challenges", settings: "Settings",
-  };
-  document.getElementById("screenTitle").textContent = titles[name] || "Live scores";
+  // The bar carries the app name now, and the bottom bar shows
+  // which screen you are on, so there is no title to update.
 
   refresh();
 }
