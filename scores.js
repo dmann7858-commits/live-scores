@@ -2125,6 +2125,11 @@ function load(name, fallback) {
   return value === null ? fallback : Number(value);
 }
 
+// Declared here rather than beside the sign-in code, because the
+// startup checks below run before that point in the file.
+let authToken = localStorage.getItem("authToken") || "";
+let authEmail = localStorage.getItem("authEmail") || "";
+
 let xp = load("xp", 0);
 let coins = load("coins", 0);
 let alerts = JSON.parse(localStorage.getItem("alerts") || "[]");
@@ -4237,9 +4242,6 @@ function drawXpScreen() {
 // Signing in copies it to the server so it follows the person
 // around and survives a cleared browser.
 // ---------------------------------------------------------------
-let authToken = localStorage.getItem("authToken") || "";
-let authEmail = localStorage.getItem("authEmail") || "";
-
 function signedIn() {
   return Boolean(authToken);
 }
