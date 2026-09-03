@@ -3154,23 +3154,32 @@ body {
   padding: 0 12px; flex-shrink: 0;
 }
 
+/* Room for four scorers a side, held open whether they are there
+   or not. Without this the card grows and shrinks as it cycles
+   and the whole screen jumps under your thumb. */
 .featGoals {
-  display: flex; gap: 10px;
+  display: flex; gap: 10px; align-items: flex-start;
   margin-top: 12px; padding-top: 10px;
   border-top: 1px solid #16305A;
+  min-height: 76px;
 }
 .featCol {
   flex: 1; min-width: 0; font-size: 11.5px;
   color: #B9C8DC; line-height: 1.65;
 }
 .featCol.right { text-align: right; }
+.featMore { color: #6F86A6; }
 .featCol div {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* The goalless and loading states have to stand exactly as tall
+   as a full set of scorers, or the card still jumps. */
 .featQuiet {
   margin-top: 12px; padding-top: 10px;
   border-top: 1px solid #16305A;
   font-size: 11.5px; color: #6F86A6; text-align: center;
+  min-height: 76px;
+  display: flex; align-items: center; justify-content: center;
 }
 .featDots {
   display: flex; justify-content: center;
@@ -4987,9 +4996,19 @@ function featureGoalsHtml(match, item) {
     }
   }
 
+  // Four lines a side is what the card is built to hold. A fifth
+  // goal turns the last line into a count rather than pushing the
+  // card taller.
+  const trim = function (lines) {
+    if (lines.length <= 4) return lines.join("");
+    const over = lines.length - 3;
+    return lines.slice(0, 3).join("") +
+      '<div class="featMore">+' + over + ' more</div>';
+  };
+
   return '<div class="featGoals">' +
-    '<div class="featCol">&#9917; ' + (home.join("") || "<div></div>") + '</div>' +
-    '<div class="featCol right">' + (away.join("") || "<div></div>") + ' &#9917;</div>' +
+    '<div class="featCol">&#9917; ' + (trim(home) || "<div></div>") + '</div>' +
+    '<div class="featCol right">' + (trim(away) || "<div></div>") + ' &#9917;</div>' +
   '</div>';
 }
 
