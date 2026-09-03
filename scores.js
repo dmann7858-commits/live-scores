@@ -3107,6 +3107,82 @@ body {
 .newsBody { flex: 1; min-width: 0; }
 .newsTitle { font-size: 14px; line-height: 1.35; color: #111827; }
 .newsMeta { font-size: 11px; color: #6B7280; margin-top: 6px; }
+/* =============================================================
+   THE FEATURED MATCH
+   Sits at the top of Home, laid out the way the match centre
+   lays a game out.
+   ============================================================= */
+.feature {
+  background: #0B1E3D; color: #fff; cursor: pointer;
+  margin: 12px 12px 4px; border-radius: 14px;
+  padding: 14px 14px 12px;
+  box-shadow: 0 2px 10px rgba(11,30,61,0.18);
+}
+.feature:active { opacity: 0.92; }
+.featTop {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; margin-bottom: 12px;
+}
+.featComp {
+  color: #8FA6C4; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.featClock {
+  color: #4ADE80; font-weight: 700;
+  flex-shrink: 0; margin-left: 10px;
+}
+.featDot {
+  display: inline-block; width: 6px; height: 6px;
+  border-radius: 50%; background: #4ADE80;
+  margin-right: 5px; vertical-align: middle;
+  animation: featPulse 1.6s ease-in-out infinite;
+}
+@keyframes featPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
+
+.featScore { display: flex; align-items: center; }
+.featSide { flex: 1; min-width: 0; text-align: center; }
+.featSide img {
+  width: 42px; height: 42px; object-fit: contain;
+  margin-bottom: 7px;
+}
+.featName {
+  font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.featNums {
+  font-size: 30px; font-weight: 700; letter-spacing: -0.5px;
+  padding: 0 12px; flex-shrink: 0;
+}
+
+.featGoals {
+  display: flex; gap: 10px;
+  margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid #16305A;
+}
+.featCol {
+  flex: 1; min-width: 0; font-size: 11.5px;
+  color: #B9C8DC; line-height: 1.65;
+}
+.featCol.right { text-align: right; }
+.featCol div {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.featQuiet {
+  margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid #16305A;
+  font-size: 11.5px; color: #6F86A6; text-align: center;
+}
+.featDots {
+  display: flex; justify-content: center;
+  gap: 5px; margin-top: 12px;
+}
+.featDots i {
+  display: block; width: 5px; height: 5px;
+  border-radius: 50%; background: #2C4570;
+  transition: width 0.2s, background 0.2s;
+}
+.featDots i.on { background: #F5A623; width: 15px; border-radius: 3px; }
+
 /* Stars on the Coming up rows. */
 .upRow { gap: 10px; }
 .upStar {
@@ -4784,6 +4860,222 @@ function wireMiniBells() {
 }
 
 // ---------------------------------------------------------------
+// THE FEATURED MATCH
+//
+// One game at the top of Home, drawn the way the match centre
+// draws it. Anything the person follows comes first; if none of
+// their games are on, the biggest match in the world stands in.
+// ---------------------------------------------------------------
+let featureList = [];      // live matches worth featuring, best first
+let featureAt = 0;         // which one is on screen
+let featureDetails = {};   // fixture id -> { at, match }, for scorers
+
+// How much a competition is worth when nothing is being followed.
+// Leans on the same ranking the country drawer uses, so the World
+// Cup outranks a Latvian cup tie without a second list to keep.
+function competitionWeight(item) {
+  const country = item.country || "";
+  const tier = rankOf({ name: item.league || "", country: country });
+
+  const pinnedAt = PINNED.findIndex(function (name) {
+    return matchesPinned(name, country);
+  });
+
+  // rankOf returns -1 for anything it would rather not show, and
+  // 100-and-up for women's competitions.
+  const tierScore = tier < 0 ? 40 : (tier >= 100 ? 20 + (tier - 100) : tier);
+  const countryScore = pinnedAt === -1 ? 12 : pinnedAt;
+
+  // The level of the competition counts for more than which
+  // country it is in, so La Liga outranks England's League One.
+  return 20 + (tierScore * 3) + countryScore;
+}
+
+// Lower is better. Anything under 20 is something they follow.
+function featureRank(item) {
+  if (alerts.includes(item.id)) return 0;
+
+  const theirs = favTeams.some(function (team) {
+    return team.id === item.homeId || team.id === item.awayId;
+  });
+  if (theirs) return 1;
+
+  const theirLeague = favLeagues.some(function (league) {
+    return league.id === item.leagueId;
+  });
+  if (theirLeague) return 2;
+
+  if (myLeagues.includes(item.leagueId)) return 3;
+
+  return competitionWeight(item);
+}
+
+// Works out what goes in the card and in what order. Their own
+// matches cycle; a stand-in does not.
+function buildFeature(live) {
+  const playing = (live || []).slice();
+
+  if (playing.length === 0) {
+    featureList = [];
+    featureAt = 0;
+    return;
+  }
+
+  const ranked = playing
+    .map(function (item) {
+      return { item: item, rank: featureRank(item) };
+    })
+    .sort(function (a, b) { return a.rank - b.rank; });
+
+  const followed = ranked.filter(function (entry) { return entry.rank < 20; });
+
+  // Four is enough to cycle through without it becoming a slideshow.
+  const chosen = followed.length > 0
+    ? followed.slice(0, 4)
+    : ranked.slice(0, 1);
+
+  const before = featureList[featureAt] ? featureList[featureAt].id : null;
+  featureList = chosen.map(function (entry) { return entry.item; });
+
+  // Stay on the same match across a refresh where we can.
+  const stillThere = featureList.findIndex(function (item) {
+    return item.id === before;
+  });
+  featureAt = stillThere === -1 ? 0 : stillThere;
+}
+
+// Goalscorers, which the ticker does not carry. Kept for a minute
+// and a half on the device, since they hardly ever change.
+async function featureDetail(id) {
+  const saved = featureDetails[id];
+  if (saved && Date.now() - saved.at < 90000) return saved.match;
+
+  try {
+    const match = await (await fetch("/api/match?id=" + id + "&light=1")).json();
+    if (match) featureDetails[id] = { at: Date.now(), match: match };
+    return match || (saved ? saved.match : null);
+  } catch (error) {
+    return saved ? saved.match : null;
+  }
+}
+
+// Surnames only, so two scorers fit on one line.
+function scorerName(name) {
+  const clean = String(name || "").trim();
+  if (clean.length <= 14) return clean;
+  const bits = clean.split(/\s+/);
+  return bits.length > 1 ? bits[bits.length - 1] : clean.slice(0, 13) + ".";
+}
+
+function featureGoalsHtml(match, item) {
+  if (!match || !Array.isArray(match.events) || match.events.length === 0) {
+    return '<div class="featQuiet">No goals yet</div>';
+  }
+
+  const home = [];
+  const away = [];
+
+  for (const event of match.events) {
+    const who = scorerName(event.player && event.player.name) || "Unknown";
+    const minute = event.time && event.time.elapsed ? event.time.elapsed + "'" : "";
+    const line = '<div>' + who + ' ' + minute + '</div>';
+
+    if (event.team && event.team.name === match.teams.home.name) {
+      home.push(line);
+    } else {
+      away.push(line);
+    }
+  }
+
+  return '<div class="featGoals">' +
+    '<div class="featCol">&#9917; ' + (home.join("") || "<div></div>") + '</div>' +
+    '<div class="featCol right">' + (away.join("") || "<div></div>") + ' &#9917;</div>' +
+  '</div>';
+}
+
+// Draws whichever match is currently up. Score and minute come from
+// the ticker so they are always fresh; the scorers arrive after.
+async function paintFeature() {
+  const box = document.getElementById("featureBox");
+  if (!box) return;
+
+  if (featureList.length === 0) {
+    box.innerHTML = "";
+    return;
+  }
+
+  if (featureAt >= featureList.length) featureAt = 0;
+  const item = featureList[featureAt];
+
+  const clock = item.minute !== null ? item.minute + "'" : (item.short || "LIVE");
+  const hg = item.hg === null ? "-" : item.hg;
+  const ag = item.ag === null ? "-" : item.ag;
+
+  const dots = featureList.length > 1
+    ? '<div class="featDots">' + featureList.map(function (other, index) {
+        return '<i class="' + (index === featureAt ? "on" : "") + '"></i>';
+      }).join("") + '</div>'
+    : "";
+
+  // Anything already known about the scorers, drawn straight away.
+  const known = featureDetails[item.id];
+
+  const shell = function (goalsHtml) {
+    return '<div class="feature" data-feature="' + item.id + '">' +
+      '<div class="featTop">' +
+        '<span class="featComp">' + (item.league || "") + '</span>' +
+        '<span class="featClock"><i class="featDot"></i>' + clock + '</span>' +
+      '</div>' +
+      '<div class="featScore">' +
+        '<div class="featSide">' +
+          '<img src="' + item.homeLogo + '" alt="">' +
+          '<div class="featName">' + item.home + '</div>' +
+        '</div>' +
+        '<div class="featNums">' + hg + ' - ' + ag + '</div>' +
+        '<div class="featSide">' +
+          '<img src="' + item.awayLogo + '" alt="">' +
+          '<div class="featName">' + item.away + '</div>' +
+        '</div>' +
+      '</div>' +
+      goalsHtml +
+      dots +
+    '</div>';
+  };
+
+  box.innerHTML = shell(known
+    ? featureGoalsHtml(known.match, item)
+    : '<div class="featQuiet">Loading the goals...</div>');
+
+  const card = box.querySelector(".feature");
+  if (card) card.onclick = function () { openMatch(item.id); };
+
+  // Then fill the scorers in, if they were not already to hand.
+  if (!known) {
+    const match = await featureDetail(item.id);
+
+    // The card may have moved on while that was in the air.
+    const current = box.querySelector("[data-feature]");
+    if (!current || current.getAttribute("data-feature") !== String(item.id)) {
+      return;
+    }
+
+    box.innerHTML = shell(featureGoalsHtml(match, item));
+    const again = box.querySelector(".feature");
+    if (again) again.onclick = function () { openMatch(item.id); };
+  }
+}
+
+// Move on to the next one every few seconds. A lone match, or a
+// stand-in when nothing followed is being played, just sits there.
+setInterval(function () {
+  if (screen !== "home" || homeTab !== "live") return;
+  if (featureList.length < 2) return;
+  featureAt = (featureAt + 1) % featureList.length;
+  paintFeature();
+}, 7000);
+
+
+// ---------------------------------------------------------------
 // THE HOME SCREEN
 //
 // Three views under the bar: what is being played, the papers, and
@@ -4810,6 +5102,11 @@ async function drawHome() {
 
 // ---- Live: your clubs and leagues, then whatever is on ----
 async function drawHomeLive(list) {
+  // The featured match goes in first so it sits at the very top,
+  // and gets filled once the live feed arrives.
+  const featureBox = document.createElement("div");
+  featureBox.id = "featureBox";
+  list.appendChild(featureBox);
 
   // Five slots each. Badges only, no names, so nothing collides.
   const slots = function (items, kind) {
@@ -4875,12 +5172,16 @@ async function drawHomeLive(list) {
   }
 
   // ---- Live games, three across ----
+  // One request feeds both the card at the top and the grid here.
   let live = [];
   try {
     live = await (await fetch("/api/ticker")).json();
   } catch (error) {
     live = [];
   }
+
+  buildFeature(live);
+  await paintFeature();
 
   if (live.length > 0) {
     // Followed leagues first, then everyone else.
@@ -7604,6 +7905,8 @@ const server = http.createServer(async function (request, response) {
         id: m.fixture.id,
         home: m.teams.home.name,
         away: m.teams.away.name,
+        homeId: m.teams.home.id,
+        awayId: m.teams.away.id,
         homeLogo: m.teams.home.logo,
         awayLogo: m.teams.away.logo,
         hg: m.goals.home,
@@ -7612,6 +7915,7 @@ const server = http.createServer(async function (request, response) {
         short: m.fixture.status.short,
         league: m.league.name,
         leagueId: m.league.id,
+        country: m.league.country,
       };
     });
     response.writeHead(200, { "Content-Type": "application/json" });
