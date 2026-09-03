@@ -5,6 +5,8 @@
 // Your key: on the dashboard after you log in
 
 const http = require("http");
+const fs = require("fs");
+const pathlib = require("path");
 
 const API_KEY = process.env.APIFOOTBALL_KEY || "PASTE_YOUR_KEY_HERE";
 
@@ -15,6 +17,12 @@ const DB_KEY = process.env.SUPABASE_SERVICE_KEY || "";
 const DB_ON = Boolean(DB_URL && DB_KEY);
 const PORT = process.env.PORT || 3000;
 const BASE = "https://apiv3.apifootball.com/";
+
+// apifootball hands kickoff times back in Europe/Berlin unless it is
+// told otherwise. We ask for UTC so there is one fixed reference
+// point, and the phone turns that into whatever time the person is
+// actually in. Never render these times without converting first.
+const API_TZ = "UTC";
 
 // Leagues to start with. The free plan only carries two, so these
 // are them. Once you upgrade, add more from the Leagues screen.
@@ -301,13 +309,22 @@ async function groupTable(groupKey) {
 // Everything goes through here, so if the provider ever changes
 // again this is the only part that needs rewriting.
 // ---------------------------------------------------------------
+// Only the fixture endpoints understand a timezone, so it is added
+// where it belongs rather than to every request.
+function buildUrl(action, extra) {
+  const wantsTz = action.indexOf("events") !== -1 || action.indexOf("comm") !== -1;
+  return BASE + "?action=" + action + (extra || "") +
+    (wantsTz ? "&timezone=" + encodeURIComponent(API_TZ) : "") +
+    "&APIkey=" + API_KEY;
+}
+
 async function askApi(action, extra) {
   if (!API_KEY || API_KEY === "PASTE_YOUR_KEY_HERE") {
     console.log("!! NO API KEY SET. Check the APIFOOTBALL_KEY setting.");
     return null;
   }
 
-  const url = BASE + "?action=" + action + (extra || "") + "&APIkey=" + API_KEY;
+  const url = buildUrl(action, extra);
 
   // Never print the key itself into the logs.
   console.log("fetching: " + action + (extra || ""));
@@ -347,7 +364,7 @@ async function askApi(action, extra) {
 async function askApiObject(action, extra) {
   if (!API_KEY || API_KEY === "PASTE_YOUR_KEY_HERE") return null;
 
-  const url = BASE + "?action=" + action + (extra || "") + "&APIkey=" + API_KEY;
+  const url = buildUrl(action, extra);
   console.log("fetching: " + action + (extra || ""));
 
   let response;
@@ -657,7 +674,9 @@ function translateMatch(raw) {
     fixture: {
       id: Number(raw.match_id),
       // Their date and time arrive separately.
-      date: raw.match_date + "T" + (raw.match_time || "00:00") + ":00",
+      // The Z matters. Without it the phone reads this as a local
+      // time and everyone outside the API's timezone sees it wrong.
+      date: raw.match_date + "T" + (raw.match_time || "00:00") + ":00Z",
       status: readStatus(raw),
     },
     league: {
@@ -667,8 +686,16 @@ function translateMatch(raw) {
       logo: raw.league_logo || raw.country_logo || "",
     },
     teams: {
-      home: { name: raw.match_hometeam_name, logo: raw.team_home_badge || "" },
-      away: { name: raw.match_awayteam_name, logo: raw.team_away_badge || "" },
+      home: {
+        id: Number(raw.match_hometeam_id) || null,
+        name: raw.match_hometeam_name,
+        logo: raw.team_home_badge || "",
+      },
+      away: {
+        id: Number(raw.match_awayteam_id) || null,
+        name: raw.match_awayteam_name,
+        logo: raw.team_away_badge || "",
+      },
     },
     goals: {
       home: numberOrNull(raw.match_hometeam_score),
@@ -755,6 +782,20 @@ async function getFixturesFor(date) {
   if (hit) return hit;
 
   const raw = await askApi("get_events", "&from=" + date + "&to=" + date);
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  return intoCache(name, raw.map(translateMatch));
+}
+
+// A span of days in one request. The fixtures screen asks for the
+// day either side of the one being shown, because a match at half
+// past midnight in Perth is still the night before in UTC.
+async function getFixturesRange(from, to) {
+  const name = "fixtures-" + from + "-" + to;
+  const hit = fromCache(name, 600);
+  if (hit) return hit;
+
+  const raw = await askApi("get_events", "&from=" + from + "&to=" + to);
   if (raw === null) return cache[name] ? cache[name].data : [];
 
   return intoCache(name, raw.map(translateMatch));
@@ -962,6 +1003,89 @@ async function getTopScorers(leagueId) {
   return intoCache(name, scorers);
 }
 
+// ---------------------------------------------------------------
+// NEWS
+//
+// There is no news endpoint on apifootball, so headlines come from
+// public RSS feeds. Only the headline, the source and a link out are
+// kept - the article itself stays with whoever wrote it.
+// ---------------------------------------------------------------
+const NEWS_FEEDS = [
+  { name: "BBC Sport", url: "https://feeds.bbci.co.uk/sport/football/rss.xml" },
+  { name: "Sky Sports", url: "https://www.skysports.com/rss/12040" },
+];
+
+function tidyXml(text) {
+  return String(text || "")
+    .replace(/<!\[CDATA\[/g, "")
+    .replace(/\]\]>/g, "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function readFeed(xml, sourceName) {
+  const items = [];
+  const blocks = String(xml).split(/<item[\s>]/).slice(1);
+
+  for (const block of blocks) {
+    const title = tidyXml((block.match(/<title[^>]*>([\s\S]*?)<\/title>/) || [])[1]);
+    const link = tidyXml((block.match(/<link[^>]*>([\s\S]*?)<\/link>/) || [])[1]);
+    const when = tidyXml((block.match(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/) || [])[1]);
+    const image = (block.match(/<media:thumbnail[^>]*url="([^"]+)"/) || [])[1] || "";
+
+    if (!title || !link) continue;
+
+    const stamp = when ? new Date(when) : null;
+    items.push({
+      title: title,
+      link: link,
+      source: sourceName,
+      image: image,
+      at: stamp && !isNaN(stamp) ? stamp.toISOString() : null,
+    });
+  }
+  return items;
+}
+
+async function getNews() {
+  const hit = fromCache("news", 900);
+  if (hit) return hit;
+
+  const gathered = [];
+
+  for (const feed of NEWS_FEEDS) {
+    try {
+      const response = await fetch(feed.url, {
+        headers: { "User-Agent": "GoalFlash/1.0" },
+      });
+      if (!response.ok) continue;
+      const xml = await response.text();
+      for (const item of readFeed(xml, feed.name).slice(0, 25)) {
+        gathered.push(item);
+      }
+    } catch (error) {
+      console.log("   !! news feed failed: " + feed.name);
+    }
+  }
+
+  // Newest first, whichever paper it came from.
+  gathered.sort(function (a, b) {
+    return new Date(b.at || 0) - new Date(a.at || 0);
+  });
+
+  if (gathered.length === 0) {
+    return cache["news"] ? cache["news"].data : [];
+  }
+
+  return intoCache("news", gathered.slice(0, 40));
+}
+
 async function getAllLeagues() {
   const hit = fromCache("allLeagues", 86400);
   if (hit) return hit;
@@ -1029,6 +1153,8 @@ const PAGE = `
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0B1E3D">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="/logo.png">
+<link rel="apple-touch-icon" href="/logo.png">
 <title>GoalFlash</title>
 <style>
   * { box-sizing: border-box; }
@@ -2171,6 +2297,80 @@ body {
 .lgYou { background: #EFF6FF; }
 .lgYou .lgName { color: #1E6FD9; }
 .setRow { border-bottom-color: #ECEEF1; }
+
+/* =============================================================
+   CHROME THAT FOLLOWS YOU DOWN THE PAGE
+   Only one of these three is ever on screen at a time, so they
+   can all sit at the top.
+   ============================================================= */
+#mainHeader, #matchHead, #leagueHead {
+  position: sticky; top: 0; z-index: 35;
+}
+#matchHead:empty, #leagueHead:empty { display: none; }
+
+/* The badge in the corner of the bar. */
+.brandLogo {
+  width: 27px; height: 27px; border-radius: 50%;
+  object-fit: contain; flex-shrink: 0; display: block;
+}
+.brand { gap: 8px; }
+
+/* Live, News and Following, sitting under the bar on Home. */
+.subTabs {
+  display: flex; align-items: stretch;
+  border-top: 1px solid #16305A;
+}
+.subTab {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  gap: 6px; padding: 11px 4px 9px;
+  font-size: 13px; color: #8FA6C4; cursor: pointer;
+  user-select: none; border-bottom: 2px solid transparent;
+}
+.subTab.on { color: #fff; border-bottom-color: #F5A623; }
+.subIcon {
+  height: 15px; width: auto; flex-shrink: 0;
+  fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+.subTab[data-sub="following"] .subIcon { fill: none; }
+.subTab[data-sub="following"].on .subIcon { fill: #F5A623; stroke: #F5A623; }
+
+/* Kick-off times now carry the day above them. */
+.when {
+  width: 60px; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  line-height: 1.2;
+}
+.whenDate {
+  font-size: 10px; color: #9CA3AF;
+  font-weight: 500; white-space: nowrap;
+}
+.whenMain { font-size: 12.5px; font-weight: 600; color: inherit; }
+
+/* Team names on the match screen go somewhere now. */
+.side.tappable { cursor: pointer; }
+.side.tappable div { text-decoration: underline; text-decoration-color: rgba(255,255,255,0.35); text-underline-offset: 3px; }
+.side.tappable:active { opacity: 0.7; }
+
+/* News */
+.newsRow {
+  display: flex; align-items: flex-start; gap: 12px;
+  background: #fff; margin: 0 12px 8px; padding: 12px 14px;
+  border: 1px solid #ECEEF1; border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+  cursor: pointer; text-decoration: none; color: inherit;
+}
+.newsThumb {
+  width: 62px; height: 62px; border-radius: 8px;
+  object-fit: cover; flex-shrink: 0; background: #F0F1F4;
+}
+.newsBody { flex: 1; min-width: 0; }
+.newsTitle { font-size: 14px; line-height: 1.35; color: #111827; }
+.newsMeta { font-size: 11px; color: #6B7280; margin-top: 6px; }
+.newsNote {
+  padding: 4px 16px 16px; font-size: 11px;
+  color: #9CA3AF; line-height: 1.5; text-align: center;
+}
 </style>
 </head>
 <body>
@@ -2189,7 +2389,7 @@ body {
     <div style="display:flex; align-items:center; min-width:0; flex-shrink:0">
       <span class="burger" id="burger">&#9776;</span>
       <div class="brand">
-        <span class="brandBolt">&#9889;</span>
+        <img class="brandLogo" id="brandLogo" src="/logo.png" alt="">
         <span class="brandName">Goal<span>Flash</span></span>
       </div>
     </div>
@@ -2211,6 +2411,34 @@ body {
     <div class="searchBox">
       <span style="color:#888">&#128269;</span>
       <input id="searchInput" placeholder="Search country or league" autocomplete="off">
+    </div>
+  </div>
+  <div class="subTabs" id="subTabs" style="display:none">
+    <div class="subTab on" data-sub="live">
+      <svg class="subIcon" viewBox="0 0 24 16" aria-hidden="true">
+        <rect x="1" y="1" width="22" height="14" rx="1.5"/>
+        <line x1="12" y1="1" x2="12" y2="15"/>
+        <circle cx="12" cy="8" r="3.2"/>
+        <rect x="1" y="4.5" width="3.5" height="7"/>
+        <rect x="19.5" y="4.5" width="3.5" height="7"/>
+      </svg>
+      <span>Live</span>
+    </div>
+    <div class="subTab" data-sub="news">
+      <svg class="subIcon" viewBox="0 0 20 16" aria-hidden="true">
+        <rect x="1" y="1.5" width="15" height="13" rx="1.5"/>
+        <path d="M16 5h3v7.5a2 2 0 0 1-3 0z"/>
+        <line x1="4" y1="5" x2="13" y2="5"/>
+        <line x1="4" y1="8" x2="13" y2="8"/>
+        <line x1="4" y1="11" x2="10" y2="11"/>
+      </svg>
+      <span>News</span>
+    </div>
+    <div class="subTab" data-sub="following">
+      <svg class="subIcon" viewBox="0 0 18 17" aria-hidden="true">
+        <path d="M9 1.4l2.3 4.7 5.2.75-3.75 3.65.9 5.15L9 13.2l-4.65 2.45.9-5.15L1.5 6.85l5.2-.75z"/>
+      </svg>
+      <span>Following</span>
     </div>
   </div>
 </div>
@@ -2595,6 +2823,47 @@ function isoDate(date) {
 
 let chosenDate = isoDate(new Date());
 
+// Kickoffs arrive as UTC. Which day a match belongs to depends on
+// where the person is standing, so it is worked out here rather
+// than by reading the date off the front of the timestamp.
+function localDateOf(match) {
+  const when = new Date(match.fixture.date);
+  return isNaN(when) ? "" : isoDate(when);
+}
+
+// The day above a kick-off time. Today is left blank, because the
+// time on its own says enough.
+function dayLabel(when) {
+  if (isNaN(when)) return "";
+
+  const sameDay = function (a, b) {
+    return a.getFullYear() === b.getFullYear() &&
+           a.getMonth() === b.getMonth() &&
+           a.getDate() === b.getDate();
+  };
+
+  const now = new Date();
+  if (sameDay(when, now)) return "";
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (sameDay(when, tomorrow)) return "Tomorrow";
+
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (sameDay(when, yesterday)) return "Yesterday";
+
+  return when.toLocaleDateString([], {
+    weekday: "short", day: "numeric", month: "short",
+  });
+}
+
+// Kick-off in the time the person is actually in.
+function localTime(when) {
+  return isNaN(when) ? "--:--"
+    : when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function goTo(name) {
   screen = name;
 
@@ -2617,6 +2886,7 @@ function goTo(name) {
   }
 
   document.getElementById("dates").style.display = name === "fixtures" ? "flex" : "none";
+  document.getElementById("subTabs").style.display = name === "home" ? "flex" : "none";
   document.getElementById("pickerBox").style.display = "none";
   document.getElementById("searchArea").style.display = "none";
   document.getElementById("cogBtn").style.display = name === "home" ? "inline" : "none";
@@ -2627,11 +2897,33 @@ function goTo(name) {
   refresh();
 }
 
+// No logo.png on the server, so put the old bolt back.
+const brandLogo = document.getElementById("brandLogo");
+if (brandLogo) {
+  brandLogo.onerror = function () {
+    const bolt = document.createElement("span");
+    bolt.className = "brandBolt";
+    bolt.innerHTML = "&#9889;";
+    this.replaceWith(bolt);
+  };
+}
+
 document.getElementById("cogBtn").onclick = function () { goTo("settings"); };
 document.getElementById("level").onclick = function () { goTo("profile"); };
 document.getElementById("navFavourites").onclick = function () { favView = "countries"; goTo("favourites"); };
 document.getElementById("navFixtures").onclick = function () { goTo("fixtures"); };
 document.getElementById("navHome").onclick = function () { goTo("home"); };
+
+for (const tab of document.querySelectorAll(".subTab")) {
+  tab.onclick = function () {
+    homeTab = this.getAttribute("data-sub");
+    if (screen === "home") {
+      refresh();
+    } else {
+      goTo("home");
+    }
+  };
+}
 document.getElementById("navXp").onclick = function () { goTo("xp"); };
 document.getElementById("navChallenges").onclick = function () { goTo("challenges"); };
 
@@ -2786,11 +3078,14 @@ function drawMatches(matches, showKickoffTimes) {
       when = "FT";
       whenClass = "when grey";
     } else {
-      const kickoff = new Date(match.fixture.date);
-      when = isNaN(kickoff) ? "--:--"
-        : kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      when = localTime(new Date(match.fixture.date));
       whenClass = "when grey";
     }
+
+    // The day sits above the time on anything that is not being
+    // played right now, so a season list reads properly.
+    const kickoff = new Date(match.fixture.date);
+    const dayText = state === "live" ? "" : dayLabel(kickoff);
 
     const homeGoals = match.goals.home === null ? "-" : match.goals.home;
     const awayGoals = match.goals.away === null ? "-" : match.goals.away;
@@ -2800,7 +3095,10 @@ function drawMatches(matches, showKickoffTimes) {
     row.className = "match";
     row.setAttribute("data-id", match.fixture.id);
     row.innerHTML =
-      '<div class="' + whenClass + '">' + when + '</div>' +
+      '<div class="' + whenClass + '">' +
+        (dayText ? '<span class="whenDate">' + dayText + '</span>' : '') +
+        '<span class="whenMain">' + when + '</span>' +
+      '</div>' +
       '<div class="teams">' +
         '<div class="teamRow">' +
           '<div class="teamName">' +
@@ -3736,11 +4034,33 @@ function wireMiniBells() {
   }
 }
 
+// ---------------------------------------------------------------
+// THE HOME SCREEN
+//
+// Three views under the bar: what is being played, the papers, and
+// whatever the person has starred.
+// ---------------------------------------------------------------
+let homeTab = "live";
+
 async function drawHome() {
   const list = document.getElementById("list");
   const updated = document.getElementById("updated");
   list.innerHTML = "";
   updated.textContent = "";
+
+  // Keep the sub-header in step, since Home can be reached from
+  // several places.
+  for (const tab of document.querySelectorAll(".subTab")) {
+    tab.classList.toggle("on", tab.getAttribute("data-sub") === homeTab);
+  }
+
+  if (homeTab === "news") { await drawHomeNews(list); return; }
+  if (homeTab === "following") { await drawHomeFollowing(list); return; }
+  await drawHomeLive(list);
+}
+
+// ---- Live: your clubs and leagues, then whatever is on ----
+async function drawHomeLive(list) {
 
   // Five slots each. Badges only, no names, so nothing collides.
   const slots = function (items, kind) {
@@ -3803,55 +4123,6 @@ async function drawHome() {
       "Clubs open their fixtures, table and stats.<br>" +
       "Leagues go straight to the table.";
     list.appendChild(hint);
-    return;
-  }
-
-  // ---- Next two games for each followed club ----
-  if (favTeams.length > 0) {
-    const heading = document.createElement("div");
-    heading.className = "boardHead";
-    heading.textContent = "Coming up";
-    list.appendChild(heading);
-
-    const holder = document.createElement("div");
-    list.appendChild(holder);
-
-    for (const club of favTeams.slice(0, 5)) {
-      let season = [];
-      try {
-        season = await (await fetch("/api/team-season?team=" + club.id)).json();
-      } catch (error) {
-        continue;
-      }
-
-      // Anything not finished yet, earliest first, take two.
-      const next = season
-        .filter(function (m) { return stateOf(m) !== "finished"; })
-        .sort(function (a, b) {
-          return new Date(a.fixture.date) - new Date(b.fixture.date);
-        })
-        .slice(0, 2);
-
-      if (next.length === 0) continue;
-
-      for (const match of next) {
-        const kickoff = new Date(match.fixture.date);
-        const when = isNaN(kickoff) ? "" :
-          kickoff.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }) +
-          " " + kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
-        const row = document.createElement("div");
-        row.className = "upRow";
-        row.innerHTML =
-          '<img class="upCrest" src="' + club.logo + '" alt="">' +
-          '<span class="upTeams">' +
-            match.teams.home.name + ' v ' + match.teams.away.name +
-          '</span>' +
-          '<span class="upWhen">' + when + '</span>';
-        row.onclick = function () { openMatch(match.fixture.id); };
-        holder.appendChild(row);
-      }
-    }
   }
 
   // ---- Live games, three across ----
@@ -3902,18 +4173,85 @@ async function drawHome() {
     }
   }
 
-  // ---- Matches the person has starred ----
-  if (alerts.length > 0) {
+}
+
+// ---- Following: your clubs' next games, then starred matches ----
+async function drawHomeFollowing(list) {
+  // ---- Next two games for each followed club ----
+  if (favTeams.length > 0) {
     const heading = document.createElement("div");
     heading.className = "boardHead";
-    heading.innerHTML =
-      'Following <span class="liveCount">' + alerts.length + '</span>';
+    heading.textContent = "Coming up";
     list.appendChild(heading);
 
     const holder = document.createElement("div");
     list.appendChild(holder);
 
-    // Anything already in the live feed costs nothing to reuse.
+    for (const club of favTeams.slice(0, 5)) {
+      let season = [];
+      try {
+        season = await (await fetch("/api/team-season?team=" + club.id)).json();
+      } catch (error) {
+        continue;
+      }
+
+      // Anything not finished yet, earliest first, take two.
+      const next = season
+        .filter(function (m) { return stateOf(m) !== "finished"; })
+        .sort(function (a, b) {
+          return new Date(a.fixture.date) - new Date(b.fixture.date);
+        })
+        .slice(0, 2);
+
+      if (next.length === 0) continue;
+
+      for (const match of next) {
+        const kickoff = new Date(match.fixture.date);
+        const when = isNaN(kickoff) ? "" :
+          kickoff.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }) +
+          " " + kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+        const row = document.createElement("div");
+        row.className = "upRow";
+        row.innerHTML =
+          '<img class="upCrest" src="' + club.logo + '" alt="">' +
+          '<span class="upTeams">' +
+            match.teams.home.name + ' v ' + match.teams.away.name +
+          '</span>' +
+          '<span class="upWhen">' + when + '</span>';
+        row.onclick = function () { openMatch(match.fixture.id); };
+        holder.appendChild(row);
+      }
+    }
+  }
+
+  // ---- Matches the person has starred ----
+  if (alerts.length === 0) {
+    const none = document.createElement("div");
+    none.className = "empty";
+    none.innerHTML =
+      "No matches followed yet.<br><br>" +
+      "Tap the star on any match and it will sit here, " +
+      "with its score kept up to date.";
+    list.appendChild(none);
+  } else {
+    const heading = document.createElement("div");
+    heading.className = "boardHead";
+    heading.innerHTML =
+      'Starred matches <span class="liveCount">' + alerts.length + '</span>';
+    list.appendChild(heading);
+
+    const holder = document.createElement("div");
+    list.appendChild(holder);
+
+    // Anything already being played costs nothing to reuse.
+    let live = [];
+    try {
+      live = await (await fetch("/api/ticker")).json();
+    } catch (error) {
+      live = [];
+    }
+
     const known = {};
     for (const m of live) known[m.id] = m;
 
@@ -3972,6 +4310,15 @@ async function drawHome() {
         '<span class="bell on">&#9733;</span>';
 
       row.onclick = function () { openMatch(id); };
+
+      // The star comes off here as well as on the match itself.
+      const star = row.querySelector(".bell");
+      star.onclick = function (event) {
+        event.stopPropagation();
+        toggleAlert(id, star);
+        drawHome();
+      };
+
       holder.appendChild(row);
       shown++;
     }
@@ -3984,6 +4331,80 @@ async function drawHome() {
     }
   }
 }
+
+// ---- News: headlines, linking out to whoever wrote them ----
+async function drawHomeNews(list) {
+  const loading = document.createElement("div");
+  loading.className = "empty";
+  loading.textContent = "Loading the headlines...";
+  list.appendChild(loading);
+
+  let items = [];
+  try {
+    items = await (await fetch("/api/news")).json();
+  } catch (error) {
+    items = [];
+  }
+
+  list.innerHTML = "";
+
+  if (!Array.isArray(items) || items.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No headlines right now.<br><br>' +
+      'Try again in a few minutes.</div>';
+    return;
+  }
+
+  // "14 minutes ago" reads better than a timestamp on a news list.
+  const howLongAgo = function (iso) {
+    if (!iso) return "";
+    const then = new Date(iso);
+    if (isNaN(then)) return "";
+
+    const minutes = Math.round((Date.now() - then.getTime()) / 60000);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return minutes + " min ago";
+
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return hours + (hours === 1 ? " hour ago" : " hours ago");
+
+    const days = Math.round(hours / 24);
+    return days + (days === 1 ? " day ago" : " days ago");
+  };
+
+  const safe = function (text) {
+    return String(text || "").replace(/[<>&"]/g, function (character) {
+      return { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[character];
+    });
+  };
+
+  for (const item of items) {
+    const row = document.createElement("a");
+    row.className = "newsRow";
+    row.href = item.link;
+    row.target = "_blank";
+    row.rel = "noopener noreferrer";
+    row.innerHTML =
+      (item.image
+        ? '<img class="newsThumb" src="' + safe(item.image) + '" alt="">'
+        : '') +
+      '<span class="newsBody">' +
+        '<span class="newsTitle">' + safe(item.title) + '</span>' +
+        '<span class="newsMeta">' + safe(item.source) +
+          (howLongAgo(item.at) ? ' &middot; ' + howLongAgo(item.at) : '') +
+        '</span>' +
+      '</span>';
+    list.appendChild(row);
+  }
+
+  const note = document.createElement("div");
+  note.className = "newsNote";
+  note.textContent =
+    "Headlines from their own feeds. Tapping one opens the full " +
+    "story on the site that wrote it.";
+  list.appendChild(note);
+}
+
 
 
 // Makes a three letter tag out of a club name, the way the
@@ -5047,6 +5468,10 @@ function drawChallenges() {
 let openClubInfo = null;
 let clubTab = "fixtures";
 
+// Set when a club page is opened from a match, so the back arrow
+// knows to return to the match rather than dumping you on Home.
+let clubReturnFixture = null;
+
 function openClub(club) {
   earn("club");
   openClubInfo = club;
@@ -5054,12 +5479,24 @@ function openClub(club) {
   screen = "club";
   document.getElementById("mainHeader").style.display = "none";
   document.getElementById("leagueHead").innerHTML = "";
+  document.getElementById("matchHead").innerHTML = "";
   refresh();
 }
 
 function closeClub() {
+  const backToMatch = clubReturnFixture;
+  clubReturnFixture = null;
   openClubInfo = null;
   document.getElementById("leagueHead").innerHTML = "";
+
+  if (backToMatch) {
+    openMatch(backToMatch);
+    // Leaving from the match should go where the match came from,
+    // not back into this club page.
+    previousScreen = "home";
+    return;
+  }
+
   document.getElementById("mainHeader").style.display = "block";
   goTo("home");
 }
@@ -5193,7 +5630,7 @@ function drawMatch(match) {
         '<span style="width:20px"></span>' +
       '</div>' +
       '<div class="scoreLine">' +
-        '<div class="side">' +
+        '<div class="side" id="sideHome">' +
           '<img src="' + match.teams.home.logo + '" alt="">' +
           '<div>' + match.teams.home.name + '</div>' +
         '</div>' +
@@ -5201,7 +5638,7 @@ function drawMatch(match) {
           '<div class="nums">' + homeGoals + ' - ' + awayGoals + '</div>' +
           '<div class="clock">' + clock + '</div>' +
         '</div>' +
-        '<div class="side">' +
+        '<div class="side" id="sideAway">' +
           '<img src="' + match.teams.away.logo + '" alt="">' +
           '<div>' + match.teams.away.name + '</div>' +
         '</div>' +
@@ -5215,6 +5652,28 @@ function drawMatch(match) {
     '</div>';
 
   document.getElementById("backBtn").onclick = closeMatch;
+
+  // Tapping either club opens its own page, and the back arrow
+  // there brings you straight back to this match.
+  const wireSide = function (elementId, which) {
+    const side = document.getElementById(elementId);
+    const team = match.teams[which];
+    if (!side || !team || !team.id) return;
+
+    side.classList.add("tappable");
+    side.onclick = function () {
+      clubReturnFixture = match.fixture.id;
+      openClub({
+        id: team.id,
+        name: team.name,
+        logo: team.logo,
+        leagueId: match.league.id,
+        leagueName: match.league.name,
+      });
+    };
+  };
+  wireSide("sideHome", "home");
+  wireSide("sideAway", "away");
   document.getElementById("tabSummary").onclick = function () { matchTab = "summary"; drawMatch(match); };
   document.getElementById("tabComm").onclick = function () { matchTab = "comm"; drawMatch(match); };
   document.getElementById("tabPitch").onclick = function () { matchTab = "pitch"; drawMatch(match); };
@@ -5966,12 +6425,16 @@ async function refresh() {
         "&from=" + chosenDate + "&to=" + isoDate(later))).json();
 
       matches = week.filter(function (m) {
-        return String(m.fixture.date).slice(0, 10) === chosenDate;
+        return localDateOf(m) === chosenDate;
       });
     } else {
-      // Everywhere, just the chosen day.
-      matches = await (await fetch(
-        "/api/fixtures?date=" + chosenDate + "&all=1")).json();
+      // Everywhere. The server sends the day either side as well,
+      // so the local day can be picked out here.
+      const wide = await (await fetch(
+        "/api/fixtures?date=" + chosenDate + "&all=1&span=1")).json();
+      matches = wide.filter(function (m) {
+        return localDateOf(m) === chosenDate;
+      });
     }
   } catch (error) {
     updated.textContent = "Could not reach the server";
@@ -6198,7 +6661,19 @@ const server = http.createServer(async function (request, response) {
       response.end("[]");
       return;
     }
-    const all = await getFixturesFor(date);
+    // span=1 widens it to the day either side, for timezones.
+    let all;
+    if (address.searchParams.get("span") === "1") {
+      const shift = function (days) {
+        const d = new Date(date + "T12:00:00Z");
+        d.setUTCDate(d.getUTCDate() + days);
+        return d.toISOString().slice(0, 10);
+      };
+      all = await getFixturesRange(shift(-1), shift(1));
+    } else {
+      all = await getFixturesFor(date);
+    }
+
     // all=1 means every country, used by the Fixtures screen.
     const matches = address.searchParams.get("all") === "1"
       ? all
@@ -6355,6 +6830,32 @@ const server = http.createServer(async function (request, response) {
     });
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(small));
+    return;
+  }
+
+  // The badge in the top bar. Drop a logo.png next to this file
+  // and it appears; without one the bar falls back to a bolt.
+  if (address.pathname === "/logo.png") {
+    const file = pathlib.join(__dirname, "logo.png");
+    fs.readFile(file, function (error, data) {
+      if (error) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      response.writeHead(200, {
+        "Content-Type": "image/png",
+        "Cache-Control": "public, max-age=86400",
+      });
+      response.end(data);
+    });
+    return;
+  }
+
+  if (address.pathname === "/api/news") {
+    const items = await getNews();
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(items));
     return;
   }
 
