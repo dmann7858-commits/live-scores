@@ -23,12 +23,19 @@ const BASE = "https://apiv3.apifootball.com/";
 // point, and the phone turns that into whatever time the person is
 // actually in. Never render these times without converting first.
 // Which timezone the kickoff times coming back from the API are
-// actually in. We ask for UTC, but if the provider ignores that and
-// keeps sending its own default - Europe/Berlin - then set
-// APIFOOTBALL_TZ to Europe/Berlin and everything lines up again.
-// Nothing else needs changing: the same value is sent to the API
-// and used to convert, so the two can never disagree.
-const API_TZ = process.env.APIFOOTBALL_TZ || "UTC";
+// actually in.
+//
+// We ask for UTC. apifootball ignores that and keeps sending its
+// own default, Europe/Berlin - proved by a live Liga 1 match that
+// the API reported at minute 1 while its kickoff time was still
+// two hours in the future, exactly Berlin's summer offset. So we
+// convert from Berlin, and daylight saving comes out in the wash
+// because the offset is read off the clock rather than a table.
+//
+// The same value is sent to the API and used to convert, so if
+// they ever start honouring the parameter this still holds. Set
+// APIFOOTBALL_TZ to override.
+const API_TZ = process.env.APIFOOTBALL_TZ || "Europe/Berlin";
 
 // Minutes that a zone is ahead of UTC at a given instant, worked
 // out from the clock rather than a table, so daylight saving is
@@ -1542,6 +1549,38 @@ function intoCache(name, data) {
   return data;
 }
 
+// A standing check on the clock. The API tells us how many minutes
+// a live game has been going; our kickoff time implies a figure of
+// its own. If the two disagree by more than about twenty minutes
+// across several matches at once, the timezone is wrong - which is
+// how the Europe/Berlin problem was found in the first place.
+function checkClockDrift(matches) {
+  const gaps = [];
+
+  for (const match of matches) {
+    const elapsed = match.fixture.status.elapsed;
+    // First and last few minutes are noisy; skip them.
+    if (elapsed === null || elapsed < 5 || elapsed > 85) continue;
+
+    const kickoff = new Date(match.fixture.date);
+    if (isNaN(kickoff)) continue;
+
+    gaps.push(((Date.now() - kickoff.getTime()) / 60000) - elapsed);
+  }
+
+  if (gaps.length < 3) return;
+
+  gaps.sort(function (a, b) { return a - b; });
+  const middle = gaps[Math.floor(gaps.length / 2)];
+
+  if (Math.abs(middle) > 20) {
+    console.log("   !! CLOCK DRIFT: kickoff times look " +
+      (Math.round(middle / 6) / 10) + " hours out across " +
+      gaps.length + " live matches. API_TZ is currently " + API_TZ +
+      ". Open /api/tzcheck.");
+  }
+}
+
 async function getLiveScores() {
   const hit = fromCache("live", 60);
   if (hit) return hit;
@@ -1549,7 +1588,9 @@ async function getLiveScores() {
   const raw = await askApi("get_events", "&match_live=1");
   if (raw === null) return cache["live"] ? cache["live"].data : [];
 
-  return intoCache("live", raw.map(translateMatch));
+  const matches = raw.map(translateMatch);
+  checkClockDrift(matches);
+  return intoCache("live", matches);
 }
 
 async function getFixturesFor(date) {
@@ -9025,6 +9066,7 @@ const server = http.createServer(async function (request, response) {
 server.listen(PORT, function () {
   console.log("");
   console.log("  App running on port " + PORT);
+  console.log("  Kickoff times read as " + API_TZ + " and converted to UTC");
   console.log("  On your own PC:  http://localhost:" + PORT);
   console.log("");
 });
