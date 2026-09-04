@@ -22,7 +22,48 @@ const BASE = "https://apiv3.apifootball.com/";
 // told otherwise. We ask for UTC so there is one fixed reference
 // point, and the phone turns that into whatever time the person is
 // actually in. Never render these times without converting first.
-const API_TZ = "UTC";
+// Which timezone the kickoff times coming back from the API are
+// actually in. We ask for UTC, but if the provider ignores that and
+// keeps sending its own default - Europe/Berlin - then set
+// APIFOOTBALL_TZ to Europe/Berlin and everything lines up again.
+// Nothing else needs changing: the same value is sent to the API
+// and used to convert, so the two can never disagree.
+const API_TZ = process.env.APIFOOTBALL_TZ || "UTC";
+
+// Minutes that a zone is ahead of UTC at a given instant, worked
+// out from the clock rather than a table, so daylight saving is
+// handled for free.
+function zoneOffsetMinutes(timeZone, when) {
+  const format = new Intl.DateTimeFormat("en-US", {
+    timeZone: timeZone, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+
+  const parts = {};
+  for (const part of format.formatToParts(when)) parts[part.type] = part.value;
+
+  const asIfUtc = Date.UTC(
+    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    Number(parts.hour) % 24, Number(parts.minute), Number(parts.second));
+
+  return (asIfUtc - when.getTime()) / 60000;
+}
+
+// "2026-09-11" + "19:00" in some zone, turned into a real instant.
+// Two passes, because the offset itself depends on the instant and
+// the clocks can change between the guess and the answer.
+function toUtcIso(dateText, timeText) {
+  const naive = Date.parse(dateText + "T" + timeText + ":00Z");
+  if (isNaN(naive)) return dateText + "T" + timeText + ":00Z";
+  if (API_TZ === "UTC") return new Date(naive).toISOString();
+
+  let instant = naive;
+  for (let pass = 0; pass < 2; pass++) {
+    instant = naive - zoneOffsetMinutes(API_TZ, new Date(instant)) * 60000;
+  }
+  return new Date(instant).toISOString();
+}
 
 // ---------------------------------------------------------------
 // THE BADGE
@@ -1408,9 +1449,10 @@ function translateMatch(raw) {
     fixture: {
       id: Number(raw.match_id),
       // Their date and time arrive separately.
-      // The Z matters. Without it the phone reads this as a local
-      // time and everyone outside the API's timezone sees it wrong.
-      date: raw.match_date + "T" + (raw.match_time || "00:00") + ":00Z",
+      // Always a real instant. Without this the phone reads the
+      // time as its own local one and everybody outside the API's
+      // timezone sees the wrong kickoff.
+      date: toUtcIso(raw.match_date, raw.match_time || "00:00"),
       status: readStatus(raw),
     },
     league: {
@@ -3310,6 +3352,34 @@ body {
 .playerPts { font-size: 15px; font-weight: 700; color: #1E6FD9; flex-shrink: 0; }
 .playerTick { width: 16px; color: #16A34A; font-size: 14px; flex-shrink: 0; }
 
+/* Where the XP came from. */
+.splitRow {
+  display: flex; align-items: center; gap: 11px;
+  background: #fff; padding: 11px 16px;
+  border-bottom: 1px solid #ECEEF1;
+}
+.splitBody { flex: 1; min-width: 0; }
+.splitTop {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; margin-bottom: 6px;
+}
+.splitLabel {
+  font-size: 14px; color: #111827; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.splitXp { font-size: 13px; font-weight: 700; color: #F5A623; flex-shrink: 0; }
+.splitBar {
+  display: block; height: 5px; border-radius: 3px;
+  background: #EDEDE9; overflow: hidden;
+}
+.splitFill { display: block; height: 100%; background: #1E6FD9; }
+.splitTotal {
+  display: flex; justify-content: space-between;
+  padding: 12px 16px; background: #fff;
+  font-size: 14px; font-weight: 700; color: #111827;
+  border-top: 1px solid #E3E6EA;
+}
+
 /* Stars on the Coming up rows. */
 .upRow { gap: 10px; }
 .upStar {
@@ -3399,7 +3469,7 @@ body {
       <svg class="subIcon" viewBox="0 0 20 18" aria-hidden="true">
         <path d="M7 1.5 3 3.5 1.5 7l3 1.5V16.5h11V8.5l3-1.5L17 3.5 13 1.5a3 3 0 0 1-6 0z"/>
       </svg>
-      <span>Five-a-side</span>
+      <span>6-a-side</span>
     </div>
     <div class="subTab on" data-xp="league">
       <svg class="subIcon" viewBox="0 0 18 18" aria-hidden="true">
@@ -3459,6 +3529,42 @@ let authEmail = localStorage.getItem("authEmail") || "";
 let xp = load("xp", 0);
 let coins = load("coins", 0);
 let alerts = JSON.parse(localStorage.getItem("alerts") || "[]");
+
+// ---------------------------------------------------------------
+// WHERE THE XP CAME FROM
+//
+// One running total per source, so the league page can break it
+// down rather than showing a single number nobody can account for.
+// Anything earned before this existed lands in "other" on first
+// run, which keeps the parts adding up to the whole.
+// ---------------------------------------------------------------
+let xpSources = JSON.parse(localStorage.getItem("xpSources") || "null");
+if (!xpSources) {
+  xpSources = {
+    challenges: 0, matches: 0, sixaside: 0,
+    spin: 0, favourites: 0, other: xp,
+  };
+}
+
+// The only place XP is ever added. Returns what was given.
+function creditXp(source, amount) {
+  const given = Number(amount) || 0;
+  if (given === 0) return 0;
+
+  xp = xp + given;
+  xpSources[source] = (xpSources[source] || 0) + given;
+  localStorage.setItem("xpSources", JSON.stringify(xpSources));
+  return given;
+}
+
+// Which bucket each earnable action belongs in.
+const SOURCE_OF = {
+  match: "matches",
+  table: "matches",
+  club: "favourites",
+  daily: "other",
+  streak: "other",
+};
 
 // ---------------------------------------------------------------
 // XP, STREAKS AND DAILY LIMITS
@@ -3601,6 +3707,7 @@ function tally(kind) {
 function saveXpState() {
   if (typeof pushProgress === "function") pushProgress();
   localStorage.setItem("xp", xp);
+  localStorage.setItem("xpSources", JSON.stringify(xpSources));
   localStorage.setItem("coins", coins);
   localStorage.setItem("streak", streak);
   localStorage.setItem("shields", shields);
@@ -3629,8 +3736,8 @@ function earn(kind) {
   if (rule.once && used >= 1) return 0;
 
   tally(kind);
-  const amount = rule.xp * currentMultiplier();
-  xp = xp + amount;
+  const amount = creditXp(SOURCE_OF[kind] || "other",
+                          rule.xp * currentMultiplier());
   saveXpState();
   drawProgress();
   return amount;
@@ -3670,13 +3777,13 @@ if (lastOpen !== todayKey) {
   // A day missed resets the streak.
   streak = (lastOpen === yesterday.toDateString()) ? streak + 1 : 1;
 
-  xp = xp + EARNINGS.daily.xp;
+  creditXp("other", EARNINGS.daily.xp);
   coins = coins + 2;
   dailyCounts.daily = 1;
 
   // Every seventh day pays a bonus.
   if (streak > 0 && streak % 7 === 0) {
-    xp = xp + EARNINGS.streak.xp;
+    creditXp("other", EARNINGS.streak.xp);
     coins = coins + 10;
   }
 
@@ -3944,14 +4051,18 @@ document.getElementById("xpBack").onclick = function () {
     drawXpScreen();
     return;
   }
-  if (xpTab !== "league") {
-    xpTab = "league";
+  if (xpTab !== "home") {
+    xpTab = "home";
     drawXpScreen();
     return;
   }
   goTo("home");
 };
-document.getElementById("navXp").onclick = function () { goTo("xp"); };
+document.getElementById("navXp").onclick = function () {
+  xpTab = "home";
+  fivePicking = null;
+  goTo("xp");
+};
 document.getElementById("navChallenges").onclick = function () { goTo("challenges"); };
 
 
@@ -5768,7 +5879,7 @@ function takeSpin() {
   const prize = pickPrize();
 
   if (prize.kind === "xp") {
-    xp = xp + prize.amount;
+    creditXp("spin", prize.amount);
   } else if (prize.kind === "coins") {
     coins = coins + prize.amount;
   } else if (prize.kind === "boost") {
@@ -5873,7 +5984,7 @@ function drawFiveASideTab(list) {
   total.className = "fiveTotal";
   total.innerHTML =
     '<span>' +
-      '<div class="fiveTotalHead">Your five-a-side</div>' +
+      '<div class="fiveTotalHead">Your 6-a-side team</div>' +
       '<div class="fiveTotalSub">' + filled + ' of ' + FIVE_A_SIDE.length +
         ' picked</div>' +
     '</span>' +
@@ -6061,7 +6172,7 @@ function drawPlayerStatsTab(list) {
 function drawFiveASideStrip(list) {
   const head = document.createElement("div");
   head.className = "boxHead";
-  head.innerHTML = 'Your five-a-side ' +
+  head.innerHTML = 'Your 6-a-side team ' +
     '<span class="liveCount">' + fiveASidePoints().toLocaleString() + ' pts</span>';
   list.appendChild(head);
 
@@ -6096,7 +6207,9 @@ function drawFiveASideStrip(list) {
 // THE XP SCREEN
 // Three tabs: the squad, the league, and who is worth picking.
 // ---------------------------------------------------------------
-let xpTab = "league";
+// "home" is the XP page itself. The three named tabs are drilled
+// into from the bar and the back arrow returns here.
+let xpTab = "home";
 
 function drawXpScreen() {
   const list = document.getElementById("list");
@@ -6110,10 +6223,14 @@ function drawXpScreen() {
 
   if (xpTab === "five") { drawFiveASideTab(list); return; }
   if (xpTab === "players") { drawPlayerStatsTab(list); return; }
-  drawXpLeagueTab(list);
+  if (xpTab === "league") { drawXpLeagueTab(list); return; }
+  drawXpOverview(list);
 }
 
-function drawXpLeagueTab(list) {
+// ---- The XP page itself ----
+// Who you are, the spin, your squad and how XP is earned. The
+// league table lives on its own tab, reached from the bar.
+function drawXpOverview(list) {
   const level = levelNow();
   const division = divisionFor(level);
   const intoLevel = xp % 1000;
@@ -6296,8 +6413,127 @@ function drawXpLeagueTab(list) {
   earnBox.innerHTML = earnRows;
   list.appendChild(earnBox);
 
+  // ---- The ladder ----
+  const ladder = document.createElement("div");
+  ladder.className = "listBox";
+  let rungs = '<div class="boxHead">Divisions</div>';
+
+  for (let i = DIVISIONS.length - 1; i >= 0; i--) {
+    const step = DIVISIONS[i];
+    const here = step.name === division.name;
+    const reached = level >= step.from;
+    rungs +=
+      '<div class="rung' + (here ? " rungNow" : "") + (reached ? "" : " rungLocked") + '">' +
+        '<span class="rungNum">' + (i + 1) + '</span>' +
+        '<span class="rungName">' + step.name + '</span>' +
+        '<span class="rungReq">' + (step.from === 0 ? "Start" : "Level " + step.from) + '</span>' +
+      '</div>';
+  }
+  ladder.innerHTML = rungs;
+  list.appendChild(ladder);
+
+  const note = document.createElement("div");
+  note.className = "extras";
+  note.innerHTML =
+    "Six-a-side points do not feed the weekly league yet - that " +
+    "waits on the scoring rules and the player list.";
+  list.appendChild(note);
+}
+
+
+// ---- Where your XP actually came from ----
+// Five named sources, plus a catch-all so the parts always add up
+// to the total on the card.
+const XP_SPLIT = [
+  ["challenges", "Challenges", "&#127919;"],
+  ["matches",    "Watching matches", "&#9917;"],
+  ["sixaside",   "Your 6-a-side team", "&#128085;"],
+  ["spin",       "Daily spin", "&#127920;"],
+  ["favourites", "Your favourite teams", "&#11088;"],
+];
+
+function drawXpSplit(list) {
+  const head = document.createElement("div");
+  head.className = "boxHead";
+  head.textContent = "Where your XP came from";
+  list.appendChild(head);
+
+  const rows = XP_SPLIT.map(function (entry) {
+    return {
+      key: entry[0], label: entry[1], icon: entry[2],
+      amount: Number(xpSources[entry[0]]) || 0,
+    };
+  });
+
+  const leftover = Number(xpSources.other) || 0;
+  if (leftover > 0) {
+    rows.push({
+      key: "other", label: "Everything else", icon: "&#128241;",
+      amount: leftover,
+    });
+  }
+
+  const total = rows.reduce(function (sum, row) { return sum + row.amount; }, 0);
+
+  const box = document.createElement("div");
+  box.className = "listBox";
+
+  box.innerHTML = rows.map(function (row) {
+    const share = total === 0 ? 0 : (row.amount / total) * 100;
+    return '<div class="splitRow">' +
+      '<span class="earnIcon">' + row.icon + '</span>' +
+      '<span class="splitBody">' +
+        '<span class="splitTop">' +
+          '<span class="splitLabel">' + row.label + '</span>' +
+          '<span class="splitXp">' + row.amount.toLocaleString() + '</span>' +
+        '</span>' +
+        '<span class="splitBar">' +
+          '<span class="splitFill" style="width:' + share.toFixed(1) + '%"></span>' +
+        '</span>' +
+      '</span>' +
+    '</div>';
+  }).join("") +
+  '<div class="splitTotal">' +
+    '<span>Total</span><span>' + total.toLocaleString() + ' XP</span>' +
+  '</div>';
+
+  list.appendChild(box);
+
+  // The squad is worth something, but nothing has been paid out
+  // for it yet, so say so rather than showing a bare zero.
+  const pending = fiveASidePoints();
+  if (pending > 0 && (Number(xpSources.sixaside) || 0) === 0) {
+    const waiting = document.createElement("div");
+    waiting.className = "extras";
+    waiting.innerHTML =
+      "Your 6-a-side squad is worth " + pending.toLocaleString() +
+      " points, but none of it has been paid into your XP yet.";
+    list.appendChild(waiting);
+  }
+}
+
+// Awards 6-a-side points into the XP total. Nothing calls this
+// yet - wire it up once the scoring rules are settled and the
+// breakdown above starts filling in on its own.
+function awardSixASide(points) {
+  const given = creditXp("sixaside", Number(points) || 0);
+  if (given > 0) saveXpState();
+  return given;
+}
+
+
+// ---- The league table, and nothing else ----
+function drawXpLeagueTab(list) {
+  if (!signedIn()) {
+    list.innerHTML =
+      '<div class="empty">Sign in to join a weekly league.<br><br>' +
+      'The sign-in form is on the XP page - tap the back arrow.</div>';
+    drawXpSplit(list);
+    return;
+  }
+
   // ---- This week's league ----
-  if (signedIn()) {
+  {
     const leagueBox = document.createElement("div");
     leagueBox.className = "listBox";
     leagueBox.innerHTML = '<div class="boxHead">This week</div>' +
@@ -6398,32 +6634,7 @@ function drawXpLeagueTab(list) {
     })();
   }
 
-  // ---- The ladder ----
-  const ladder = document.createElement("div");
-  ladder.className = "listBox";
-  let rungs = '<div class="boxHead">Divisions</div>';
-
-  for (let i = DIVISIONS.length - 1; i >= 0; i--) {
-    const step = DIVISIONS[i];
-    const here = step.name === division.name;
-    const reached = level >= step.from;
-    rungs +=
-      '<div class="rung' + (here ? " rungNow" : "") + (reached ? "" : " rungLocked") + '">' +
-        '<span class="rungNum">' + (i + 1) + '</span>' +
-        '<span class="rungName">' + step.name + '</span>' +
-        '<span class="rungReq">' + (step.from === 0 ? "Start" : "Level " + step.from) + '</span>' +
-      '</div>';
-  }
-  ladder.innerHTML = rungs;
-  list.appendChild(ladder);
-
-  // ---- What is still to come ----
-  const note = document.createElement("div");
-  note.className = "extras";
-  note.innerHTML =
-    "Five-a-side points do not feed the weekly league yet - that " +
-    "waits on the scoring rules and the player list.";
-  list.appendChild(note);
+  drawXpSplit(list);
 }
 
 
@@ -6457,6 +6668,7 @@ function gatherProgress() {
     lastOpen: localStorage.getItem("lastOpen") || "",
     lastSpin: localStorage.getItem("lastSpin") || "",
     xpHistory: xpHistory,
+    xpSources: xpSources,
     weekStartXp: weekStartXp,
     bestDivision: bestDivision,
     badgeClub: badgeClub,
@@ -6500,6 +6712,10 @@ function applyProgress(data) {
     if (data.lastOpen) localStorage.setItem("lastOpen", data.lastOpen);
     if (data.lastSpin) localStorage.setItem("lastSpin", data.lastSpin);
     if (Array.isArray(data.xpHistory)) xpHistory = data.xpHistory;
+    if (data.xpSources) {
+      xpSources = data.xpSources;
+      localStorage.setItem("xpSources", JSON.stringify(xpSources));
+    }
     if (typeof data.weekStartXp === "number") weekStartXp = data.weekStartXp;
     if (data.bestDivision) bestDivision = data.bestDivision;
     if (data.badgeClub) badgeClub = data.badgeClub;
@@ -6914,6 +7130,14 @@ function drawSettings() {
     window.open("/privacy", "_blank");
   });
   row("Football data", "apifootball.com");
+
+  // Kickoff times are converted on the device, so it helps to be
+  // able to see what the device believes.
+  const zone = (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || "unknown";
+  row("Your timezone", zone);
+  row("Your clock", new Date().toLocaleString([], {
+    hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
+  }));
   row("Version", "1.0");
 
   // ---- Clearing up ----
@@ -7103,7 +7327,7 @@ function claim(challenge) {
   if (challenge.read() < challenge.target) return;
 
   claimed[claimKey(challenge)] = true;
-  xp = xp + challenge.xp * currentMultiplier();
+  creditXp("challenges", challenge.xp * currentMultiplier());
   saveXpState();
   saveCounters();
   drawProgress();
@@ -8575,6 +8799,70 @@ const server = http.createServer(async function (request, response) {
     const items = await getNews();
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(items));
+    return;
+  }
+
+  // Lays out exactly what the API sent and what we made of it, so
+  // a wrong kickoff time can be diagnosed rather than guessed at.
+  // Open /api/tzcheck on the deployed app.
+  if (address.pathname === "/api/tzcheck") {
+    const date = address.searchParams.get("date") || isoToday();
+
+    // Same request twice: once asking for UTC, once asking for
+    // nothing at all. If the two disagree, the provider honours
+    // the timezone parameter. If they match, it is ignoring it.
+    const url = BASE + "?action=get_events&from=" + date + "&to=" + date +
+      "&timezone=UTC&APIkey=" + API_KEY;
+    const bare = BASE + "?action=get_events&from=" + date + "&to=" + date +
+      "&APIkey=" + API_KEY;
+
+    const grab = async function (target) {
+      try {
+        const answer = await fetch(target);
+        const rows = await answer.json();
+        if (!Array.isArray(rows) || rows.length === 0) return null;
+        return rows[0];
+      } catch (error) {
+        return null;
+      }
+    };
+
+    const asked = await grab(url);
+    const notAsked = await grab(bare);
+
+    const sample = asked || notAsked;
+    const now = new Date();
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      note: "If askedForUtc and askedForNothing show the same time, " +
+            "the provider is ignoring the timezone parameter. Set " +
+            "APIFOOTBALL_TZ to the zone it really uses - most " +
+            "likely Europe/Berlin - and redeploy.",
+      configured_API_TZ: API_TZ,
+      server_utc_now: now.toISOString(),
+      askedForUtc: asked && {
+        match: asked.match_hometeam_name + " v " + asked.match_awayteam_name,
+        match_date: asked.match_date,
+        match_time: asked.match_time,
+      },
+      askedForNothing: notAsked && {
+        match: notAsked.match_hometeam_name + " v " + notAsked.match_awayteam_name,
+        match_date: notAsked.match_date,
+        match_time: notAsked.match_time,
+      },
+      whatWeStore: sample
+        ? toUtcIso(sample.match_date, sample.match_time || "00:00")
+        : null,
+      soAPhoneWouldShow: sample
+        ? {
+            in_Perth: new Date(toUtcIso(sample.match_date, sample.match_time || "00:00"))
+              .toLocaleString("en-GB", { timeZone: "Australia/Perth" }),
+            in_London: new Date(toUtcIso(sample.match_date, sample.match_time || "00:00"))
+              .toLocaleString("en-GB", { timeZone: "Europe/London" }),
+          }
+        : null,
+    }, null, 2));
     return;
   }
 
