@@ -16,6 +16,12 @@ const DB_URL = process.env.SUPABASE_URL || "";
 const DB_KEY = process.env.SUPABASE_SERVICE_KEY || "";
 const DB_ON = Boolean(DB_URL && DB_KEY);
 const PORT = process.env.PORT || 3000;
+
+// Shown on the privacy and support pages, and required by both app
+// stores. Set SUPPORT_EMAIL in the server settings before you
+// submit anything - the pages say so plainly if you have not.
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || "";
+const APP_NAME = "GoalFlash";
 const BASE = "https://apiv3.apifootball.com/";
 
 // apifootball hands kickoff times back in Europe/Berlin unless it is
@@ -834,11 +840,20 @@ async function dbCall(path, options) {
     headers.Authorization = "Bearer " + DB_KEY;
   }
 
-  const response = await fetch(DB_URL + path, {
-    method: settings.method || "GET",
-    headers: headers,
-    body: settings.body ? JSON.stringify(settings.body) : undefined,
-  });
+  // A database that is down or unreachable has to come back as a
+  // failed call, not an exception. Without this the whole request
+  // dies and the app is left hanging on a blank screen.
+  let response;
+  try {
+    response = await fetch(DB_URL + path, {
+      method: settings.method || "GET",
+      headers: headers,
+      body: settings.body ? JSON.stringify(settings.body) : undefined,
+    });
+  } catch (error) {
+    console.log("   !! could not reach the database: " + error.message);
+    return { ok: false, status: 0, data: null };
+  }
 
   let data = null;
   try { data = await response.json(); } catch (error) { data = null; }
@@ -1066,6 +1081,20 @@ async function rollWeek(userId) {
   });
 
   return await getProfile(userId);
+}
+
+// Removes the person's profile row and then the login itself.
+// Irreversible, and deliberately so - the app stores need it to be.
+async function deleteAccount(userId) {
+  // The saved progress goes first, so nothing is orphaned if the
+  // second call fails.
+  await dbCall("/rest/v1/profiles?id=eq." + userId, { method: "DELETE" });
+
+  const result = await dbCall("/auth/v1/admin/users/" + userId, {
+    method: "DELETE",
+  });
+
+  return result.ok;
 }
 
 // The table everybody in that group sees.
@@ -8059,6 +8088,50 @@ function drawSettings() {
       signOut();
       drawSettings();
     });
+
+    // Both app stores require this to be reachable in the app, not
+    // by emailing someone. Two taps, because it cannot be undone.
+    const deleteRow = row("Delete account", "&rsaquo;", async function () {
+      if (deleteRow.getAttribute("data-armed") !== "yes") {
+        deleteRow.setAttribute("data-armed", "yes");
+        deleteRow.querySelector(".setLabel").textContent =
+          "Tap again to delete permanently";
+        deleteRow.querySelector(".setRight").textContent = "";
+        deleteRow.classList.add("setDanger");
+        return;
+      }
+
+      deleteRow.querySelector(".setLabel").textContent = "Deleting...";
+
+      let result;
+      try {
+        result = await (await fetch("/api/account/delete", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + authToken },
+        })).json();
+      } catch (error) {
+        result = { error: "Could not reach the server" };
+      }
+
+      if (result.error) {
+        deleteRow.removeAttribute("data-armed");
+        deleteRow.querySelector(".setLabel").textContent = "Delete account";
+        deleteRow.querySelector(".setRight").textContent = result.error;
+        return;
+      }
+
+      // Gone from the server, so clear the phone as well.
+      signOut();
+      localStorage.clear();
+      location.reload();
+    });
+
+    const deleteNote = document.createElement("div");
+    deleteNote.className = "setNote";
+    deleteNote.textContent =
+      "Deleting your account removes your email address and all saved " +
+      "progress from our servers straight away. It cannot be undone.";
+    list.appendChild(deleteNote);
   } else {
     row("Not signed in", "&rsaquo;", function () { goTo("xp"); });
     const note = document.createElement("div");
@@ -8105,6 +8178,9 @@ function drawSettings() {
   section("About");
   row("Privacy policy", "&rsaquo;", function () {
     window.open("/privacy", "_blank");
+  });
+  row("Support", "&rsaquo;", function () {
+    window.open("/support", "_blank");
   });
   row("Football data", "apifootball.com");
 
@@ -9423,9 +9499,208 @@ setInterval(function () {
 
 
 // ---------------------------------------------------------------
+// THE LEGAL PAGES
+//
+// Both app stores insist on a reachable privacy policy and a
+// support page before they will look at a submission. These are
+// plain pages on the same server, so there is nothing else to host.
+//
+// WRITTEN IN GOOD FAITH, NOT BY A LAWYER. They describe what the
+// code actually does today. Have them read properly before you
+// submit, and update them whenever the app starts collecting
+// something new.
+// ---------------------------------------------------------------
+function pageShell(title, body) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title} - ${APP_NAME}</title>
+<style>
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: #F5F6F8; color: #111827;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 0 20px 60px; }
+  header { background: #0B1E3D; color: #fff; padding: 28px 20px; }
+  header .inner { max-width: 680px; margin: 0 auto; }
+  header .brand { font-size: 20px; font-weight: 700; }
+  header .brand span { color: #F5A623; }
+  header h1 { font-size: 22px; margin: 10px 0 0; font-weight: 600; }
+  header .when { font-size: 12px; color: #8FA6C4; margin-top: 6px; }
+  h2 { font-size: 16px; margin: 30px 0 8px; }
+  p, li { font-size: 15px; color: #374151; }
+  ul { padding-left: 20px; }
+  a { color: #1E6FD9; }
+  .warn {
+    background: #FEF3C7; color: #92400E; padding: 12px 14px;
+    border-radius: 10px; font-size: 14px; margin: 20px 0;
+  }
+  footer {
+    margin-top: 40px; padding-top: 18px;
+    border-top: 1px solid #E3E6EA; font-size: 13px; color: #6B7280;
+  }
+</style>
+</head>
+<body>
+<header><div class="inner">
+  <div class="brand">Goal<span>Flash</span></div>
+  <h1>${title}</h1>
+  <div class="when">Last updated ${new Date().toISOString().slice(0, 10)}</div>
+</div></header>
+<div class="wrap">
+${body}
+<footer>
+  ${SUPPORT_EMAIL
+    ? 'Questions? <a href="mailto:' + SUPPORT_EMAIL + '">' + SUPPORT_EMAIL + '</a>'
+    : '<span style="color:#C0392B">No support email is configured. ' +
+      'Set SUPPORT_EMAIL on the server before submitting to an app store.</span>'}
+  <br><a href="/privacy">Privacy</a> &middot;
+  <a href="/support">Support</a> &middot;
+  <a href="/">Back to ${APP_NAME}</a>
+</footer>
+</div>
+</body>
+</html>`;
+}
+
+function privacyPage() {
+  return pageShell("Privacy policy", `
+<p>${APP_NAME} is a football scores app. This page explains what it
+stores about you, why, and how to get rid of it.</p>
+
+<h2>Using the app without an account</h2>
+<p>You can use ${APP_NAME} without signing in. Everything - your XP,
+your followed clubs and leagues, your starred matches and your
+6-a-side squad - is then held only in your device's own storage.
+None of it reaches us.</p>
+
+<h2>If you create an account</h2>
+<p>Creating an account stores two things on our servers:</p>
+<ul>
+  <li><strong>Your email address</strong>, used to identify your
+      account and let you sign back in.</li>
+  <li><strong>Your password</strong>, which is hashed by our
+      authentication provider. We never see or store the password
+      itself.</li>
+</ul>
+<p>Once signed in, your progress is also saved so it follows you to
+another phone: XP and coins, day streak, the clubs and leagues you
+follow, the matches you star, your 6-a-side squad, and your progress
+through the challenges. A display name, if you set one, is visible to
+other people in your weekly XP league.</p>
+
+<h2>What we do not do</h2>
+<ul>
+  <li>No advertising, and no advertising identifiers.</li>
+  <li>No analytics or tracking software.</li>
+  <li>No location data.</li>
+  <li>We do not sell or share your information with anyone.</li>
+</ul>
+
+<h2>Other services the app touches</h2>
+<p>Match data comes from apifootball.com, Premier League player data
+from the Fantasy Premier League service, and news headlines from
+publishers' public feeds. Those requests are made by our server, not
+by your phone, so those services do not see you.</p>
+<p>One exception worth being straight about: club badges and player
+photographs are loaded directly by your device from the services that
+host them. Those services will therefore see your device's IP address,
+in the same way any website's images would.</p>
+
+<h2>Notifications</h2>
+<p>If you turn on goal alerts, your device asks your permission first.
+Alerts are about matches you chose to follow and nothing else. You can
+withdraw permission at any time in your phone's settings.</p>
+
+<h2>Deleting your data</h2>
+<p>You can delete your account from inside the app, under Settings,
+Account. This removes your login and all saved progress from our
+servers immediately and permanently. There is no recovery afterwards.</p>
+<p>"Clear this device", also under Settings, wipes the copy held on
+your phone only, and does not touch an account.</p>
+
+<h2>Children</h2>
+<p>${APP_NAME} is not directed at children under 13 and we do not
+knowingly collect their information.</p>
+
+<h2>Changes</h2>
+<p>If this policy changes we will update this page and the date at the
+top of it.</p>
+
+<div class="warn">This policy describes what the app does today. It
+was written in good faith but has not been reviewed by a lawyer. If
+you are the developer reading this: get it checked, and confirm what
+Australian privacy law requires of you, before you submit.</div>
+`);
+}
+
+function supportPage() {
+  return pageShell("Support", `
+<p>${APP_NAME} shows live football scores, tables, line-ups and
+commentary, and lets you build a 6-a-side team from Premier League
+players to earn XP.</p>
+
+<h2>Getting help</h2>
+${SUPPORT_EMAIL
+  ? '<p>Email <a href="mailto:' + SUPPORT_EMAIL + '">' + SUPPORT_EMAIL +
+    '</a> and we will get back to you. It helps to say which phone you ' +
+    'are using and what you were doing at the time.</p>'
+  : '<div class="warn">No support email has been configured yet. Set ' +
+    'SUPPORT_EMAIL on the server - both app stores require a working ' +
+    'contact address.</div>'}
+
+<h2>Common questions</h2>
+<p><strong>Kick-off times look wrong.</strong> Times are converted to
+whatever timezone your phone is set to. Check Settings, About, which
+shows the timezone your device is reporting.</p>
+
+<p><strong>Alerts are not arriving.</strong> Goal alerts currently only
+work while the app is open, and need notification permission. Check
+Settings, Alerts.</p>
+
+<p><strong>I cannot change my 6-a-side team.</strong> Squads can only be
+changed between midnight on Wednesday and midnight on Saturday, and you
+get one change a week. Filling an empty place is always free.</p>
+
+<p><strong>My 6-a-side shows 0 XP.</strong> Only points your players
+score while they are in your team become XP. Anything they scored
+before you picked them stays behind. XP is paid once a gameweek is
+finished and its bonus points have been confirmed.</p>
+
+<p><strong>I want my account gone.</strong> Settings, Account, Delete
+account. It is immediate and cannot be undone.</p>
+
+<h2>Where the data comes from</h2>
+<p>Scores, fixtures, tables and line-ups are provided by
+apifootball.com. Premier League player statistics come from the
+Fantasy Premier League service. News headlines are from publishers'
+own feeds and link back to the original articles.</p>
+`);
+}
+
+
+// ---------------------------------------------------------------
 // THE SERVER
 // ---------------------------------------------------------------
 const server = http.createServer(async function (request, response) {
+  try {
+    await handleRequest(request, response);
+  } catch (error) {
+    // Anything unexpected becomes a 500 rather than a dead socket.
+    console.log("!! request failed: " + (error && error.stack || error));
+    if (!response.headersSent) {
+      response.writeHead(500, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Something went wrong" }));
+    } else {
+      response.end();
+    }
+  }
+});
+
+async function handleRequest(request, response) {
   const address = new URL(request.url, "http://localhost");
 
   // ---- Accounts ----
@@ -9464,6 +9739,32 @@ const server = http.createServer(async function (request, response) {
     response.writeHead(result.error ? 400 : 200,
       { "Content-Type": "application/json" });
     response.end(JSON.stringify(result));
+    return;
+  }
+
+  // ---- Closing an account ----
+  if (address.pathname === "/api/account/delete" && request.method === "POST") {
+    if (!DB_ON) {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Accounts are not set up yet" }));
+      return;
+    }
+
+    const token = String(request.headers.authorization || "").replace("Bearer ", "");
+    const who = token ? await whoIs(token) : null;
+
+    if (!who) {
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Please sign in again" }));
+      return;
+    }
+
+    const gone = await deleteAccount(who.id);
+
+    response.writeHead(gone ? 200 : 500, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(gone
+      ? { deleted: true }
+      : { error: "Could not delete the account. Please try again." }));
     return;
   }
 
@@ -9782,6 +10083,12 @@ const server = http.createServer(async function (request, response) {
     return;
   }
 
+  if (address.pathname === "/privacy" || address.pathname === "/support") {
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    response.end(address.pathname === "/privacy" ? privacyPage() : supportPage());
+    return;
+  }
+
   if (address.pathname === "/api/fpl-players") {
     const data = await getFplPlayers();
     response.writeHead(200, { "Content-Type": "application/json" });
@@ -10066,7 +10373,7 @@ const server = http.createServer(async function (request, response) {
 
   response.writeHead(200, { "Content-Type": "text/html" });
   response.end(PAGE.replace("__LEAGUES__", JSON.stringify(MY_LEAGUES)));
-});
+}
 
 server.listen(PORT, function () {
   console.log("");
