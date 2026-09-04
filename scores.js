@@ -3703,6 +3703,42 @@ body {
 }
 .playerPts { width: 34px; text-align: right; }
 
+/* The minus badge, and the rule banner. */
+.fiveSlot { position: relative; }
+.fiveMinus {
+  position: absolute; top: -4px; right: 12px; z-index: 2;
+  width: 23px; height: 23px; border-radius: 50%;
+  background: #E24B4A; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; font-weight: 700; line-height: 1;
+  border: 2px solid #2F6410; cursor: pointer;
+}
+.fiveMinus.off { background: #7C93B4; border-color: #2F6410; opacity: 0.6; }
+.fiveCost { font-size: 10px; color: #C9E3A8; margin-top: 2px; }
+
+.fiveMini { position: relative; }
+.fiveMiniMinus {
+  position: absolute; top: -5px; right: -3px; z-index: 2;
+  width: 19px; height: 19px; border-radius: 50%;
+  background: #E24B4A; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; line-height: 1;
+  border: 2px solid #F5F6F8; cursor: pointer;
+}
+.fiveMiniMinus.off { background: #B8C2CF; opacity: 0.75; }
+
+.lockShut .lockDot { background: #E24B4A; }
+
+.chooserShut {
+  margin: 0 12px 10px; padding: 12px 14px;
+  background: #FEF3C7; border-radius: 12px;
+}
+.chooserShutHead { font-size: 13.5px; font-weight: 600; color: #92400E; }
+.chooserShutNote {
+  font-size: 12px; color: #92400E;
+  margin-top: 5px; line-height: 1.5; opacity: 0.85;
+}
+
 /* The Wednesday lock. */
 .lockBar {
   margin: 8px 12px 0; padding: 12px 14px;
@@ -6411,6 +6447,91 @@ function squadCycleKey(when) {
   return isoDate(day);
 }
 
+// ---------------------------------------------------------------
+// THE CHANGE WINDOW
+//
+// Squads can only be altered between midnight on Wednesday and
+// midnight on Saturday - so all of Wednesday, Thursday and Friday.
+// One change a week: taking a player out uses it. Putting someone
+// into an empty place is always free, because otherwise a new
+// squad could never be built.
+// ---------------------------------------------------------------
+const CHANGES_PER_WEEK = 1;
+
+function inChangeWindow(when) {
+  const day = (when || new Date()).getDay();
+  return day === 3 || day === 4 || day === 5;   // Wed, Thu, Fri
+}
+
+// Midnight at the start of the next given weekday.
+function nextWeekday(target) {
+  const day = new Date();
+  day.setHours(0, 0, 0, 0);
+  day.setDate(day.getDate() + (((target - day.getDay()) + 7) % 7 || 7));
+  return day;
+}
+
+function windowOpensOn() { return nextWeekday(3); }
+function windowClosesOn() { return nextWeekday(6); }
+
+function dayName(date) {
+  return date.toLocaleDateString([], {
+    weekday: "long", day: "numeric", month: "short",
+  });
+}
+
+let squadChanges = JSON.parse(localStorage.getItem("squadChanges") || "null");
+
+// How many changes are left this week, resetting each Wednesday.
+function changesLeft() {
+  const cycle = squadCycleKey(new Date());
+  if (!squadChanges || squadChanges.cycle !== cycle) {
+    squadChanges = { cycle: cycle, used: 0 };
+    localStorage.setItem("squadChanges", JSON.stringify(squadChanges));
+  }
+  return Math.max(0, CHANGES_PER_WEEK - (Number(squadChanges.used) || 0));
+}
+
+// Taking a player out, or swapping one for another, both count.
+function canChangeSquad() {
+  return inChangeWindow() && changesLeft() > 0;
+}
+
+function useSquadChange() {
+  changesLeft();                       // makes sure the week is current
+  squadChanges.used = (Number(squadChanges.used) || 0) + 1;
+  localStorage.setItem("squadChanges", JSON.stringify(squadChanges));
+  if (typeof pushProgress === "function") pushProgress();
+}
+
+// The one line that explains the rule, wherever the squad is shown.
+function changeRuleText() {
+  if (!inChangeWindow()) {
+    return {
+      open: false,
+      line: "Squad locked until " + dayName(windowOpensOn()),
+      detail: "Changes can only be made between midnight Wednesday " +
+        "and midnight Saturday. You get one change a week.",
+    };
+  }
+
+  if (changesLeft() === 0) {
+    return {
+      open: false,
+      line: "Your change for this week is used",
+      detail: "You can still fill any empty place. The next change " +
+        "becomes available on " + dayName(windowOpensOn()) + ".",
+    };
+  }
+
+  return {
+    open: true,
+    line: "One change available until " + dayName(windowClosesOn()),
+    detail: "Taking a player out uses your change for the week. " +
+      "Filling an empty place is free.",
+  };
+}
+
 let squadHistory = JSON.parse(localStorage.getItem("squadHistory") || "{}");
 let paidEvents = JSON.parse(localStorage.getItem("paidEvents") || "[]");
 let lastSettlement = JSON.parse(localStorage.getItem("lastSettlement") || "null");
@@ -6426,35 +6547,31 @@ function saveSquadLock() {
   if (typeof pushProgress === "function") pushProgress();
 }
 
-// Freezes the current picks for this week, if that has not already
-// happened. Called on startup and before every change, so the
-// frozen copy is always what was picked before Wednesday.
+// While the window is open the picks can still move, so the frozen
+// copy follows them. The moment it shuts, whatever is there stands
+// for the rest of the week - and nothing can edit it anyway.
 function ensureSquadLocked() {
   const cycle = squadCycleKey(new Date());
-  if (squadHistory[cycle]) return;
+  if (!inChangeWindow() && squadHistory[cycle]) return;
 
   squadHistory[cycle] = Object.assign({}, fiveASide);
   saveSquadLock();
 }
 
+// Takes a player out. Only inside the window, only once a week.
+function removeFromSquad(slot) {
+  if (!canChangeSquad()) return false;
+  if (!fiveASide[slot]) return false;
+
+  delete fiveASide[slot];
+  useSquadChange();
+  saveFiveASide();
+  ensureSquadLocked();
+  return true;
+}
+
 function lockedPicks() {
   return squadHistory[squadCycleKey(new Date())] || {};
-}
-
-// How many changes are waiting for the next Wednesday.
-function pendingChanges() {
-  const locked = lockedPicks();
-  return FIVE_A_SIDE.filter(function (spot) {
-    return String(fiveASide[spot.slot] || "") !== String(locked[spot.slot] || "");
-  }).length;
-}
-
-// When the current week's picks stop being changeable.
-function nextLockDate() {
-  const day = new Date();
-  day.setHours(0, 0, 0, 0);
-  day.setDate(day.getDate() + (((3 - day.getDay()) + 7) % 7 || 7));
-  return day;
 }
 
 // Pays out any finished gameweek that has not been paid yet, using
@@ -6528,6 +6645,51 @@ function fiveASideFilled() {
   }).length;
 }
 
+// The one place the change rule is written, so both the pitch and
+// the strip on the XP page say exactly the same thing.
+function changeRuleBanner() {
+  const rule = changeRuleText();
+
+  const bar = document.createElement("div");
+  bar.className = "lockBar" + (rule.open ? "" : " lockShut");
+  bar.innerHTML =
+    '<div class="lockLine">' +
+      '<span class="lockDot"></span>' + rule.line +
+    '</div>' +
+    '<div class="lockPaid">' + rule.detail + '</div>' +
+    (lastSettlement && lastSettlement.xp > 0
+      ? '<div class="lockPaid">Gameweek ' + lastSettlement.event + ': ' +
+        lastSettlement.points + ' pts paid as ' +
+        lastSettlement.xp.toLocaleString() + ' XP.</div>'
+      : '<div class="lockPaid">Each Fantasy point is worth ' +
+        XP_PER_FPL_POINT + ' XP, paid when the gameweek is settled.</div>');
+  return bar;
+}
+
+// The green squad-value bar, used above the players in both places.
+function budgetBarElement() {
+  const spent = squadCost();
+  const share = Math.min(100, (spent / SQUAD_BUDGET) * 100);
+
+  const bar = document.createElement("div");
+  bar.className = "budgetBar" + (overBudget() ? " budgetOver" : "");
+  bar.innerHTML =
+    '<div class="budgetTop">' +
+      '<span class="budgetSpent">' + money(spent) + '</span>' +
+      '<span class="budgetCap">of ' + money(SQUAD_BUDGET) + ' squad value</span>' +
+    '</div>' +
+    '<div class="budgetTrack">' +
+      '<div class="budgetFill" style="width:' + share.toFixed(1) + '%"></div>' +
+    '</div>' +
+    '<div class="budgetLeft">' +
+      (overBudget()
+        ? "Prices have risen and this squad is now over the cap. " +
+          "It still scores - but a new pick has to bring you back under."
+        : money(Math.max(0, SQUAD_BUDGET - spent)) + " left to spend") +
+    '</div>';
+  return bar;
+}
+
 // ---- The squad laid out on a pitch ----
 function drawFiveASideTab(list) {
   if (fivePicking) { drawPlayerChooser(list); return; }
@@ -6545,58 +6707,18 @@ function drawFiveASideTab(list) {
     '<span class="fiveTotalNum">' + fiveASidePoints().toLocaleString() + '</span>';
   list.appendChild(total);
 
-  // ---- The budget ----
-  const spent = squadCost();
-  const share = Math.min(100, (spent / SQUAD_BUDGET) * 100);
+  // ---- Squad value ----
+  list.appendChild(budgetBarElement());
 
-  const budget = document.createElement("div");
-  budget.className = "budgetBar" + (overBudget() ? " budgetOver" : "");
-  budget.innerHTML =
-    '<div class="budgetTop">' +
-      '<span class="budgetSpent">' + money(spent) + '</span>' +
-      '<span class="budgetCap">of ' + money(SQUAD_BUDGET) + '</span>' +
-    '</div>' +
-    '<div class="budgetTrack">' +
-      '<div class="budgetFill" style="width:' + share.toFixed(1) + '%"></div>' +
-    '</div>' +
-    '<div class="budgetLeft">' +
-      (overBudget()
-        ? "Prices have risen and this squad is now over the cap. " +
-          "It still scores - but a new pick has to bring you back under."
-        : money(Math.max(0, SQUAD_BUDGET - spent)) + " left to spend") +
-    '</div>';
-  list.appendChild(budget);
-
-  // What was paid out last time, and what is waiting on Wednesday.
-  const lock = document.createElement("div");
-  lock.className = "lockBar";
-
-  const waiting = pendingChanges();
-  const locksOn = nextLockDate().toLocaleDateString([], {
-    weekday: "long", day: "numeric", month: "short",
-  });
-
-  lock.innerHTML =
-    '<div class="lockLine">' +
-      '<span class="lockDot"></span>' +
-      (waiting > 0
-        ? waiting + (waiting === 1 ? " change takes" : " changes take") +
-          " effect on " + locksOn
-        : "This team is locked in and scoring") +
-    '</div>' +
-    (lastSettlement && lastSettlement.xp > 0
-      ? '<div class="lockPaid">Gameweek ' + lastSettlement.event + ': ' +
-        lastSettlement.points + ' pts paid as ' +
-        lastSettlement.xp.toLocaleString() + ' XP</div>'
-      : '<div class="lockPaid">Each Fantasy point is worth ' +
-        XP_PER_FPL_POINT + ' XP, paid when the gameweek is settled.</div>');
-  list.appendChild(lock);
+  // The rule, stated plainly, right above the players.
+  list.appendChild(changeRuleBanner());
 
   const pitch = document.createElement("div");
   pitch.className = "fivePitch";
 
   // Striker at the top, keeper at the bottom.
   const linesOut = [0, 1, 2, 3];
+  const mayChange = canChangeSquad();
   let html = "";
 
   for (const lineNumber of linesOut) {
@@ -6610,6 +6732,10 @@ function drawFiveASideTab(list) {
       const player = playerInSlot(spot.slot);
       html +=
         '<div class="fiveSlot" data-slot="' + spot.slot + '">' +
+          (player
+            ? '<span class="fiveMinus' + (mayChange ? "" : " off") +
+              '" data-remove="' + spot.slot + '">&minus;</span>'
+            : '') +
           '<div class="fiveShirt' + (player ? " filled" : "") + '">' +
             (player
               ? (player.photo
@@ -6620,6 +6746,9 @@ function drawFiveASideTab(list) {
           '</div>' +
           '<div class="fivePos">' + spot.position + '</div>' +
           '<div class="fiveWho">' + (player ? player.name : "Empty") + '</div>' +
+          (player
+            ? '<div class="fiveCost">' + money(player.price) + '</div>'
+            : '') +
         '</div>';
     }
     html += '</div>';
@@ -6635,13 +6764,21 @@ function drawFiveASideTab(list) {
     };
   }
 
+  // The minus sits on top of the shirt, so it has to swallow the tap.
+  for (const minus of pitch.querySelectorAll(".fiveMinus")) {
+    minus.onclick = function (event) {
+      event.stopPropagation();
+      if (removeFromSquad(this.getAttribute("data-remove"))) drawXpScreen();
+    };
+  }
+
   const note = document.createElement("div");
   note.className = "extras";
   note.innerHTML = PL_PLAYERS.length === 0
     ? "No players loaded yet. Once the Premier League player list " +
       "is in, tap any shirt to pick from it."
-    : "Tap a shirt to change that player. What your squad is worth " +
-      "feeds into your weekly XP total.";
+    : "Tap the minus on a shirt to take that player out, or an empty " +
+      "shirt to fill the place.";
   list.appendChild(note);
 }
 
@@ -6690,6 +6827,22 @@ function drawPlayerChooser(list) {
     }
   }
 
+  // Putting someone into an empty place is always allowed. Taking
+  // over an occupied one is a change, and follows the same rule as
+  // the minus button.
+  const occupied = Boolean(fiveASide[spot.slot]);
+  const mayChange = !occupied || canChangeSquad();
+
+  if (!mayChange) {
+    const rule = changeRuleText();
+    const shut = document.createElement("div");
+    shut.className = "chooserShut";
+    shut.innerHTML =
+      '<div class="chooserShutHead">' + rule.line + '</div>' +
+      '<div class="chooserShutNote">' + rule.detail + '</div>';
+    list.appendChild(shut);
+  }
+
   // How much this one place can take without leaving the rest of
   // the team unaffordable.
   const ceiling = affordableFor(spot.slot);
@@ -6707,7 +6860,7 @@ function drawPlayerChooser(list) {
     const here = String(fiveASide[spot.slot]) === String(player.id);
     const price = Number(player.price) || 0;
     const tooDear = !here && price > ceiling + 0.001;
-    const blocked = already || tooDear;
+    const blocked = already || tooDear || !mayChange;
 
     const row = document.createElement("div");
     row.className = "playerRow" + (blocked ? " playerTaken" : "");
@@ -6727,11 +6880,13 @@ function drawPlayerChooser(list) {
 
     if (!blocked) {
       row.onclick = function () {
-        // Freeze this week's team before the change lands, so the
-        // change belongs to next week and not this one.
-        ensureSquadLocked();
+        // Taking over an occupied place spends the weekly change.
+        if (occupied && String(fiveASide[spot.slot]) !== String(player.id)) {
+          useSquadChange();
+        }
         fiveASide[spot.slot] = player.id;
         saveFiveASide();
+        ensureSquadLocked();
         tally("fivea");
         fivePicking = null;
         drawXpScreen();
@@ -6740,17 +6895,16 @@ function drawPlayerChooser(list) {
     list.appendChild(row);
   }
 
-  if (fiveASide[spot.slot]) {
+  if (fiveASide[spot.slot] && mayChange) {
     const clear = document.createElement("div");
     clear.className = "setRow setTap setDanger";
-    clear.innerHTML = '<span class="setLabel">Leave this place empty</span>' +
-      '<span class="setRight">&rsaquo;</span>';
+    clear.innerHTML = '<span class="setLabel">Take this player out</span>' +
+      '<span class="setRight">uses your change</span>';
     clear.onclick = function () {
-      ensureSquadLocked();
-      delete fiveASide[spot.slot];
-      saveFiveASide();
-      fivePicking = null;
-      drawXpScreen();
+      if (removeFromSquad(spot.slot)) {
+        fivePicking = null;
+        drawXpScreen();
+      }
     };
     list.appendChild(clear);
   }
@@ -6921,9 +7075,10 @@ function drawPlayerDetail(list) {
     add.innerHTML = '<span class="setLabel">Put in your 6-a-side as ' +
       spot.label.toLowerCase() + '</span><span class="setRight">&rsaquo;</span>';
     add.onclick = function () {
-      ensureSquadLocked();
+      // Only offered for an empty place, so this is always free.
       fiveASide[spot.slot] = player.id;
       saveFiveASide();
+      ensureSquadLocked();
       tally("fivea");
       openPlayerId = null;
       xpTab = "five";
@@ -6941,11 +7096,23 @@ function drawFiveASideStrip(list) {
     '<span class="liveCount">' + fiveASidePoints().toLocaleString() + ' pts</span>';
   list.appendChild(head);
 
+  // What the squad is worth, above the players.
+  list.appendChild(budgetBarElement());
+
+  // And the rule about when it can be changed.
+  list.appendChild(changeRuleBanner());
+
+  const mayChange = canChangeSquad();
+
   const strip = document.createElement("div");
   strip.className = "fiveStrip";
   strip.innerHTML = FIVE_A_SIDE.map(function (spot) {
     const player = playerInSlot(spot.slot);
     return '<div class="fiveMini" data-slot="' + spot.slot + '">' +
+      (player
+        ? '<span class="fiveMiniMinus' + (mayChange ? "" : " off") +
+          '" data-remove="' + spot.slot + '">&minus;</span>'
+        : '') +
       '<div class="fiveMiniDisc' + (player ? " filled" : "") + '">' +
         (player
           ? (player.photo
@@ -6963,6 +7130,13 @@ function drawFiveASideStrip(list) {
       fivePicking = this.getAttribute("data-slot");
       xpTab = "five";
       drawXpScreen();
+    };
+  }
+
+  for (const minus of strip.querySelectorAll(".fiveMiniMinus")) {
+    minus.onclick = function (event) {
+      event.stopPropagation();
+      if (removeFromSquad(this.getAttribute("data-remove"))) drawXpScreen();
     };
   }
 }
@@ -7435,6 +7609,7 @@ function gatherProgress() {
     xpHistory: xpHistory,
     xpSources: xpSources,
     squadHistory: squadHistory,
+    squadChanges: squadChanges,
     paidEvents: paidEvents,
     weekStartXp: weekStartXp,
     bestDivision: bestDivision,
@@ -7475,6 +7650,10 @@ function applyProgress(data) {
     }
     if (data.squadHistory) squadHistory = data.squadHistory;
     if (Array.isArray(data.paidEvents)) paidEvents = data.paidEvents;
+    if (data.squadChanges) {
+      squadChanges = data.squadChanges;
+      localStorage.setItem("squadChanges", JSON.stringify(squadChanges));
+    }
     if (data.seasonCounts && data.seasonCounts.season === thisSeason) {
       seasonCounts = data.seasonCounts;
     }
