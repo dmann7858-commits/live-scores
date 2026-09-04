@@ -3513,6 +3513,12 @@ body {
   border: 1px solid #ECEEF1; border-radius: 12px; padding: 13px 15px;
   box-shadow: 0 1px 2px rgba(16,24,40,0.04);
 }
+.fiveTotalWho { min-width: 0; }
+.fiveTotalRight { text-align: right; flex-shrink: 0; }
+.fiveTotalLabel {
+  font-size: 10px; color: #6B7280; margin-top: 2px;
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
 .fiveTotalHead { font-size: 15px; font-weight: 600; color: #111827; }
 .fiveTotalSub { font-size: 12px; color: #6B7280; margin-top: 3px; }
 .fiveTotalNum { font-size: 22px; font-weight: 700; color: #1E6FD9; }
@@ -6627,9 +6633,21 @@ function playerInSlot(slot) {
   return fiveASide[slot] ? playerById(fiveASide[slot]) : null;
 }
 
-// What the squad is worth. This is the hook into the XP league:
-// once the scoring rules are settled, feed this into the weekly
-// total. It deliberately does not touch xp on its own yet.
+// XP this squad has actually paid out, which is the only number
+// the player has really earned. Points a player scored before you
+// picked them are not yours - settlement pays for one gameweek at
+// a time, and only for whoever was in the team that week.
+function sixASideXpEarned() {
+  return Number(xpSources.sixaside) || 0;
+}
+
+function sixASidePointsEarned() {
+  return Math.round(sixASideXpEarned() / XP_PER_FPL_POINT);
+}
+
+// What the six have scored across the whole season between them.
+// Useful for judging a pick, but it is not money in the bank -
+// never show it as though it were.
 function fiveASidePoints() {
   let total = 0;
   for (const spot of FIVE_A_SIDE) {
@@ -6699,12 +6717,20 @@ function drawFiveASideTab(list) {
   const total = document.createElement("div");
   total.className = "fiveTotal";
   total.innerHTML =
-    '<span>' +
+    '<span class="fiveTotalWho">' +
       '<div class="fiveTotalHead">Your 6-a-side team</div>' +
       '<div class="fiveTotalSub">' + filled + ' of ' + FIVE_A_SIDE.length +
-        ' picked</div>' +
+        ' picked' +
+        (filled > 0
+          ? ' &middot; ' + fiveASidePoints().toLocaleString() +
+            ' season pts between them'
+          : '') +
+      '</div>' +
     '</span>' +
-    '<span class="fiveTotalNum">' + fiveASidePoints().toLocaleString() + '</span>';
+    '<span class="fiveTotalRight">' +
+      '<div class="fiveTotalNum">' + sixASideXpEarned().toLocaleString() + '</div>' +
+      '<div class="fiveTotalLabel">XP earned</div>' +
+    '</span>';
   list.appendChild(total);
 
   // ---- Squad value ----
@@ -7054,14 +7080,16 @@ function drawPlayerDetail(list) {
   section("Discipline and time", [
     ["Yellow cards", player.yellow],
     ["Red cards", player.red],
-    ["Minutes", player.minutes.toLocaleString()],
+    ["Minutes", (Number(player.minutes) || 0).toLocaleString()],
     ["Starts", player.starts],
   ]);
 
   section("In the game", [
     ["Price", "\u00a3" + player.price.toFixed(1) + "m"],
     ["Picked by", player.selectedBy + "%"],
-    ["Worth to you", (player.points * XP_PER_FPL_POINT).toLocaleString() + " XP"],
+    // What they would have paid you last week, not what they have
+    // banked all season - none of that would come with them.
+    ["XP last week", (player.lastWeek * XP_PER_FPL_POINT).toLocaleString()],
   ]);
 
   // Straight into the squad, if there is room for them.
@@ -7093,7 +7121,8 @@ function drawFiveASideStrip(list) {
   const head = document.createElement("div");
   head.className = "boxHead";
   head.innerHTML = 'Your 6-a-side team ' +
-    '<span class="liveCount">' + fiveASidePoints().toLocaleString() + ' pts</span>';
+    '<span class="liveCount">' + sixASideXpEarned().toLocaleString() +
+    ' XP earned</span>';
   list.appendChild(head);
 
   // What the squad is worth, above the players.
@@ -7438,15 +7467,15 @@ function drawXpSplit(list) {
 
   list.appendChild(box);
 
-  // The squad is worth something, but nothing has been paid out
-  // for it yet, so say so rather than showing a bare zero.
-  const pending = fiveASidePoints();
-  if (pending > 0 && (Number(xpSources.sixaside) || 0) === 0) {
+  // A bare zero against the squad needs explaining, since nothing
+  // a player scored before you picked them ever comes with them.
+  if (sixASideXpEarned() === 0 && fiveASideFilled() > 0) {
     const waiting = document.createElement("div");
     waiting.className = "extras";
     waiting.innerHTML =
-      "Your 6-a-side squad is worth " + pending.toLocaleString() +
-      " points, but none of it has been paid into your XP yet.";
+      "Your 6-a-side squad has not paid out yet. Only points your " +
+      "players score while they are in your team become XP - " +
+      "anything they scored earlier in the season stays behind.";
     list.appendChild(waiting);
   }
 }
