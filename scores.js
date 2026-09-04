@@ -3192,6 +3192,109 @@ body {
 }
 .featDots i.on { background: #F5A623; width: 15px; border-radius: 3px; }
 
+/* =============================================================
+   THE FIVE-A-SIDE TEAM
+   ============================================================= */
+.profRing { position: relative; }
+.profRing.hasCrest {
+  background: #FFFFFF; padding: 5px;
+  border: 3px solid #F5A623;
+  box-shadow: 0 0 0 1px rgba(11,30,61,0.35);
+}
+.profRing.hasCrest img { width: 100%; height: 100%; object-fit: contain; }
+.profRingTag {
+  position: absolute; right: -4px; bottom: -4px;
+  min-width: 22px; height: 22px; padding: 0 5px;
+  border-radius: 11px; background: #F5A623; color: #3A2400;
+  font-size: 11px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid #0B1E3D;
+}
+.profRing:not(.hasCrest) .profRingTag { display: none; }
+
+.fiveTotal {
+  display: flex; justify-content: space-between; align-items: center;
+  background: #fff; margin: 12px 12px 0;
+  border: 1px solid #ECEEF1; border-radius: 12px; padding: 13px 15px;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.fiveTotalHead { font-size: 15px; font-weight: 600; color: #111827; }
+.fiveTotalSub { font-size: 12px; color: #6B7280; margin-top: 3px; }
+.fiveTotalNum { font-size: 22px; font-weight: 700; color: #1E6FD9; }
+
+.fivePitch {
+  background: #2F6410; margin: 10px 12px 0;
+  border-radius: 14px; padding: 18px 10px;
+}
+.fiveRow {
+  display: flex; justify-content: center;
+  gap: 12px; margin-bottom: 16px;
+}
+.fiveRow:last-child { margin-bottom: 0; }
+.fiveSlot { width: 88px; text-align: center; cursor: pointer; }
+.fiveSlot:active { opacity: 0.75; }
+.fiveShirt {
+  width: 54px; height: 54px; border-radius: 50%;
+  margin: 0 auto 7px; overflow: hidden;
+  background: rgba(255,255,255,0.12);
+  border: 2px dashed rgba(255,255,255,0.55);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; color: rgba(255,255,255,0.85);
+}
+.fiveShirt.filled {
+  background: #fff; border: 2px solid #F5A623;
+  color: #0B1E3D; font-weight: 700;
+}
+.fiveShirt img { width: 100%; height: 100%; object-fit: cover; }
+.fivePos {
+  font-size: 9.5px; color: #C9E3A8;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.fiveWho {
+  font-size: 11px; color: #fff; margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.fiveStrip {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 7px; padding: 0 12px 10px;
+}
+.fiveMini { text-align: center; cursor: pointer; }
+.fiveMiniDisc {
+  width: 100%; aspect-ratio: 1; border-radius: 50%;
+  background: #fff; border: 1.5px dashed #D1D5DB;
+  display: flex; align-items: center; justify-content: center;
+  color: #C4C4BE; font-size: 15px; overflow: hidden;
+}
+.fiveMiniDisc.filled {
+  border: 2px solid #F5A623; color: #0B1E3D; font-weight: 700;
+}
+.fiveMiniDisc img { width: 100%; height: 100%; object-fit: cover; }
+.fiveMiniPos {
+  font-size: 9px; color: #6B7280; margin-top: 4px;
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+
+.playerRow {
+  display: flex; align-items: center; gap: 11px;
+  background: #fff; padding: 11px 16px;
+  border-bottom: 1px solid #ECEEF1; cursor: pointer;
+}
+.playerRow:active { background: #F5F6F8; }
+.playerTaken { opacity: 0.45; cursor: default; }
+.playerFace {
+  width: 34px; height: 34px; border-radius: 50%;
+  object-fit: cover; flex-shrink: 0; background: #F1EFE8;
+}
+.playerWho { flex: 1; min-width: 0; }
+.playerName {
+  display: block; font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.playerTeam { display: block; font-size: 11.5px; color: #6B7280; margin-top: 2px; }
+.playerPts { font-size: 15px; font-weight: 700; color: #1E6FD9; flex-shrink: 0; }
+.playerTick { width: 16px; color: #16A34A; font-size: 14px; flex-shrink: 0; }
+
 /* Stars on the Coming up rows. */
 .upRow { gap: 10px; }
 .upStar {
@@ -3378,12 +3481,24 @@ function seasonKeyOf(date) {
   return start + "/" + String(start + 1).slice(2);
 }
 
+// Calendar months, for the monthly challenges.
+function monthKeyOf(date) {
+  const d = new Date(date);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+}
+
 const thisWeek = weekKeyOf(new Date());
+const thisMonth = monthKeyOf(new Date());
 const thisSeason = seasonKeyOf(new Date());
 
 let weekCounts = JSON.parse(localStorage.getItem("weekCounts") || "null");
 if (!weekCounts || weekCounts.week !== thisWeek) {
   weekCounts = { week: thisWeek, days: [] };
+}
+
+let monthCounts = JSON.parse(localStorage.getItem("monthCounts") || "null");
+if (!monthCounts || monthCounts.month !== thisMonth) {
+  monthCounts = { month: thisMonth, days: [] };
 }
 
 let seasonCounts = JSON.parse(localStorage.getItem("seasonCounts") || "null");
@@ -3425,14 +3540,16 @@ let claimed = JSON.parse(localStorage.getItem("claimed") || "{}");
 
 function saveCounters() {
   localStorage.setItem("weekCounts", JSON.stringify(weekCounts));
+  localStorage.setItem("monthCounts", JSON.stringify(monthCounts));
   localStorage.setItem("seasonCounts", JSON.stringify(seasonCounts));
   localStorage.setItem("claimed", JSON.stringify(claimed));
 }
 
-// Adds one to today, this week and this season all at once.
+// Adds one to today, this week, this month and this season at once.
 function tally(kind) {
   dailyCounts[kind] = (dailyCounts[kind] || 0) + 1;
   weekCounts[kind] = (weekCounts[kind] || 0) + 1;
+  monthCounts[kind] = (monthCounts[kind] || 0) + 1;
   seasonCounts[kind] = (seasonCounts[kind] || 0) + 1;
   saveCounters();
 }
@@ -3521,6 +3638,7 @@ if (lastOpen !== todayKey) {
 
   // Note the day, for challenges counting how often someone comes back.
   if (!weekCounts.days.includes(todayKey)) weekCounts.days.push(todayKey);
+  if (!monthCounts.days.includes(todayKey)) monthCounts.days.push(todayKey);
   seasonCounts.days = (seasonCounts.days || 0) + 1;
 
   localStorage.setItem("lastOpen", todayKey);
@@ -3751,6 +3869,7 @@ document.getElementById("navHome").onclick = function () { goTo("home"); };
 for (const tab of document.querySelectorAll(".subTab")) {
   tab.onclick = function () {
     homeTab = this.getAttribute("data-sub");
+    tally(homeTab);
     if (screen === "home") {
       refresh();
     } else {
@@ -4604,6 +4723,8 @@ function drawLeagueHead() {
   for (const tab of head.querySelectorAll(".lTab")) {
     tab.onclick = function () {
       leagueTab = this.getAttribute("data-tab");
+      if (leagueTab === "stats") tally("scorers");
+      if (leagueTab === "teams") tally("teams");
       refresh();
     };
   }
@@ -5066,7 +5187,9 @@ async function paintFeature() {
     : '<div class="featQuiet">Loading the goals...</div>');
 
   const card = box.querySelector(".feature");
-  if (card) card.onclick = function () { openMatch(item.id); };
+  if (card) {
+    card.onclick = function () { tally("feature"); openMatch(item.id); };
+  }
 
   // Then fill the scorers in, if they were not already to hand.
   if (!known) {
@@ -5592,28 +5715,362 @@ function takeSpin() {
 // ---------------------------------------------------------------
 // THE XP LEAGUE SCREEN
 // ---------------------------------------------------------------
+// ---------------------------------------------------------------
+// THE FIVE-A-SIDE TEAM
+//
+// A squad picked from Premier League players. The shape of the
+// team is the list below, so changing it is one edit rather than
+// a hunt through the drawing code.
+//
+// NOTE ON THE COUNT: six slots, because that is the line-up asked
+// for - a keeper, two at the back, two in the middle and one up
+// front. A true five-a-side is five. Drop a line from this list
+// and everything else follows.
+// ---------------------------------------------------------------
+const FIVE_A_SIDE = [
+  { slot: "gk",  label: "Goalkeeper", position: "GK",  line: 3 },
+  { slot: "df1", label: "Defender",   position: "DEF", line: 2 },
+  { slot: "df2", label: "Defender",   position: "DEF", line: 2 },
+  { slot: "mf1", label: "Midfield",   position: "MID", line: 1 },
+  { slot: "mf2", label: "Midfield",   position: "MID", line: 1 },
+  { slot: "st",  label: "Striker",    position: "ST",  line: 0 },
+];
+
+// The players to pick from. Deliberately empty - fill this in and
+// the picker, the statistics tab and the scoring all fill
+// themselves. One entry per player:
+//
+//   {
+//     id: 1,                  // anything unique
+//     name: "A Player",
+//     team: "Arsenal",
+//     teamLogo: "https://...",
+//     position: "MID",        // GK, DEF, MID or ST
+//     photo: "https://...",   // optional
+//     points: 42,             // what picking them is worth
+//     goals: 6, assists: 3, cleanSheets: 4,
+//     form: "WWDWL"           // optional
+//   }
+//
+const PL_PLAYERS = [];
+
+let fiveASide = JSON.parse(localStorage.getItem("fiveASide") || "{}");
+let fivePicking = null;   // which slot is being filled, if any
+
+function saveFiveASide() {
+  localStorage.setItem("fiveASide", JSON.stringify(fiveASide));
+  if (typeof pushProgress === "function") pushProgress();
+}
+
+function playerById(id) {
+  return PL_PLAYERS.find(function (p) { return String(p.id) === String(id); }) || null;
+}
+
+function playerInSlot(slot) {
+  return fiveASide[slot] ? playerById(fiveASide[slot]) : null;
+}
+
+// What the squad is worth. This is the hook into the XP league:
+// once the scoring rules are settled, feed this into the weekly
+// total. It deliberately does not touch xp on its own yet.
+function fiveASidePoints() {
+  let total = 0;
+  for (const spot of FIVE_A_SIDE) {
+    const player = playerInSlot(spot.slot);
+    if (player) total += Number(player.points) || 0;
+  }
+  return total;
+}
+
+function fiveASideFilled() {
+  return FIVE_A_SIDE.filter(function (spot) {
+    return Boolean(playerInSlot(spot.slot));
+  }).length;
+}
+
+// ---- The squad laid out on a pitch ----
+function drawFiveASideTab(list) {
+  if (fivePicking) { drawPlayerChooser(list); return; }
+
+  const filled = fiveASideFilled();
+
+  const total = document.createElement("div");
+  total.className = "fiveTotal";
+  total.innerHTML =
+    '<span>' +
+      '<div class="fiveTotalHead">Your five-a-side</div>' +
+      '<div class="fiveTotalSub">' + filled + ' of ' + FIVE_A_SIDE.length +
+        ' picked</div>' +
+    '</span>' +
+    '<span class="fiveTotalNum">' + fiveASidePoints().toLocaleString() + '</span>';
+  list.appendChild(total);
+
+  const pitch = document.createElement("div");
+  pitch.className = "fivePitch";
+
+  // Striker at the top, keeper at the bottom.
+  const linesOut = [0, 1, 2, 3];
+  let html = "";
+
+  for (const lineNumber of linesOut) {
+    const inLine = FIVE_A_SIDE.filter(function (spot) {
+      return spot.line === lineNumber;
+    });
+    if (inLine.length === 0) continue;
+
+    html += '<div class="fiveRow">';
+    for (const spot of inLine) {
+      const player = playerInSlot(spot.slot);
+      html +=
+        '<div class="fiveSlot" data-slot="' + spot.slot + '">' +
+          '<div class="fiveShirt' + (player ? " filled" : "") + '">' +
+            (player
+              ? (player.photo
+                  ? '<img src="' + player.photo + '" alt="">'
+                  : '<span class="fiveInitial">' +
+                      player.name.slice(0, 1).toUpperCase() + '</span>')
+              : "+") +
+          '</div>' +
+          '<div class="fivePos">' + spot.position + '</div>' +
+          '<div class="fiveWho">' + (player ? player.name : "Empty") + '</div>' +
+        '</div>';
+    }
+    html += '</div>';
+  }
+
+  pitch.innerHTML = html;
+  list.appendChild(pitch);
+
+  for (const slot of pitch.querySelectorAll(".fiveSlot")) {
+    slot.onclick = function () {
+      fivePicking = this.getAttribute("data-slot");
+      drawXpScreen();
+    };
+  }
+
+  const note = document.createElement("div");
+  note.className = "extras";
+  note.innerHTML = PL_PLAYERS.length === 0
+    ? "No players loaded yet. Once the Premier League player list " +
+      "is in, tap any shirt to pick from it."
+    : "Tap a shirt to change that player. What your squad is worth " +
+      "feeds into your weekly XP total.";
+  list.appendChild(note);
+}
+
+// ---- Choosing a player for one slot ----
+function drawPlayerChooser(list) {
+  const spot = FIVE_A_SIDE.find(function (s) { return s.slot === fivePicking; });
+  if (!spot) { fivePicking = null; return; }
+
+  const back = document.createElement("div");
+  back.className = "crumbs";
+  back.innerHTML = '<span class="crumb">&#8592; Back to your team</span>' +
+    '<span>&rsaquo; ' + spot.label + '</span>';
+  back.querySelector(".crumb").onclick = function () {
+    fivePicking = null;
+    drawXpScreen();
+  };
+  list.appendChild(back);
+
+  const eligible = PL_PLAYERS.filter(function (player) {
+    return player.position === spot.position;
+  });
+
+  if (eligible.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.innerHTML =
+      "No " + spot.label.toLowerCase() + "s to choose from yet." +
+      "<br><br>Fill in PL_PLAYERS and they will appear here, " +
+      "sorted by what they are worth.";
+    list.appendChild(empty);
+    return;
+  }
+
+  // Best first, so the obvious pick is at the top.
+  eligible.sort(function (a, b) {
+    return (Number(b.points) || 0) - (Number(a.points) || 0);
+  });
+
+  const taken = {};
+  for (const other of FIVE_A_SIDE) {
+    if (other.slot !== spot.slot && fiveASide[other.slot]) {
+      taken[String(fiveASide[other.slot])] = true;
+    }
+  }
+
+  for (const player of eligible) {
+    const already = taken[String(player.id)];
+    const here = String(fiveASide[spot.slot]) === String(player.id);
+
+    const row = document.createElement("div");
+    row.className = "playerRow" + (already ? " playerTaken" : "");
+    row.innerHTML =
+      (player.photo
+        ? '<img class="playerFace" src="' + player.photo + '" alt="">'
+        : '<span class="noFace">' + player.name.slice(0, 1).toUpperCase() + '</span>') +
+      '<span class="playerWho">' +
+        '<span class="playerName">' + player.name + '</span>' +
+        '<span class="playerTeam">' + (player.team || "") +
+          (already ? " &middot; already picked" : "") + '</span>' +
+      '</span>' +
+      '<span class="playerPts">' + (Number(player.points) || 0) + '</span>' +
+      '<span class="playerTick">' + (here ? "&#10003;" : "") + '</span>';
+
+    if (!already) {
+      row.onclick = function () {
+        fiveASide[spot.slot] = player.id;
+        saveFiveASide();
+        tally("fivea");
+        fivePicking = null;
+        drawXpScreen();
+      };
+    }
+    list.appendChild(row);
+  }
+
+  if (fiveASide[spot.slot]) {
+    const clear = document.createElement("div");
+    clear.className = "setRow setTap setDanger";
+    clear.innerHTML = '<span class="setLabel">Leave this place empty</span>' +
+      '<span class="setRight">&rsaquo;</span>';
+    clear.onclick = function () {
+      delete fiveASide[spot.slot];
+      saveFiveASide();
+      fivePicking = null;
+      drawXpScreen();
+    };
+    list.appendChild(clear);
+  }
+}
+
+// ---- Player statistics ----
+function drawPlayerStatsTab(list) {
+  if (PL_PLAYERS.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No player statistics yet.<br><br>' +
+      'Fill in PL_PLAYERS and the whole table appears here, ' +
+      'with everyone sorted by what they are worth.</div>';
+    return;
+  }
+
+  const ranked = PL_PLAYERS.slice().sort(function (a, b) {
+    return (Number(b.points) || 0) - (Number(a.points) || 0);
+  });
+
+  const head = document.createElement("div");
+  head.className = "statHead";
+  head.innerHTML =
+    '<span class="shPlayer">Player</span>' +
+    '<span class="shNum">Gls</span>' +
+    '<span class="shNum">Ast</span>' +
+    '<span class="shNum">CS</span>' +
+    '<span class="shNum">Pts</span>';
+  list.appendChild(head);
+
+  for (const player of ranked) {
+    const row = document.createElement("div");
+    row.className = "statRow";
+    row.innerHTML =
+      '<span class="shPlayer">' +
+        (player.photo
+          ? '<img src="' + player.photo + '" alt="">'
+          : '<span class="noFace">' + (player.position || "") + '</span>') +
+        '<span class="pName">' + player.name + '</span>' +
+      '</span>' +
+      '<span class="shNum">' + (player.goals || 0) + '</span>' +
+      '<span class="shNum">' + (player.assists || 0) + '</span>' +
+      '<span class="shNum">' + (player.cleanSheets || 0) + '</span>' +
+      '<span class="shNum strong">' + (Number(player.points) || 0) + '</span>';
+    list.appendChild(row);
+  }
+}
+
+// The compact strip that sits under the daily spin.
+function drawFiveASideStrip(list) {
+  const head = document.createElement("div");
+  head.className = "boxHead";
+  head.innerHTML = 'Your five-a-side ' +
+    '<span class="liveCount">' + fiveASidePoints().toLocaleString() + ' pts</span>';
+  list.appendChild(head);
+
+  const strip = document.createElement("div");
+  strip.className = "fiveStrip";
+  strip.innerHTML = FIVE_A_SIDE.map(function (spot) {
+    const player = playerInSlot(spot.slot);
+    return '<div class="fiveMini" data-slot="' + spot.slot + '">' +
+      '<div class="fiveMiniDisc' + (player ? " filled" : "") + '">' +
+        (player
+          ? (player.photo
+              ? '<img src="' + player.photo + '" alt="">'
+              : player.name.slice(0, 1).toUpperCase())
+          : "+") +
+      '</div>' +
+      '<div class="fiveMiniPos">' + spot.position + '</div>' +
+    '</div>';
+  }).join("");
+  list.appendChild(strip);
+
+  for (const mini of strip.querySelectorAll(".fiveMini")) {
+    mini.onclick = function () {
+      fivePicking = this.getAttribute("data-slot");
+      xpTab = "five";
+      drawXpScreen();
+    };
+  }
+}
+
+
+// ---------------------------------------------------------------
+// THE XP SCREEN
+// Three tabs: the squad, the league, and who is worth picking.
+// ---------------------------------------------------------------
+let xpTab = "league";
+
 function drawXpScreen() {
   const list = document.getElementById("list");
   list.innerHTML = "";
 
+  const tabs = [
+    ["five", "Five-a-side"],
+    ["league", "XP League"],
+    ["players", "Players"],
+  ];
+
+  const bar = document.createElement("div");
+  bar.className = "tabs";
+  bar.innerHTML = tabs.map(function (pair) {
+    return '<div class="tab' + (xpTab === pair[0] ? " on" : "") +
+      '" data-xp="' + pair[0] + '">' + pair[1] + '</div>';
+  }).join("");
+  list.appendChild(bar);
+
+  for (const tab of bar.querySelectorAll(".tab")) {
+    tab.onclick = function () {
+      xpTab = this.getAttribute("data-xp");
+      fivePicking = null;
+      drawXpScreen();
+    };
+  }
+
+  if (xpTab === "five") { drawFiveASideTab(list); return; }
+  if (xpTab === "players") { drawPlayerStatsTab(list); return; }
+  drawXpLeagueTab(list);
+}
+
+function drawXpLeagueTab(list) {
   const level = levelNow();
   const division = divisionFor(level);
   const intoLevel = xp % 1000;
 
-  // ---- Who you are ----
   // ---- Account ----
-  const account = document.createElement("div");
-  account.className = "acctBox";
-
-  if (signedIn()) {
-    account.innerHTML =
-      '<div class="acctIn">' +
-        '<span class="acctTick">&#10003;</span>' +
-        '<span class="acctWho">' + authEmail + '</span>' +
-        '<button class="acctOut" id="signOutBtn">Sign out</button>' +
-      '</div>' +
-      '<div class="acctNote">Progress saved to your account.</div>';
-  } else {
+  // Only shown when signed out. Once someone is in there is no
+  // reason to keep a login form on the page; signing out lives in
+  // Settings.
+  if (!signedIn()) {
+    const account = document.createElement("div");
+    account.className = "acctBox";
     account.innerHTML =
       '<div class="acctHead">Save your progress</div>' +
       '<div class="acctNote">Right now everything is on this device only. ' +
@@ -5627,57 +6084,57 @@ function drawXpScreen() {
         '<button class="acctBtn ghost" id="signUpBtn">Create account</button>' +
       '</div>' +
       '<div class="acctMsg" id="acctMsg"></div>';
-  }
-  list.appendChild(account);
+    list.appendChild(account);
 
-  const outButton = document.getElementById("signOutBtn");
-  if (outButton) {
-    outButton.onclick = function () {
-      signOut();
+    const runAuth = async function (mode) {
+      const email = document.getElementById("acctEmail").value.trim();
+      const password = document.getElementById("acctPass").value;
+      const message = document.getElementById("acctMsg");
+
+      message.className = "acctMsg";
+      message.textContent = "Just a moment...";
+
+      let result;
+      try {
+        result = await doAuth(mode, email, password);
+      } catch (error) {
+        message.className = "acctMsg bad";
+        message.textContent = "Could not reach the server.";
+        return;
+      }
+
+      if (result.error) {
+        message.className = "acctMsg bad";
+        message.textContent = result.error;
+        return;
+      }
+      if (result.needsConfirming) {
+        message.className = "acctMsg";
+        message.textContent = "Check your email to confirm, then sign in.";
+        return;
+      }
       drawXpScreen();
     };
+
+    document.getElementById("signInBtn").onclick = function () { runAuth("signin"); };
+    document.getElementById("signUpBtn").onclick = function () { runAuth("signup"); };
   }
 
-  const runAuth = async function (mode) {
-    const email = document.getElementById("acctEmail").value.trim();
-    const password = document.getElementById("acctPass").value;
-    const message = document.getElementById("acctMsg");
-
-    message.className = "acctMsg";
-    message.textContent = "Just a moment...";
-
-    let result;
-    try {
-      result = await doAuth(mode, email, password);
-    } catch (error) {
-      message.className = "acctMsg bad";
-      message.textContent = "Could not reach the server.";
-      return;
-    }
-
-    if (result.error) {
-      message.className = "acctMsg bad";
-      message.textContent = result.error;
-      return;
-    }
-    if (result.needsConfirming) {
-      message.className = "acctMsg";
-      message.textContent = "Check your email to confirm, then sign in.";
-      return;
-    }
-    drawXpScreen();
-  };
-
-  const inButton = document.getElementById("signInBtn");
-  if (inButton) inButton.onclick = function () { runAuth("signin"); };
-  const upButton = document.getElementById("signUpBtn");
-  if (upButton) upButton.onclick = function () { runAuth("signup"); };
+  // ---- Who you are ----
+  // The ring carries the same crest as the badge in the bar, on
+  // white with a gold rim so it can actually be made out.
+  const ringClub = badgeClub || favTeams[0] || null;
 
   const card = document.createElement("div");
   card.className = "profCard";
   card.innerHTML =
     '<div class="profTop">' +
-      '<div class="profRing"><span>' + level + '</span></div>' +
+      '<div class="profRing' + (ringClub && ringClub.logo ? " hasCrest" : "") + '">' +
+        (ringClub && ringClub.logo
+          ? '<img src="' + ringClub.logo + '" alt="">'
+          : '<span>' + level + '</span>') +
+        '<span class="profRingTag">' + level + '</span>' +
+      '</div>' +
       '<div class="profWho">' +
         '<div class="profDiv">' + division.name + '</div>' +
         '<div class="profSub">Level ' + level + ' &middot; ' + xp.toLocaleString() + ' XP total</div>' +
@@ -5757,6 +6214,9 @@ function drawXpScreen() {
     };
   }
 
+  // ---- The five-a-side team ----
+  drawFiveASideStrip(list);
+
   // ---- How to earn ----
   const earnBox = document.createElement("div");
   earnBox.className = "listBox";
@@ -5803,9 +6263,11 @@ function drawXpScreen() {
         return;
       }
 
-      if (data.error) {
+      // A malformed answer should not take the whole screen down.
+      if (data.error || !Array.isArray(data.table)) {
         leagueBox.innerHTML = '<div class="boxHead">This week</div>' +
-          '<div class="colEmpty">' + data.error + '</div>';
+          '<div class="colEmpty">' +
+            (data.error || "Could not load the league.") + '</div>';
         return;
       }
 
@@ -5901,13 +6363,12 @@ function drawXpScreen() {
   ladder.innerHTML = rungs;
   list.appendChild(ladder);
 
-  // ---- Honest note about what is not built ----
+  // ---- What is still to come ----
   const note = document.createElement("div");
   note.className = "extras";
   note.innerHTML =
-    "Weekly leagues, promotion and the cup need accounts, so they " +
-    "arrive once sign-in is added. Your XP, streak and shields are " +
-    "saved on this device until then.";
+    "Five-a-side points do not feed the weekly league yet - that " +
+    "waits on the scoring rules and the player list.";
   list.appendChild(note);
 }
 
@@ -5935,7 +6396,9 @@ function gatherProgress() {
     favLeagues: favLeagues,
     dailyCounts: dailyCounts,
     weekCounts: weekCounts,
+    monthCounts: monthCounts,
     seasonCounts: seasonCounts,
+    fiveASide: fiveASide,
     claimed: claimed,
     lastOpen: localStorage.getItem("lastOpen") || "",
     lastSpin: localStorage.getItem("lastSpin") || "",
@@ -5969,6 +6432,13 @@ function applyProgress(data) {
     }
     if (data.weekCounts && data.weekCounts.week === thisWeek) {
       weekCounts = data.weekCounts;
+    }
+    if (data.monthCounts && data.monthCounts.month === thisMonth) {
+      monthCounts = data.monthCounts;
+    }
+    if (data.fiveASide) {
+      fiveASide = data.fiveASide;
+      localStorage.setItem("fiveASide", JSON.stringify(fiveASide));
     }
     if (data.seasonCounts && data.seasonCounts.season === thisSeason) {
       seasonCounts = data.seasonCounts;
@@ -6424,37 +6894,95 @@ function drawSettings() {
 // them, but low enough that they will finish them before May.
 // ---------------------------------------------------------------
 const CHALLENGES = [
-  // ---- Every day ----
+  // ---- Every day. Small, quick, all of them doable in a sitting.
   { id: "d1", group: "daily", text: "Open the app",
-    target: 1,  xp: 10,  read: function () { return dailyCounts.daily || 0; } },
-  { id: "d2", group: "daily", text: "Look at 3 match centres",
-    target: 3,  xp: 20,  read: function () { return dailyCounts.match || 0; } },
+    target: 1,  xp: 10, read: function () { return dailyCounts.daily || 0; } },
+  { id: "d2", group: "daily", text: "Take your daily spin",
+    target: 1,  xp: 15, read: function () { return dailyCounts.spin || 0; } },
   { id: "d3", group: "daily", text: "Check one of your clubs",
-    target: 1,  xp: 15,  read: function () { return dailyCounts.club || 0; } },
-  { id: "d4", group: "daily", text: "Take your daily spin",
-    target: 1,  xp: 15,  read: function () { return dailyCounts.spin || 0; } },
+    target: 1,  xp: 15, read: function () { return dailyCounts.club || 0; } },
+  { id: "d4", group: "daily", text: "Read the news",
+    target: 1,  xp: 15, read: function () { return dailyCounts.news || 0; } },
+  { id: "d5", group: "daily", text: "Star a match to follow",
+    target: 1,  xp: 15, read: function () { return dailyCounts.star || 0; } },
+  { id: "d6", group: "daily", text: "Look at 3 match centres",
+    target: 3,  xp: 20, read: function () { return dailyCounts.match || 0; } },
+  { id: "d7", group: "daily", text: "Look at 2 league tables",
+    target: 2,  xp: 20, read: function () { return dailyCounts.table || 0; } },
+  { id: "d8", group: "daily", text: "Open a commentary feed",
+    target: 1,  xp: 20, read: function () { return dailyCounts.comm || 0; } },
+  { id: "d9", group: "daily", text: "Study 2 line-ups",
+    target: 2,  xp: 25, read: function () { return dailyCounts.lineup || 0; } },
+  { id: "d10", group: "daily", text: "Look at 8 match centres",
+    target: 8,  xp: 40, read: function () { return dailyCounts.match || 0; } },
 
-  // ---- This week, the gentle ones ----
+  // ---- This week, the gentle ones.
   { id: "we1", group: "weekEasy", text: "Visit on 3 different days",
-    target: 3,  xp: 60,  read: function () { return (weekCounts.days || []).length; } },
+    target: 3,  xp: 60, read: function () { return (weekCounts.days || []).length; } },
   { id: "we2", group: "weekEasy", text: "Look at 15 match centres",
-    target: 15, xp: 60,  read: function () { return weekCounts.match || 0; } },
+    target: 15, xp: 60, read: function () { return weekCounts.match || 0; } },
   { id: "we3", group: "weekEasy", text: "Star 3 matches to follow",
-    target: 3,  xp: 50,  read: function () { return weekCounts.star || 0; } },
+    target: 3,  xp: 50, read: function () { return weekCounts.star || 0; } },
   { id: "we4", group: "weekEasy", text: "Look at 5 league tables",
-    target: 5,  xp: 50,  read: function () { return weekCounts.table || 0; } },
+    target: 5,  xp: 50, read: function () { return weekCounts.table || 0; } },
+  { id: "we5", group: "weekEasy", text: "Check your clubs 5 times",
+    target: 5,  xp: 50, read: function () { return weekCounts.club || 0; } },
+  { id: "we6", group: "weekEasy", text: "Take 3 daily spins",
+    target: 3,  xp: 50, read: function () { return weekCounts.spin || 0; } },
+  { id: "we7", group: "weekEasy", text: "Open the news 5 times",
+    target: 5,  xp: 40, read: function () { return weekCounts.news || 0; } },
+  { id: "we8", group: "weekEasy", text: "Study 5 line-ups",
+    target: 5,  xp: 55, read: function () { return weekCounts.lineup || 0; } },
+  { id: "we9", group: "weekEasy", text: "Follow 3 commentary feeds",
+    target: 3,  xp: 50, read: function () { return weekCounts.comm || 0; } },
+  { id: "we10", group: "weekEasy", text: "Open the featured match 5 times",
+    target: 5,  xp: 40, read: function () { return weekCounts.feature || 0; } },
 
-  // ---- This week, the ones that take effort ----
+  // ---- This week, the ones that take real effort.
   { id: "wh1", group: "weekHard", text: "Visit every day this week",
-    target: 7,  xp: 200, read: function () { return (weekCounts.days || []).length; } },
+    target: 7,   xp: 220, read: function () { return (weekCounts.days || []).length; } },
   { id: "wh2", group: "weekHard", text: "Look at 60 match centres",
-    target: 60, xp: 200, read: function () { return weekCounts.match || 0; } },
+    target: 60,  xp: 200, read: function () { return weekCounts.match || 0; } },
   { id: "wh3", group: "weekHard", text: "Check your clubs 20 times",
-    target: 20, xp: 175, read: function () { return weekCounts.club || 0; } },
+    target: 20,  xp: 175, read: function () { return weekCounts.club || 0; } },
   { id: "wh4", group: "weekHard", text: "Look at 25 league tables",
-    target: 25, xp: 175, read: function () { return weekCounts.table || 0; } },
+    target: 25,  xp: 175, read: function () { return weekCounts.table || 0; } },
+  { id: "wh5", group: "weekHard", text: "Star 15 matches",
+    target: 15,  xp: 175, read: function () { return weekCounts.star || 0; } },
+  { id: "wh6", group: "weekHard", text: "Spin every day this week",
+    target: 7,   xp: 200, read: function () { return weekCounts.spin || 0; } },
+  { id: "wh7", group: "weekHard", text: "Study 30 line-ups",
+    target: 30,  xp: 200, read: function () { return weekCounts.lineup || 0; } },
+  { id: "wh8", group: "weekHard", text: "Read 25 sets of match stats",
+    target: 25,  xp: 175, read: function () { return weekCounts.mstats || 0; } },
+  { id: "wh9", group: "weekHard", text: "Follow 20 commentary feeds",
+    target: 20,  xp: 200, read: function () { return weekCounts.comm || 0; } },
+  { id: "wh10", group: "weekHard", text: "Look at 10 top scorer lists",
+    target: 10,  xp: 150, read: function () { return weekCounts.scorers || 0; } },
 
-  // ---- The whole season ----
+  // ---- The month. Long enough that these need keeping up with.
+  { id: "m1", group: "month", text: "Visit on 20 days",
+    target: 20,  xp: 500, read: function () { return (monthCounts.days || []).length; } },
+  { id: "m2", group: "month", text: "Look at 250 match centres",
+    target: 250, xp: 600, read: function () { return monthCounts.match || 0; } },
+  { id: "m3", group: "month", text: "Star 60 matches",
+    target: 60,  xp: 450, read: function () { return monthCounts.star || 0; } },
+  { id: "m4", group: "month", text: "Take 25 daily spins",
+    target: 25,  xp: 400, read: function () { return monthCounts.spin || 0; } },
+  { id: "m5", group: "month", text: "Look at 100 league tables",
+    target: 100, xp: 450, read: function () { return monthCounts.table || 0; } },
+  { id: "m6", group: "month", text: "Check your clubs 80 times",
+    target: 80,  xp: 400, read: function () { return monthCounts.club || 0; } },
+  { id: "m7", group: "month", text: "Study 120 line-ups",
+    target: 120, xp: 500, read: function () { return monthCounts.lineup || 0; } },
+  { id: "m8", group: "month", text: "Open the news 40 times",
+    target: 40,  xp: 300, read: function () { return monthCounts.news || 0; } },
+  { id: "m9", group: "month", text: "Follow 80 commentary feeds",
+    target: 80,  xp: 500, read: function () { return monthCounts.comm || 0; } },
+  { id: "m10", group: "month", text: "Reach a 20 day streak",
+    target: 20,  xp: 700, read: function () { return streak; } },
+
+  // ---- The whole season.
   { id: "s1", group: "season", text: "Visit on 150 days",
     target: 150,  xp: 2500, read: function () { return seasonCounts.days || 0; } },
   { id: "s2", group: "season", text: "Look at 1,000 match centres",
@@ -6467,20 +6995,43 @@ const CHALLENGES = [
     target: 30,   xp: 3500, read: function () { return levelNow(); } },
   { id: "s6", group: "season", text: "Take 120 daily spins",
     target: 120,  xp: 2000, read: function () { return seasonCounts.spin || 0; } },
+  { id: "s7", group: "season", text: "Study 500 line-ups",
+    target: 500,  xp: 2500, read: function () { return seasonCounts.lineup || 0; } },
+  { id: "s8", group: "season", text: "Read 400 sets of match stats",
+    target: 400,  xp: 2200, read: function () { return seasonCounts.mstats || 0; } },
+  { id: "s9", group: "season", text: "Follow 300 commentary feeds",
+    target: 300,  xp: 2500, read: function () { return seasonCounts.comm || 0; } },
+  { id: "s10", group: "season", text: "Reach level 60",
+    target: 60,   xp: 4000, read: function () { return levelNow(); } },
 ];
 
 // A symbol for each challenge, so the list is easier to scan.
 const CHALLENGE_ICONS = {
-  d1: "&#128241;", d2: "&#9917;", d3: "&#128085;", d4: "&#127920;",
+  d1: "&#128241;", d2: "&#127920;", d3: "&#128085;", d4: "&#128240;",
+  d5: "&#9733;", d6: "&#9917;", d7: "&#9776;", d8: "&#128172;",
+  d9: "&#128101;", d10: "&#9917;",
+
   we1: "&#128197;", we2: "&#9917;", we3: "&#9733;", we4: "&#9776;",
+  we5: "&#128085;", we6: "&#127920;", we7: "&#128240;", we8: "&#128101;",
+  we9: "&#128172;", we10: "&#11088;",
+
   wh1: "&#128197;", wh2: "&#9917;", wh3: "&#128085;", wh4: "&#9776;",
+  wh5: "&#9733;", wh6: "&#127920;", wh7: "&#128101;", wh8: "&#128200;",
+  wh9: "&#128172;", wh10: "&#127942;",
+
+  m1: "&#128197;", m2: "&#9917;", m3: "&#9733;", m4: "&#127920;",
+  m5: "&#9776;", m6: "&#128085;", m7: "&#128101;", m8: "&#128240;",
+  m9: "&#128172;", m10: "&#128293;",
+
   s1: "&#128197;", s2: "&#9917;", s3: "&#128293;", s4: "&#9733;",
-  s5: "&#9889;", s6: "&#127920;",
+  s5: "&#9889;", s6: "&#127920;", s7: "&#128101;", s8: "&#128200;",
+  s9: "&#128172;", s10: "&#128142;",
 };
 
 // The period a challenge belongs to, so dailies can come round again.
 function periodOf(group) {
   if (group === "daily") return todayKey;
+  if (group === "month") return thisMonth;
   if (group === "season") return thisSeason;
   return thisWeek;
 }
@@ -6512,6 +7063,7 @@ function drawChallenges() {
     ["daily",    "Today",            "Resets at midnight"],
     ["weekEasy", "This week",        "Resets Monday"],
     ["weekHard", "This week - hard", "Resets Monday"],
+    ["month",    "This month",       "Resets on the 1st"],
     ["season",   "Season " + thisSeason, "Runs until June"],
   ];
 
@@ -6781,9 +7333,15 @@ function drawMatch(match) {
   wireSide("sideHome", "home");
   wireSide("sideAway", "away");
   document.getElementById("tabSummary").onclick = function () { matchTab = "summary"; drawMatch(match); };
-  document.getElementById("tabComm").onclick = function () { matchTab = "comm"; drawMatch(match); };
-  document.getElementById("tabPitch").onclick = function () { matchTab = "pitch"; drawMatch(match); };
-  document.getElementById("tabStats").onclick = function () { matchTab = "stats"; drawMatch(match); };
+  document.getElementById("tabComm").onclick = function () {
+    matchTab = "comm"; tally("comm"); drawMatch(match);
+  };
+  document.getElementById("tabPitch").onclick = function () {
+    matchTab = "pitch"; tally("lineup"); drawMatch(match);
+  };
+  document.getElementById("tabStats").onclick = function () {
+    matchTab = "stats"; tally("mstats"); drawMatch(match);
+  };
 
   list.innerHTML = "";
 
