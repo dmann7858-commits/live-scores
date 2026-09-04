@@ -3663,6 +3663,46 @@ body {
   font-size: 12.5px; color: #92400E; line-height: 1.5;
 }
 
+/* Value column, and the budget. */
+.plValue { width: 52px; color: #1E6FD9; font-weight: 600; }
+.plHead .plValue { color: #6B7280; font-weight: 400; }
+.plRow, .plHead { gap: 8px; padding-left: 12px; padding-right: 12px; }
+.plNum { width: 38px; font-size: 12.5px; }
+.plPos { width: 30px; }
+.plPosHead { width: 30px; }
+.plFace, .plFaceHead { width: 32px; }
+.plFace { height: 32px; }
+
+.budgetBar {
+  margin: 10px 12px 0; padding: 12px 14px;
+  background: #fff; border: 1px solid #ECEEF1; border-radius: 12px;
+}
+.budgetTop {
+  display: flex; align-items: baseline; gap: 6px; margin-bottom: 8px;
+}
+.budgetSpent { font-size: 17px; font-weight: 700; color: #111827; }
+.budgetCap { font-size: 12px; color: #6B7280; }
+.budgetTrack {
+  height: 6px; border-radius: 3px;
+  background: #EDEDE9; overflow: hidden;
+}
+.budgetFill { height: 100%; background: #16A34A; }
+.budgetLeft { font-size: 11.5px; color: #6B7280; margin-top: 7px; line-height: 1.5; }
+.budgetOver .budgetFill { background: #E24B4A; }
+.budgetOver .budgetSpent { color: #C0392B; }
+
+.chooserBudget {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 10px; padding: 10px 16px; background: #F0F1F4;
+  font-size: 12px; color: #374151;
+}
+.chooserMax { color: #6B7280; }
+.playerCost {
+  font-size: 12.5px; color: #6B7280; flex-shrink: 0;
+  width: 50px; text-align: right;
+}
+.playerPts { width: 34px; text-align: right; }
+
 /* The Wednesday lock. */
 .lockBar {
   margin: 8px 12px 0; padding: 12px 14px;
@@ -6302,6 +6342,67 @@ let openPlayerId = null;  // whose statistics are being read
 // ---------------------------------------------------------------
 const XP_PER_FPL_POINT = 15;
 
+// ---------------------------------------------------------------
+// THE BUDGET
+//
+// Six players priced at Fantasy Premier League's own valuations.
+// The cheapest legal squad costs about 25.5m and the most
+// expensive about 65m, so a cap of 50m sits where it forces a
+// choice: two genuine premiums and a mid-priced third, paid for
+// with a cheap keeper and cheap defenders. Three premiums cannot
+// be made to fit.
+// ---------------------------------------------------------------
+const SQUAD_BUDGET = 50;
+
+function money(amount) {
+  return "\u00a3" + (Number(amount) || 0).toFixed(1) + "m";
+}
+
+function squadCost() {
+  let total = 0;
+  for (const spot of FIVE_A_SIDE) {
+    const player = playerInSlot(spot.slot);
+    if (player) total += Number(player.price) || 0;
+  }
+  return total;
+}
+
+// The cheapest player available in a position, used to hold money
+// back for the places still to be filled.
+function cheapestFor(position) {
+  let lowest = null;
+  for (const player of PL_PLAYERS) {
+    if (player.position !== position) continue;
+    const price = Number(player.price) || 0;
+    if (lowest === null || price < lowest) lowest = price;
+  }
+  return lowest === null ? 4 : lowest;
+}
+
+// What can be spent on one place without stranding the others. A
+// striker that eats the whole budget is no use if it leaves
+// nothing for a goalkeeper.
+function affordableFor(slot) {
+  let committed = 0;
+
+  for (const spot of FIVE_A_SIDE) {
+    if (spot.slot === slot) continue;
+    const player = playerInSlot(spot.slot);
+    committed += player
+      ? (Number(player.price) || 0)
+      : cheapestFor(spot.position);
+  }
+
+  return SQUAD_BUDGET - committed;
+}
+
+function overBudget() {
+  // Prices drift during a season, so a squad picked legally can
+  // creep over. We never force a change - only new picks are
+  // checked - but it is worth saying so.
+  return squadCost() > SQUAD_BUDGET + 0.001;
+}
+
 // The Wednesday that the week containing this date began.
 function squadCycleKey(when) {
   const day = new Date(when);
@@ -6444,6 +6545,28 @@ function drawFiveASideTab(list) {
     '<span class="fiveTotalNum">' + fiveASidePoints().toLocaleString() + '</span>';
   list.appendChild(total);
 
+  // ---- The budget ----
+  const spent = squadCost();
+  const share = Math.min(100, (spent / SQUAD_BUDGET) * 100);
+
+  const budget = document.createElement("div");
+  budget.className = "budgetBar" + (overBudget() ? " budgetOver" : "");
+  budget.innerHTML =
+    '<div class="budgetTop">' +
+      '<span class="budgetSpent">' + money(spent) + '</span>' +
+      '<span class="budgetCap">of ' + money(SQUAD_BUDGET) + '</span>' +
+    '</div>' +
+    '<div class="budgetTrack">' +
+      '<div class="budgetFill" style="width:' + share.toFixed(1) + '%"></div>' +
+    '</div>' +
+    '<div class="budgetLeft">' +
+      (overBudget()
+        ? "Prices have risen and this squad is now over the cap. " +
+          "It still scores - but a new pick has to bring you back under."
+        : money(Math.max(0, SQUAD_BUDGET - spent)) + " left to spend") +
+    '</div>';
+  list.appendChild(budget);
+
   // What was paid out last time, and what is waiting on Wednesday.
   const lock = document.createElement("div");
   lock.className = "lockBar";
@@ -6567,12 +6690,27 @@ function drawPlayerChooser(list) {
     }
   }
 
+  // How much this one place can take without leaving the rest of
+  // the team unaffordable.
+  const ceiling = affordableFor(spot.slot);
+
+  const budget = document.createElement("div");
+  budget.className = "chooserBudget";
+  budget.innerHTML =
+    '<span>' + money(squadCost()) + ' of ' + money(SQUAD_BUDGET) + ' spent</span>' +
+    '<span class="chooserMax">up to ' + money(Math.max(0, ceiling)) +
+      ' for this place</span>';
+  list.appendChild(budget);
+
   for (const player of eligible) {
     const already = taken[String(player.id)];
     const here = String(fiveASide[spot.slot]) === String(player.id);
+    const price = Number(player.price) || 0;
+    const tooDear = !here && price > ceiling + 0.001;
+    const blocked = already || tooDear;
 
     const row = document.createElement("div");
-    row.className = "playerRow" + (already ? " playerTaken" : "");
+    row.className = "playerRow" + (blocked ? " playerTaken" : "");
     row.innerHTML =
       (player.photo
         ? '<img class="playerFace" src="' + player.photo + '" alt="">'
@@ -6580,12 +6718,14 @@ function drawPlayerChooser(list) {
       '<span class="playerWho">' +
         '<span class="playerName">' + player.name + '</span>' +
         '<span class="playerTeam">' + (player.team || "") +
-          (already ? " &middot; already picked" : "") + '</span>' +
+          (already ? " &middot; already picked" : "") +
+          (tooDear && !already ? " &middot; over your budget" : "") + '</span>' +
       '</span>' +
+      '<span class="playerCost">' + money(price) + '</span>' +
       '<span class="playerPts">' + (Number(player.points) || 0) + '</span>' +
       '<span class="playerTick">' + (here ? "&#10003;" : "") + '</span>';
 
-    if (!already) {
+    if (!blocked) {
       row.onclick = function () {
         // Freeze this week's team before the change lands, so the
         // change belongs to next week and not this one.
@@ -6643,8 +6783,9 @@ function drawPlayerStatsTab(list) {
     '<span class="plPosHead">Pos</span>' +
     '<span class="plFaceHead"></span>' +
     '<span class="plWho">Player</span>' +
-    '<span class="plNum">Last wk</span>' +
-    '<span class="plNum">Season</span>';
+    '<span class="plNum">Last</span>' +
+    '<span class="plNum">Season</span>' +
+    '<span class="plNum plValue">Value</span>';
   list.appendChild(head);
 
   for (const player of PL_PLAYERS) {
@@ -6673,7 +6814,8 @@ function playerRowElement(player) {
       '<span class="plTeam">' + (player.teamShort || player.team || "") + '</span>' +
     '</span>' +
     '<span class="plNum">' + player.lastWeek + '</span>' +
-    '<span class="plNum total">' + player.points + '</span>';
+    '<span class="plNum total">' + player.points + '</span>' +
+    '<span class="plNum plValue">' + money(player.price) + '</span>';
 
   row.onclick = function () {
     openPlayerId = player.id;
