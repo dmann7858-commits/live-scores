@@ -1903,6 +1903,203 @@ async function getNews() {
   return intoCache("news", gathered.slice(0, 40));
 }
 
+// ---------------------------------------------------------------
+// FANTASY PREMIER LEAGUE
+//
+// The 6-a-side game runs on the official FPL data. It is free and
+// needs no key, but two things about it matter:
+//
+//   1. It returns 403 to anything that does not look like a
+//      browser, hence the User-Agent below.
+//   2. It is undocumented and carries no promises. Everything here
+//      is written to survive a missing or renamed field rather
+//      than throw, and /api/fpl-raw shows what actually came back.
+// ---------------------------------------------------------------
+const FPL_BASE = "https://fantasy.premierleague.com/api/";
+
+const FPL_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+  "Accept": "application/json",
+};
+
+// FPL calls forwards "FWD"; the squad calls them strikers.
+const FPL_POSITION = { 1: "GK", 2: "DEF", 3: "MID", 4: "ST" };
+
+async function fplGet(part) {
+  const url = FPL_BASE + part;
+  console.log("fetching FPL: " + part);
+
+  let response;
+  try {
+    response = await fetch(url, { headers: FPL_HEADERS });
+  } catch (error) {
+    console.log("   !! could not reach FPL: " + error.message);
+    return null;
+  }
+
+  if (!response.ok) {
+    console.log("   !! FPL said " + response.status +
+      (response.status === 403 ? " - it is refusing this request" : ""));
+    return null;
+  }
+
+  try {
+    return await response.json();
+  } catch (error) {
+    console.log("   !! FPL answer was not readable");
+    return null;
+  }
+}
+
+// Roughly a megabyte, so it is kept for six hours.
+async function getFplBootstrap() {
+  const hit = fromCache("fpl-bootstrap", 21600);
+  if (hit) return hit;
+
+  const data = await fplGet("bootstrap-static/");
+  if (!data || !Array.isArray(data.elements)) {
+    return cache["fpl-bootstrap"] ? cache["fpl-bootstrap"].data : null;
+  }
+  return intoCache("fpl-bootstrap", data);
+}
+
+// One gameweek's per-player points. Cached briefly while it is
+// still being played, and for a day once it has been signed off.
+async function getFplEvent(eventId) {
+  const name = "fpl-event-" + eventId;
+  const settled = cache[name] && cache[name].data && cache[name].data.dataChecked;
+  const hit = fromCache(name, settled ? 86400 : 300);
+  if (hit) return hit;
+
+  const data = await fplGet("event/" + eventId + "/live/");
+  if (!data || !Array.isArray(data.elements)) {
+    return cache[name] ? cache[name].data : null;
+  }
+
+  const points = {};
+  for (const entry of data.elements) {
+    points[String(entry.id)] = Number(entry.stats && entry.stats.total_points) || 0;
+  }
+
+  // Whether it is finished comes from the gameweek list, not here.
+  const boot = await getFplBootstrap();
+  const event = boot && (boot.events || []).find(function (e) {
+    return Number(e.id) === Number(eventId);
+  });
+
+  return intoCache(name, {
+    id: Number(eventId),
+    finished: Boolean(event && event.finished),
+    dataChecked: Boolean(event && event.data_checked),
+    deadline: (event && event.deadline_time) || null,
+    points: points,
+  });
+}
+
+function fplPhoto(player) {
+  const code = player.code || String(player.photo || "").replace(/\.[a-z]+$/i, "");
+  if (!code) return "";
+  return "https://resources.premierleague.com/premierleague/photos/players/" +
+    "110x140/p" + code + ".png";
+}
+
+function fplBadge(team) {
+  if (!team || !team.code) return "";
+  return "https://resources.premierleague.com/premierleague/badges/70/t" +
+    team.code + ".png";
+}
+
+// Everything the squad picker and the statistics table need, in
+// one shape, with last week's points folded in.
+async function getFplPlayers() {
+  const hit = fromCache("fpl-players", 3600);
+  if (hit) return hit;
+
+  const boot = await getFplBootstrap();
+  if (!boot) {
+    return cache["fpl-players"]
+      ? cache["fpl-players"].data
+      : { players: [], currentEvent: null, previousEvent: null,
+          error: "Could not reach the Fantasy Premier League API" };
+  }
+
+  const events = boot.events || [];
+  const find = function (flag) {
+    const found = events.find(function (e) { return e[flag]; });
+    return found ? Number(found.id) : null;
+  };
+
+  const currentEvent = find("is_current");
+  const previousEvent = find("is_previous");
+  const nextEvent = find("is_next");
+
+  // Last week's points, if there was a last week.
+  let lastWeek = {};
+  if (previousEvent) {
+    const past = await getFplEvent(previousEvent);
+    if (past) lastWeek = past.points || {};
+  }
+
+  const teams = {};
+  for (const team of (boot.teams || [])) teams[String(team.id)] = team;
+
+  const number = function (value) { return Number(value) || 0; };
+
+  const players = (boot.elements || []).map(function (p) {
+    const team = teams[String(p.team)] || {};
+    return {
+      id: p.id,
+      name: p.web_name,
+      fullName: ((p.first_name || "") + " " + (p.second_name || "")).trim(),
+      team: team.name || "",
+      teamShort: team.short_name || "",
+      teamBadge: fplBadge(team),
+      position: FPL_POSITION[p.element_type] || "",
+      photo: fplPhoto(p),
+
+      // The two numbers the list shows.
+      points: number(p.total_points),
+      lastWeek: number(lastWeek[String(p.id)]),
+
+      form: p.form || "0.0",
+      ppg: p.points_per_game || "0.0",
+      minutes: number(p.minutes),
+      starts: number(p.starts),
+      goals: number(p.goals_scored),
+      assists: number(p.assists),
+      cleanSheets: number(p.clean_sheets),
+      conceded: number(p.goals_conceded),
+      ownGoals: number(p.own_goals),
+      penSaved: number(p.penalties_saved),
+      penMissed: number(p.penalties_missed),
+      yellow: number(p.yellow_cards),
+      red: number(p.red_cards),
+      saves: number(p.saves),
+      bonus: number(p.bonus),
+      bps: number(p.bps),
+      xG: p.expected_goals || "0.00",
+      xA: p.expected_assists || "0.00",
+      ict: p.ict_index || "0.0",
+      price: number(p.now_cost) / 10,
+      selectedBy: p.selected_by_percent || "0.0",
+      status: p.status || "a",
+      news: p.news || "",
+    };
+  });
+
+  players.sort(function (a, b) { return b.points - a.points; });
+
+  return intoCache("fpl-players", {
+    players: players,
+    currentEvent: currentEvent,
+    previousEvent: previousEvent,
+    nextEvent: nextEvent,
+    updated: new Date().toISOString(),
+    error: "",
+  });
+}
+
 async function getAllLeagues() {
   const hit = fromCache("allLeagues", 86400);
   if (hit) return hit;
@@ -3393,6 +3590,95 @@ body {
 .playerPts { font-size: 15px; font-weight: 700; color: #1E6FD9; flex-shrink: 0; }
 .playerTick { width: 16px; color: #16A34A; font-size: 14px; flex-shrink: 0; }
 
+/* =============================================================
+   PREMIER LEAGUE PLAYERS
+   ============================================================= */
+.plHead {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px; background: #F0F1F4;
+  font-size: 11px; color: #6B7280;
+}
+.plPosHead { width: 34px; flex-shrink: 0; }
+.plFaceHead { width: 36px; flex-shrink: 0; }
+
+.plRow {
+  display: flex; align-items: center; gap: 10px;
+  background: #fff; padding: 10px 14px;
+  border-bottom: 1px solid #ECEEF1; cursor: pointer;
+}
+.plRow:active { background: #F5F6F8; }
+.plPos {
+  width: 34px; flex-shrink: 0; text-align: center;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+  padding: 4px 0; border-radius: 5px;
+  background: #EFF6FF; color: #1E6FD9;
+}
+.plPos.gk  { background: #FEF3C7; color: #92400E; }
+.plPos.def { background: #DCFCE7; color: #166534; }
+.plPos.mid { background: #EFF6FF; color: #1E6FD9; }
+.plPos.st  { background: #FCE7F3; color: #9D174D; }
+.plFace {
+  width: 36px; height: 36px; border-radius: 50%;
+  object-fit: cover; background: #F0F1F4; flex-shrink: 0;
+  display: block;
+}
+.plWho { flex: 1; min-width: 0; }
+.plName {
+  display: block; font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.plTeam { display: block; font-size: 11px; color: #6B7280; margin-top: 2px; }
+.plNum {
+  width: 46px; flex-shrink: 0; text-align: right;
+  font-size: 13px; color: #6B7280;
+}
+.plNum.total { font-weight: 700; color: #111827; }
+
+.plHero {
+  background: #0B1E3D; color: #fff; margin: 12px;
+  border-radius: 14px; padding: 18px;
+  display: flex; align-items: center; gap: 16px;
+}
+.plHeroFace {
+  width: 76px; height: 76px; border-radius: 50%;
+  object-fit: cover; background: #16305A; flex-shrink: 0;
+  border: 3px solid #F5A623; display: block;
+}
+.plHeroWho { min-width: 0; }
+.plHeroName { display: block; font-size: 19px; font-weight: 600; }
+.plHeroTeam {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12.5px; color: #8FA6C4; margin-top: 6px;
+}
+.plHeroTeam img { width: 18px; height: 18px; object-fit: contain; }
+.plHeroPos {
+  display: inline-block; margin-top: 9px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+  padding: 3px 10px; border-radius: 9px;
+  background: #F5A623; color: #3A2400;
+}
+.plNews {
+  margin: 0 12px 12px; padding: 11px 14px;
+  background: #FEF3C7; border-radius: 10px;
+  font-size: 12.5px; color: #92400E; line-height: 1.5;
+}
+
+/* The Wednesday lock. */
+.lockBar {
+  margin: 8px 12px 0; padding: 12px 14px;
+  background: #fff; border: 1px solid #ECEEF1;
+  border-radius: 12px;
+}
+.lockLine {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: #111827;
+}
+.lockDot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #16A34A; flex-shrink: 0;
+}
+.lockPaid { font-size: 11.5px; color: #6B7280; margin-top: 7px; }
+
 /* Where the XP came from. */
 .splitRow {
   display: flex; align-items: center; gap: 11px;
@@ -4075,6 +4361,7 @@ for (const tab of document.querySelectorAll("#xpTabs .subTab")) {
   tab.onclick = function () {
     xpTab = this.getAttribute("data-xp");
     fivePicking = null;
+    openPlayerId = null;
     if (screen === "xp") {
       drawXpScreen();
     } else {
@@ -4087,6 +4374,11 @@ for (const tab of document.querySelectorAll("#xpTabs .subTab")) {
 // player list to the squad, off a side tab to the league, and off
 // the league to Home.
 document.getElementById("xpBack").onclick = function () {
+  if (openPlayerId) {
+    openPlayerId = null;
+    drawXpScreen();
+    return;
+  }
   if (fivePicking) {
     fivePicking = null;
     drawXpScreen();
@@ -4102,6 +4394,7 @@ document.getElementById("xpBack").onclick = function () {
 document.getElementById("navXp").onclick = function () {
   xpTab = "home";
   fivePicking = null;
+  openPlayerId = null;
   goTo("xp");
 };
 document.getElementById("navChallenges").onclick = function () { goTo("challenges"); };
@@ -5963,26 +6256,145 @@ const FIVE_A_SIDE = [
   { slot: "st",  label: "Striker",    position: "ST",  line: 0 },
 ];
 
-// The players to pick from. Deliberately empty - fill this in and
-// the picker, the statistics tab and the scoring all fill
-// themselves. One entry per player:
-//
-//   {
-//     id: 1,                  // anything unique
-//     name: "A Player",
-//     team: "Arsenal",
-//     teamLogo: "https://...",
-//     position: "MID",        // GK, DEF, MID or ST
-//     photo: "https://...",   // optional
-//     points: 42,             // what picking them is worth
-//     goals: 6, assists: 3, cleanSheets: 4,
-//     form: "WWDWL"           // optional
-//   }
-//
-const PL_PLAYERS = [];
+// Every Premier League player, straight from the official Fantasy
+// Premier League data. Loaded once and kept for the session.
+let PL_PLAYERS = [];
+let fplMeta = {
+  loaded: false, loading: false, error: "",
+  currentEvent: null, previousEvent: null,
+};
+
+async function loadFplPlayers() {
+  if (fplMeta.loaded || fplMeta.loading) return;
+  fplMeta.loading = true;
+
+  try {
+    const data = await (await fetch("/api/fpl-players")).json();
+    PL_PLAYERS = Array.isArray(data.players) ? data.players : [];
+    fplMeta.currentEvent = data.currentEvent || null;
+    fplMeta.previousEvent = data.previousEvent || null;
+    fplMeta.error = data.error ||
+      (PL_PLAYERS.length === 0 ? "No players came back" : "");
+  } catch (error) {
+    fplMeta.error = "Could not reach the player list";
+  }
+
+  fplMeta.loading = false;
+  fplMeta.loaded = true;
+}
+
+// Redraws the XP page if it is still the thing on screen.
+function refreshXpIfShowing() {
+  if (screen === "xp") drawXpScreen();
+}
 
 let fiveASide = JSON.parse(localStorage.getItem("fiveASide") || "{}");
 let fivePicking = null;   // which slot is being filled, if any
+let openPlayerId = null;  // whose statistics are being read
+
+// ---------------------------------------------------------------
+// THE WEDNESDAY LOCK
+//
+// The squad you had at midnight on Wednesday is the one that
+// scores that week. You can still change your picks whenever you
+// like - the changes simply wait for the next Wednesday. That way
+// nobody can pick a hat-trick scorer on Sunday afternoon.
+// ---------------------------------------------------------------
+const XP_PER_FPL_POINT = 15;
+
+// The Wednesday that the week containing this date began.
+function squadCycleKey(when) {
+  const day = new Date(when);
+  day.setHours(0, 0, 0, 0);
+  day.setDate(day.getDate() - ((day.getDay() - 3 + 7) % 7));
+  return isoDate(day);
+}
+
+let squadHistory = JSON.parse(localStorage.getItem("squadHistory") || "{}");
+let paidEvents = JSON.parse(localStorage.getItem("paidEvents") || "[]");
+let lastSettlement = JSON.parse(localStorage.getItem("lastSettlement") || "null");
+
+function saveSquadLock() {
+  // Two months of weeks is more than enough to settle against.
+  const cycles = Object.keys(squadHistory).sort();
+  while (cycles.length > 8) delete squadHistory[cycles.shift()];
+
+  localStorage.setItem("squadHistory", JSON.stringify(squadHistory));
+  localStorage.setItem("paidEvents", JSON.stringify(paidEvents));
+  localStorage.setItem("lastSettlement", JSON.stringify(lastSettlement));
+  if (typeof pushProgress === "function") pushProgress();
+}
+
+// Freezes the current picks for this week, if that has not already
+// happened. Called on startup and before every change, so the
+// frozen copy is always what was picked before Wednesday.
+function ensureSquadLocked() {
+  const cycle = squadCycleKey(new Date());
+  if (squadHistory[cycle]) return;
+
+  squadHistory[cycle] = Object.assign({}, fiveASide);
+  saveSquadLock();
+}
+
+function lockedPicks() {
+  return squadHistory[squadCycleKey(new Date())] || {};
+}
+
+// How many changes are waiting for the next Wednesday.
+function pendingChanges() {
+  const locked = lockedPicks();
+  return FIVE_A_SIDE.filter(function (spot) {
+    return String(fiveASide[spot.slot] || "") !== String(locked[spot.slot] || "");
+  }).length;
+}
+
+// When the current week's picks stop being changeable.
+function nextLockDate() {
+  const day = new Date();
+  day.setHours(0, 0, 0, 0);
+  day.setDate(day.getDate() + (((3 - day.getDay()) + 7) % 7 || 7));
+  return day;
+}
+
+// Pays out any finished gameweek that has not been paid yet, using
+// whichever squad was locked in for the week that gameweek fell in.
+async function settleGameweeks() {
+  if (!fplMeta.loaded) await loadFplPlayers();
+
+  const candidates = [fplMeta.previousEvent, fplMeta.currentEvent]
+    .filter(function (id) { return id && paidEvents.indexOf(id) === -1; });
+
+  for (const eventId of candidates) {
+    let event;
+    try {
+      event = await (await fetch("/api/fpl-event?id=" + eventId)).json();
+    } catch (error) {
+      continue;
+    }
+
+    // Bonus points land late, so wait until the week is signed off.
+    if (!event || !event.finished || !event.dataChecked) continue;
+
+    const picks = squadHistory[squadCycleKey(event.deadline || new Date())] || {};
+
+    let points = 0;
+    for (const spot of FIVE_A_SIDE) {
+      const id = picks[spot.slot];
+      if (id) points += Number(event.points[String(id)]) || 0;
+    }
+
+    paidEvents.push(eventId);
+
+    if (points > 0) {
+      const given = awardSixASide(points * XP_PER_FPL_POINT);
+      lastSettlement = { event: eventId, points: points, xp: given };
+    } else {
+      lastSettlement = { event: eventId, points: 0, xp: 0 };
+    }
+
+    saveSquadLock();
+  }
+}
 
 function saveFiveASide() {
   localStorage.setItem("fiveASide", JSON.stringify(fiveASide));
@@ -6031,6 +6443,31 @@ function drawFiveASideTab(list) {
     '</span>' +
     '<span class="fiveTotalNum">' + fiveASidePoints().toLocaleString() + '</span>';
   list.appendChild(total);
+
+  // What was paid out last time, and what is waiting on Wednesday.
+  const lock = document.createElement("div");
+  lock.className = "lockBar";
+
+  const waiting = pendingChanges();
+  const locksOn = nextLockDate().toLocaleDateString([], {
+    weekday: "long", day: "numeric", month: "short",
+  });
+
+  lock.innerHTML =
+    '<div class="lockLine">' +
+      '<span class="lockDot"></span>' +
+      (waiting > 0
+        ? waiting + (waiting === 1 ? " change takes" : " changes take") +
+          " effect on " + locksOn
+        : "This team is locked in and scoring") +
+    '</div>' +
+    (lastSettlement && lastSettlement.xp > 0
+      ? '<div class="lockPaid">Gameweek ' + lastSettlement.event + ': ' +
+        lastSettlement.points + ' pts paid as ' +
+        lastSettlement.xp.toLocaleString() + ' XP</div>'
+      : '<div class="lockPaid">Each Fantasy point is worth ' +
+        XP_PER_FPL_POINT + ' XP, paid when the gameweek is settled.</div>');
+  list.appendChild(lock);
 
   const pitch = document.createElement("div");
   pitch.className = "fivePitch";
@@ -6095,6 +6532,15 @@ function drawPlayerChooser(list) {
   head.textContent = "Choose a " + spot.label.toLowerCase();
   list.appendChild(head);
 
+  if (!fplMeta.loaded) {
+    const wait = document.createElement("div");
+    wait.className = "empty";
+    wait.textContent = "Loading Premier League players...";
+    list.appendChild(wait);
+    loadFplPlayers().then(refreshXpIfShowing);
+    return;
+  }
+
   const eligible = PL_PLAYERS.filter(function (player) {
     return player.position === spot.position;
   });
@@ -6103,9 +6549,8 @@ function drawPlayerChooser(list) {
     const empty = document.createElement("div");
     empty.className = "empty";
     empty.innerHTML =
-      "No " + spot.label.toLowerCase() + "s to choose from yet." +
-      "<br><br>Fill in PL_PLAYERS and they will appear here, " +
-      "sorted by what they are worth.";
+      "No " + spot.label.toLowerCase() + "s available.<br><br>" +
+      (fplMeta.error || "Try again shortly.");
     list.appendChild(empty);
     return;
   }
@@ -6142,6 +6587,9 @@ function drawPlayerChooser(list) {
 
     if (!already) {
       row.onclick = function () {
+        // Freeze this week's team before the change lands, so the
+        // change belongs to next week and not this one.
+        ensureSquadLocked();
         fiveASide[spot.slot] = player.id;
         saveFiveASide();
         tally("fivea");
@@ -6158,6 +6606,7 @@ function drawPlayerChooser(list) {
     clear.innerHTML = '<span class="setLabel">Leave this place empty</span>' +
       '<span class="setRight">&rsaquo;</span>';
     clear.onclick = function () {
+      ensureSquadLocked();
       delete fiveASide[spot.slot];
       saveFiveASide();
       fivePicking = null;
@@ -6168,44 +6617,177 @@ function drawPlayerChooser(list) {
 }
 
 // ---- Player statistics ----
+// ---- Player statistics ----
+// Position, face, name, last week and the season so far. Tapping
+// a row opens everything else there is on them.
 function drawPlayerStatsTab(list) {
-  if (PL_PLAYERS.length === 0) {
-    list.innerHTML =
-      '<div class="empty">No player statistics yet.<br><br>' +
-      'Fill in PL_PLAYERS and the whole table appears here, ' +
-      'with everyone sorted by what they are worth.</div>';
+  if (openPlayerId) { drawPlayerDetail(list); return; }
+
+  if (!fplMeta.loaded) {
+    list.innerHTML = '<div class="empty">Loading Premier League players...</div>';
+    loadFplPlayers().then(refreshXpIfShowing);
     return;
   }
 
-  const ranked = PL_PLAYERS.slice().sort(function (a, b) {
-    return (Number(b.points) || 0) - (Number(a.points) || 0);
-  });
+  if (PL_PLAYERS.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No players available.<br><br>' +
+      (fplMeta.error || "Try again shortly.") +
+      '<br><br>Open /api/fpl-raw to see what came back.</div>';
+    return;
+  }
 
   const head = document.createElement("div");
-  head.className = "statHead";
+  head.className = "plHead";
   head.innerHTML =
-    '<span class="shPlayer">Player</span>' +
-    '<span class="shNum">Gls</span>' +
-    '<span class="shNum">Ast</span>' +
-    '<span class="shNum">CS</span>' +
-    '<span class="shNum">Pts</span>';
+    '<span class="plPosHead">Pos</span>' +
+    '<span class="plFaceHead"></span>' +
+    '<span class="plWho">Player</span>' +
+    '<span class="plNum">Last wk</span>' +
+    '<span class="plNum">Season</span>';
   list.appendChild(head);
 
-  for (const player of ranked) {
-    const row = document.createElement("div");
-    row.className = "statRow";
-    row.innerHTML =
-      '<span class="shPlayer">' +
-        (player.photo
-          ? '<img src="' + player.photo + '" alt="">'
-          : '<span class="noFace">' + (player.position || "") + '</span>') +
-        '<span class="pName">' + player.name + '</span>' +
+  for (const player of PL_PLAYERS) {
+    list.appendChild(playerRowElement(player));
+  }
+
+  const note = document.createElement("div");
+  note.className = "newsNote";
+  note.textContent = "Points and statistics from the official " +
+    "Fantasy Premier League game.";
+  list.appendChild(note);
+}
+
+// One row of the players list. Also used by the squad chooser.
+function playerRowElement(player) {
+  const row = document.createElement("div");
+  row.className = "plRow";
+  row.innerHTML =
+    '<span class="plPos ' + (player.position || "").toLowerCase() + '">' +
+      (player.position || "-") + '</span>' +
+    (player.photo
+      ? '<img class="plFace" src="' + player.photo + '" alt="">'
+      : '<span class="plFace"></span>') +
+    '<span class="plWho">' +
+      '<span class="plName">' + player.name + '</span>' +
+      '<span class="plTeam">' + (player.teamShort || player.team || "") + '</span>' +
+    '</span>' +
+    '<span class="plNum">' + player.lastWeek + '</span>' +
+    '<span class="plNum total">' + player.points + '</span>';
+
+  row.onclick = function () {
+    openPlayerId = player.id;
+    drawXpScreen();
+  };
+  return row;
+}
+
+// ---- Everything known about one player ----
+function drawPlayerDetail(list) {
+  const player = playerById(openPlayerId);
+  if (!player) { openPlayerId = null; drawPlayerStatsTab(list); return; }
+
+  const hero = document.createElement("div");
+  hero.className = "plHero";
+  hero.innerHTML =
+    (player.photo
+      ? '<img class="plHeroFace" src="' + player.photo + '" alt="">'
+      : '<span class="plHeroFace"></span>') +
+    '<span class="plHeroWho">' +
+      '<span class="plHeroName">' + (player.fullName || player.name) + '</span>' +
+      '<span class="plHeroTeam">' +
+        (player.teamBadge ? '<img src="' + player.teamBadge + '" alt="">' : '') +
+        (player.team || "") +
       '</span>' +
-      '<span class="shNum">' + (player.goals || 0) + '</span>' +
-      '<span class="shNum">' + (player.assists || 0) + '</span>' +
-      '<span class="shNum">' + (player.cleanSheets || 0) + '</span>' +
-      '<span class="shNum strong">' + (Number(player.points) || 0) + '</span>';
-    list.appendChild(row);
+      '<span class="plHeroPos">' + (player.position || "") + '</span>' +
+    '</span>';
+  list.appendChild(hero);
+
+  // Anything about an injury or a suspension goes straight up top.
+  if (player.news) {
+    const news = document.createElement("div");
+    news.className = "plNews";
+    news.textContent = player.news;
+    list.appendChild(news);
+  }
+
+  const section = function (title, cells) {
+    const heading = document.createElement("div");
+    heading.className = "boxHead";
+    heading.textContent = title;
+    list.appendChild(heading);
+
+    const grid = document.createElement("div");
+    grid.className = "profGrid";
+    grid.innerHTML = cells.map(function (cell) {
+      return '<div class="profCell"><b>' + cell[1] + '</b>' +
+        '<span>' + cell[0] + '</span></div>';
+    }).join("");
+    list.appendChild(grid);
+  };
+
+  section("Points", [
+    ["Season total", player.points],
+    ["Last week", player.lastWeek],
+    ["Form", player.form],
+    ["Per game", player.ppg],
+    ["Bonus", player.bonus],
+    ["Bonus rank pts", player.bps],
+  ]);
+
+  section("Attack", [
+    ["Goals", player.goals],
+    ["Assists", player.assists],
+    ["Expected goals", player.xG],
+    ["Expected assists", player.xA],
+    ["ICT index", player.ict],
+    ["Pens missed", player.penMissed],
+  ]);
+
+  const defence = [
+    ["Clean sheets", player.cleanSheets],
+    ["Conceded", player.conceded],
+    ["Own goals", player.ownGoals],
+  ];
+  if (player.position === "GK") {
+    defence.push(["Saves", player.saves]);
+    defence.push(["Pens saved", player.penSaved]);
+  }
+  section("Defence", defence);
+
+  section("Discipline and time", [
+    ["Yellow cards", player.yellow],
+    ["Red cards", player.red],
+    ["Minutes", player.minutes.toLocaleString()],
+    ["Starts", player.starts],
+  ]);
+
+  section("In the game", [
+    ["Price", "\u00a3" + player.price.toFixed(1) + "m"],
+    ["Picked by", player.selectedBy + "%"],
+    ["Worth to you", (player.points * XP_PER_FPL_POINT).toLocaleString() + " XP"],
+  ]);
+
+  // Straight into the squad, if there is room for them.
+  const spot = FIVE_A_SIDE.find(function (s) {
+    return s.position === player.position && !fiveASide[s.slot];
+  });
+
+  if (spot) {
+    const add = document.createElement("div");
+    add.className = "setRow setTap";
+    add.innerHTML = '<span class="setLabel">Put in your 6-a-side as ' +
+      spot.label.toLowerCase() + '</span><span class="setRight">&rsaquo;</span>';
+    add.onclick = function () {
+      ensureSquadLocked();
+      fiveASide[spot.slot] = player.id;
+      saveFiveASide();
+      tally("fivea");
+      openPlayerId = null;
+      xpTab = "five";
+      drawXpScreen();
+    };
+    list.appendChild(add);
   }
 }
 
@@ -6710,6 +7292,8 @@ function gatherProgress() {
     lastSpin: localStorage.getItem("lastSpin") || "",
     xpHistory: xpHistory,
     xpSources: xpSources,
+    squadHistory: squadHistory,
+    paidEvents: paidEvents,
     weekStartXp: weekStartXp,
     bestDivision: bestDivision,
     badgeClub: badgeClub,
@@ -6747,6 +7331,8 @@ function applyProgress(data) {
       fiveASide = data.fiveASide;
       localStorage.setItem("fiveASide", JSON.stringify(fiveASide));
     }
+    if (data.squadHistory) squadHistory = data.squadHistory;
+    if (Array.isArray(data.paidEvents)) paidEvents = data.paidEvents;
     if (data.seasonCounts && data.seasonCounts.season === thisSeason) {
       seasonCounts = data.seasonCounts;
     }
@@ -8452,6 +9038,16 @@ async function refresh() {
 drawDates();
 drawProgress();
 
+// Freeze this week's squad before anything else touches it, then
+// fetch the players and pay out any gameweek that has finished.
+ensureSquadLocked();
+loadFplPlayers()
+  .then(settleGameweeks)
+  .then(function () {
+    drawProgress();
+    refreshXpIfShowing();
+  });
+
 // If already signed in, fetch whatever the account has saved.
 if (signedIn()) {
   pullProgress().then(function () { if (screen === "xp") drawXpScreen(); });
@@ -8833,6 +9429,65 @@ const server = http.createServer(async function (request, response) {
       });
       response.end(error ? LOGO_BYTES : data);
     });
+    return;
+  }
+
+  if (address.pathname === "/api/fpl-players") {
+    const data = await getFplPlayers();
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(data));
+    return;
+  }
+
+  if (address.pathname === "/api/fpl-event") {
+    const eventId = Number(address.searchParams.get("id"));
+    if (!eventId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("null");
+      return;
+    }
+    const data = await getFplEvent(eventId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(data));
+    return;
+  }
+
+  // Shows what FPL really sent, for when a field has been renamed
+  // or the whole thing is being refused.
+  if (address.pathname === "/api/fpl-raw") {
+    const boot = await getFplBootstrap();
+
+    if (!boot) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        error: "Nothing came back from fantasy.premierleague.com",
+        hint: "A 403 in the logs means the request was refused. " +
+              "A network error means the host is unreachable from here.",
+      }, null, 2));
+      return;
+    }
+
+    const first = (boot.elements || [])[0] || null;
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      element_count: (boot.elements || []).length,
+      team_count: (boot.teams || []).length,
+      element_types: (boot.element_types || []).map(function (t) {
+        return { id: t.id, name: t.singular_name_short };
+      }),
+      events: (boot.events || []).filter(function (e) {
+        return e.is_previous || e.is_current || e.is_next;
+      }).map(function (e) {
+        return {
+          id: e.id, name: e.name, deadline_time: e.deadline_time,
+          finished: e.finished, data_checked: e.data_checked,
+          is_previous: e.is_previous, is_current: e.is_current, is_next: e.is_next,
+        };
+      }),
+      first_element_fields: first ? Object.keys(first) : [],
+      first_element: first,
+    }, null, 2));
     return;
   }
 
