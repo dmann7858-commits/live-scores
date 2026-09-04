@@ -3075,6 +3075,21 @@ body {
 .subTab[data-sub="following"] .subIcon { fill: none; }
 .subTab[data-sub="following"].on .subIcon { fill: #F5A623; stroke: #F5A623; }
 
+/* The way back out of a tab. The empty twin on the right is there
+   so the middle tab sits in the actual middle. */
+.subBack {
+  flex: 0 0 34px; display: flex;
+  align-items: center; justify-content: center;
+  font-size: 19px; color: #8FA6C4;
+  cursor: pointer; user-select: none;
+  padding-bottom: 2px;
+}
+.subBack:active { color: #fff; }
+.subSpacer { pointer-events: none; }
+.subTabs .subTab span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* Kick-off times now carry the day above them. */
 .when {
   width: 60px; flex-shrink: 0;
@@ -3377,6 +3392,35 @@ body {
       </svg>
       <span>Following</span>
     </div>
+  </div>
+  <div class="subTabs" id="xpTabs" style="display:none">
+    <div class="subBack" id="xpBack">&#8592;</div>
+    <div class="subTab" data-xp="five">
+      <svg class="subIcon" viewBox="0 0 20 18" aria-hidden="true">
+        <path d="M7 1.5 3 3.5 1.5 7l3 1.5V16.5h11V8.5l3-1.5L17 3.5 13 1.5a3 3 0 0 1-6 0z"/>
+      </svg>
+      <span>Five-a-side</span>
+    </div>
+    <div class="subTab on" data-xp="league">
+      <svg class="subIcon" viewBox="0 0 18 18" aria-hidden="true">
+        <path d="M4.5 1.5h9v5a4.5 4.5 0 0 1-9 0z"/>
+        <path d="M4.5 3h-3v1.5a3 3 0 0 0 3 3"/>
+        <path d="M13.5 3h3v1.5a3 3 0 0 1-3 3"/>
+        <line x1="9" y1="11" x2="9" y2="14"/>
+        <line x1="5.5" y1="16.5" x2="12.5" y2="16.5"/>
+      </svg>
+      <span>League</span>
+    </div>
+    <div class="subTab" data-xp="players">
+      <svg class="subIcon" viewBox="0 0 18 16" aria-hidden="true">
+        <line x1="1.5" y1="14.5" x2="16.5" y2="14.5"/>
+        <rect x="3" y="8" width="3.2" height="6.5"/>
+        <rect x="7.4" y="4" width="3.2" height="10.5"/>
+        <rect x="11.8" y="10" width="3.2" height="4.5"/>
+      </svg>
+      <span>Players</span>
+    </div>
+    <div class="subBack subSpacer" aria-hidden="true"></div>
   </div>
 </div>
 
@@ -3839,6 +3883,7 @@ function goTo(name) {
 
   document.getElementById("dates").style.display = name === "fixtures" ? "flex" : "none";
   document.getElementById("subTabs").style.display = name === "home" ? "flex" : "none";
+  document.getElementById("xpTabs").style.display = name === "xp" ? "flex" : "none";
   document.getElementById("pickerBox").style.display = "none";
   document.getElementById("searchArea").style.display = "none";
   document.getElementById("cogBtn").style.display = name === "home" ? "inline" : "none";
@@ -3866,7 +3911,7 @@ document.getElementById("navFavourites").onclick = function () { favView = "coun
 document.getElementById("navFixtures").onclick = function () { goTo("fixtures"); };
 document.getElementById("navHome").onclick = function () { goTo("home"); };
 
-for (const tab of document.querySelectorAll(".subTab")) {
+for (const tab of document.querySelectorAll("#subTabs .subTab")) {
   tab.onclick = function () {
     homeTab = this.getAttribute("data-sub");
     tally(homeTab);
@@ -3877,6 +3922,35 @@ for (const tab of document.querySelectorAll(".subTab")) {
     }
   };
 }
+
+for (const tab of document.querySelectorAll("#xpTabs .subTab")) {
+  tab.onclick = function () {
+    xpTab = this.getAttribute("data-xp");
+    fivePicking = null;
+    if (screen === "xp") {
+      drawXpScreen();
+    } else {
+      goTo("xp");
+    }
+  };
+}
+
+// One step back out, wherever you are on the XP page: out of a
+// player list to the squad, off a side tab to the league, and off
+// the league to Home.
+document.getElementById("xpBack").onclick = function () {
+  if (fivePicking) {
+    fivePicking = null;
+    drawXpScreen();
+    return;
+  }
+  if (xpTab !== "league") {
+    xpTab = "league";
+    drawXpScreen();
+    return;
+  }
+  goTo("home");
+};
 document.getElementById("navXp").onclick = function () { goTo("xp"); };
 document.getElementById("navChallenges").onclick = function () { goTo("challenges"); };
 
@@ -5232,8 +5306,9 @@ async function drawHome() {
   updated.textContent = "";
 
   // Keep the sub-header in step, since Home can be reached from
-  // several places.
-  for (const tab of document.querySelectorAll(".subTab")) {
+  // several places. Scoped to its own strip, or it would wipe the
+  // highlight off the XP tabs sitting in the same bar.
+  for (const tab of document.querySelectorAll("#subTabs .subTab")) {
     tab.classList.toggle("on", tab.getAttribute("data-sub") === homeTab);
   }
 
@@ -5863,15 +5938,10 @@ function drawPlayerChooser(list) {
   const spot = FIVE_A_SIDE.find(function (s) { return s.slot === fivePicking; });
   if (!spot) { fivePicking = null; return; }
 
-  const back = document.createElement("div");
-  back.className = "crumbs";
-  back.innerHTML = '<span class="crumb">&#8592; Back to your team</span>' +
-    '<span>&rsaquo; ' + spot.label + '</span>';
-  back.querySelector(".crumb").onclick = function () {
-    fivePicking = null;
-    drawXpScreen();
-  };
-  list.appendChild(back);
+  const head = document.createElement("div");
+  head.className = "boxHead";
+  head.textContent = "Choose a " + spot.label.toLowerCase();
+  list.appendChild(head);
 
   const eligible = PL_PLAYERS.filter(function (player) {
     return player.position === spot.position;
@@ -6032,26 +6102,10 @@ function drawXpScreen() {
   const list = document.getElementById("list");
   list.innerHTML = "";
 
-  const tabs = [
-    ["five", "Five-a-side"],
-    ["league", "XP League"],
-    ["players", "Players"],
-  ];
-
-  const bar = document.createElement("div");
-  bar.className = "tabs";
-  bar.innerHTML = tabs.map(function (pair) {
-    return '<div class="tab' + (xpTab === pair[0] ? " on" : "") +
-      '" data-xp="' + pair[0] + '">' + pair[1] + '</div>';
-  }).join("");
-  list.appendChild(bar);
-
-  for (const tab of bar.querySelectorAll(".tab")) {
-    tab.onclick = function () {
-      xpTab = this.getAttribute("data-xp");
-      fivePicking = null;
-      drawXpScreen();
-    };
+  // The tabs are up in the bar with the rest of the chrome, so all
+  // that is needed here is keeping them in step.
+  for (const tab of document.querySelectorAll("#xpTabs .subTab")) {
+    tab.classList.toggle("on", tab.getAttribute("data-xp") === xpTab);
   }
 
   if (xpTab === "five") { drawFiveASideTab(list); return; }
