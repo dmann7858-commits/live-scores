@@ -1185,6 +1185,11 @@ function currentSeason() {
   return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
 }
 
+// The last thing that went wrong on each endpoint, kept so the
+// diagnostic pages can show it. Errors that only reach the server
+// log are errors nobody sees.
+const apiTrouble = {};
+
 // Returns the "response" list, or null if anything went wrong.
 async function askApi(path, params) {
   if (!API_KEY) {
@@ -1233,15 +1238,21 @@ async function askApi(path, params) {
 
   if (hasErrors) {
     console.log("   !! API SAYS: " + JSON.stringify(errors).slice(0, 300));
+    apiTrouble[path] = { at: new Date().toISOString(), url: url, errors: errors };
     return null;
   }
 
   if (!data || !Array.isArray(data.response)) {
     console.log("   !! unexpected answer shape");
+    apiTrouble[path] = {
+      at: new Date().toISOString(), url: url,
+      errors: "answer had no response list",
+    };
     return null;
   }
 
   console.log("   " + data.response.length + " rows back");
+  delete apiTrouble[path];
   return data.response;
 }
 
@@ -1643,12 +1654,35 @@ async function getFixturesRange(from, to) {
   const hit = fromCache(name, 600);
   if (hit) return hit;
 
-  const raw = await askApi("fixtures", {
-    from: from, to: to, season: currentSeason(),
-  });
-  if (raw === null) return cache[name] ? cache[name].data : [];
+  // One call per day. Asking by date needs no season, which the
+  // from/to form does - and a season cannot be given without a
+  // league or team, so the range form is not usable here.
+  const days = [];
+  const day = new Date(from + "T12:00:00Z");
+  const last = new Date(to + "T12:00:00Z");
 
-  return intoCache(name, raw.map(translateMatch));
+  while (day <= last && days.length < 5) {
+    days.push(day.toISOString().slice(0, 10));
+    day.setUTCDate(day.getUTCDate() + 1);
+  }
+
+  const seen = {};
+  let anyWorked = false;
+
+  for (const date of days) {
+    const raw = await askApi("fixtures", { date: date });
+    if (raw === null) continue;
+    anyWorked = true;
+    for (const row of raw) seen[row.fixture && row.fixture.id] = row;
+  }
+
+  if (!anyWorked) return cache[name] ? cache[name].data : [];
+
+  const matches = Object.keys(seen).map(function (id) {
+    return translateMatch(seen[id]);
+  });
+
+  return intoCache(name, matches);
 }
 
 async function getTableFor(leagueId) {
@@ -2144,7 +2178,13 @@ async function getAllLeagues() {
   const hit = fromCache("allLeagues", 86400);
   if (hit) return hit;
 
-  const raw = await askApi("leagues", { current: "true" });
+  // current=true keeps the list to competitions actually running.
+  // If that comes back empty for any reason, the unfiltered list is
+  // far better than an empty drawer.
+  let raw = await askApi("leagues", { current: "true" });
+  if (raw === null || raw.length === 0) {
+    raw = await askApi("leagues", {});
+  }
   if (raw === null) return cache["allLeagues"] ? cache["allLeagues"].data : [];
 
   const list = raw.map(function (item) {
@@ -10423,6 +10463,15 @@ async function handleRequest(request, response) {
       if (userId) await deleteAccount(userId);
     }
 
+    // Anything the football API has recently refused belongs here
+    // too - it is the first page anybody opens when something is
+    // missing from the screens.
+    const troubled = Object.keys(apiTrouble);
+    add("Football API healthy", troubled.length === 0,
+      troubled.length === 0
+        ? "No endpoint has complained recently"
+        : "Failing: " + troubled.join(", ") + ". See /api/raw for detail");
+
     const failed = checks.filter(function (c) { return !c.ok; });
 
     response.writeHead(200, { "Content-Type": "application/json" });
@@ -10528,8 +10577,9 @@ async function handleRequest(request, response) {
       rows: raw === null ? null : raw.length,
       first_row: raw && raw.length > 0 ? raw[0] : null,
       note: raw === null
-        ? "Nothing came back. Check the server log for what the API said."
+        ? "Nothing came back. What the API complained about is below."
         : "Use ?of=today, ?of=leagues or ?of=status for the others.",
+      recent_api_errors: apiTrouble,
     }, null, 2));
     return;
   }
