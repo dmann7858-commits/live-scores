@@ -2708,6 +2708,68 @@ const PAGE = `
 
   .empty { padding: 50px 24px; text-align: center; color: #777; line-height: 1.6; }
 
+  /* First-run setup */
+  .setup {
+    position: fixed; inset: 0; z-index: 60;
+    background: #0B1E3D; color: #fff;
+    display: flex; flex-direction: column;
+  }
+  .setupTop {
+    padding: calc(26px + env(safe-area-inset-top, 0px)) 20px 16px;
+    flex-shrink: 0;
+  }
+  .setupBrand {
+    font-size: 19px; font-weight: 700; letter-spacing: -0.3px;
+    margin-bottom: 18px;
+  }
+  .setupBrand span { color: #F5A623; }
+  .setupTitle { font-size: 23px; font-weight: 600; line-height: 1.25; }
+  .setupNote {
+    font-size: 13.5px; color: #8FA6C4;
+    margin-top: 8px; line-height: 1.5;
+  }
+  .setupInner { padding: 80px 24px; text-align: center; }
+  .setupInner .setupTitle { font-size: 18px; }
+
+  .setupList {
+    flex: 1; overflow-y: auto; padding: 4px 12px 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .setupRow {
+    display: flex; align-items: center; gap: 12px;
+    background: #16305A; border: 2px solid transparent;
+    border-radius: 12px; padding: 12px 14px;
+    margin-bottom: 8px; cursor: pointer;
+  }
+  .setupRow.picked { border-color: #F5A623; background: #1B3A6B; }
+  .setupRow img {
+    width: 28px; height: 28px; object-fit: contain; flex-shrink: 0;
+  }
+  .setupBlank { width: 28px; flex-shrink: 0; }
+  .setupWho { flex: 1; min-width: 0; }
+  .setupName {
+    display: block; font-size: 15px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .setupWhere { display: block; font-size: 11.5px; color: #8FA6C4; margin-top: 2px; }
+  .setupTick { color: #F5A623; font-size: 17px; width: 18px; flex-shrink: 0; }
+
+  .setupFoot {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid #16305A; flex-shrink: 0;
+  }
+  .setupSkip {
+    background: none; border: none; color: #8FA6C4;
+    font-size: 14px; padding: 12px 4px; cursor: pointer;
+  }
+  .setupGo {
+    flex: 1; background: #1E6FD9; color: #fff; border: none;
+    border-radius: 12px; padding: 14px; font-size: 15px;
+    font-weight: 600; cursor: pointer;
+  }
+  .setupGo:disabled { background: #16305A; color: #6F86A6; }
+
   /* Slide-out country drawer */
   .burger {
     font-size: 20px; color: #fff; cursor: pointer;
@@ -3666,11 +3728,27 @@ body {
    Sits at the top of Home, laid out the way the match centre
    lays a game out.
    ============================================================= */
+/* A row of cards that snaps one to a screen, so the live matches
+   swipe like a feed rather than scrolling loosely. */
+.featTrack {
+  display: flex; overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.featTrack::-webkit-scrollbar { display: none; }
+.featureBoxPad { padding: 12px 6px 4px; }
+
 .feature {
+  flex: 0 0 100%; scroll-snap-align: start;
   background: #0B1E3D; color: #fff; cursor: pointer;
-  margin: 12px 12px 4px; border-radius: 14px;
-  padding: 14px 14px 12px;
+  border-radius: 14px; padding: 14px 14px 12px;
   box-shadow: 0 2px 10px rgba(11,30,61,0.18);
+  /* The gap between cards is a transparent border, so the snap
+     points still land exactly one card apart. */
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  background-clip: padding-box;
 }
 .feature:active { opacity: 0.92; }
 .featTop {
@@ -3745,6 +3823,7 @@ body {
   transition: width 0.2s, background 0.2s;
 }
 .featDots i.on { background: #F5A623; width: 15px; border-radius: 3px; }
+.featDots i { cursor: pointer; }
 
 /* =============================================================
    THE FIVE-A-SIDE TEAM
@@ -4160,6 +4239,7 @@ body {
 </head>
 <body>
 
+<div class="setup" id="setup" style="display:none"></div>
 <div class="shade" id="shade"></div>
 <div class="drawer" id="drawer">
   <div class="drawerTop">
@@ -4692,6 +4772,255 @@ async function checkForGoals() {
 
 setInterval(checkForGoals, 30000);
 checkForGoals();
+
+
+// ---------------------------------------------------------------
+// FIRST RUN
+//
+// Without this the app opens on a Home screen with nothing in it,
+// and the person has to find Favourites and drill through three
+// levels before anything happens. Two taps here and the app has
+// something to show them.
+//
+// Skipping is always allowed. Nobody should be made to fill in a
+// form before they can look at a score.
+// ---------------------------------------------------------------
+let setupStep = "leagues";     // leagues | clubs
+let setupLeagues = [];         // leagues chosen so far
+let setupClubs = [];           // clubs chosen so far
+let setupClubList = [];        // clubs available from those leagues
+let setupBusy = false;
+let setupTried = false;        // whether the clubs have been fetched
+
+function needsSetup() {
+  return localStorage.getItem("setupDone") !== "yes";
+}
+
+function finishSetup() {
+  localStorage.setItem("setupDone", "yes");
+  document.getElementById("setup").style.display = "none";
+  goTo("home");
+}
+
+// The top division of each of the big countries, plus England's
+// second, drawn from the same ranking the country drawer uses.
+function popularLeagues() {
+  if (!allLeagues || allLeagues.length === 0) return [];
+
+  const grouped = countriesInOrder();
+  const out = [];
+
+  for (const country of grouped.order.slice(0, grouped.pinnedCount || 9)) {
+    const leagues = grouped.byCountry[country] || [];
+    if (leagues[0]) out.push(leagues[0]);
+    if (country === "England" && leagues[1]) out.push(leagues[1]);
+  }
+
+  return out;
+}
+
+async function drawSetup() {
+  const panel = document.getElementById("setup");
+  panel.style.display = "block";
+
+  // Everything else is hidden while this is up.
+  document.getElementById("mainHeader").style.display = "none";
+
+  if (allLeagues === null) {
+    panel.innerHTML =
+      '<div class="setupInner">' +
+        '<div class="setupTitle">Just a moment</div>' +
+        '<div class="setupNote">Fetching the competitions...</div>' +
+      '</div>';
+    try {
+      allLeagues = await (await fetch("/api/leagues")).json();
+    } catch (error) {
+      allLeagues = [];
+    }
+    drawSetup();
+    return;
+  }
+
+  if (setupStep === "clubs") { drawSetupClubs(panel); return; }
+  drawSetupLeagues(panel);
+}
+
+function drawSetupLeagues(panel) {
+  const leagues = popularLeagues();
+
+  const rows = leagues.map(function (league) {
+    const picked = setupLeagues.some(function (l) { return l.id === league.id; });
+    return '<div class="setupRow' + (picked ? " picked" : "") +
+      '" data-league="' + league.id + '">' +
+      (league.logo ? '<img src="' + league.logo + '" alt="">' : '<span class="setupBlank"></span>') +
+      '<span class="setupWho">' +
+        '<span class="setupName">' + league.name + '</span>' +
+        '<span class="setupWhere">' + league.country + '</span>' +
+      '</span>' +
+      '<span class="setupTick">' + (picked ? "&#10003;" : "") + '</span>' +
+    '</div>';
+  }).join("");
+
+  panel.innerHTML =
+    '<div class="setupTop">' +
+      '<div class="setupBrand">Goal<span>Flash</span></div>' +
+      '<div class="setupTitle">Which leagues do you follow?</div>' +
+      '<div class="setupNote">Pick as many as you like. You can change ' +
+        'this later in Favourites.</div>' +
+    '</div>' +
+    '<div class="setupList">' +
+      (rows || '<div class="setupNote">No competitions came back. ' +
+        'You can add them later from Favourites.</div>') +
+    '</div>' +
+    '<div class="setupFoot">' +
+      '<button class="setupSkip" id="setupSkip">Skip</button>' +
+      '<button class="setupGo" id="setupNext"' +
+        (setupLeagues.length === 0 ? " disabled" : "") + '>' +
+        (setupLeagues.length === 0
+          ? "Choose at least one"
+          : "Next &rsaquo;") +
+      '</button>' +
+    '</div>';
+
+  for (const row of panel.querySelectorAll(".setupRow")) {
+    row.onclick = function () {
+      const id = Number(this.getAttribute("data-league"));
+      const league = leagues.find(function (l) { return l.id === id; });
+      const at = setupLeagues.findIndex(function (l) { return l.id === id; });
+
+      if (at === -1) setupLeagues.push(league);
+      else setupLeagues.splice(at, 1);
+
+      drawSetupLeagues(panel);
+    };
+  }
+
+  document.getElementById("setupSkip").onclick = finishSetup;
+
+  const next = document.getElementById("setupNext");
+  if (next) {
+    next.onclick = async function () {
+      if (setupLeagues.length === 0) return;
+
+      // Save the leagues now, so a skip on the next step still
+      // leaves the person better off than they started.
+      for (const league of setupLeagues) {
+        if (!isFavLeague(league.id)) toggleFavLeague(league);
+        if (!myLeagues.includes(league.id)) {
+          myLeagues.push(league.id);
+          leagueNames[league.id] = league.name;
+        }
+      }
+      saveLeagues();
+
+      setupStep = "clubs";
+      drawSetup();
+    };
+  }
+}
+
+async function drawSetupClubs(panel) {
+  // Only ever fetch once. Without the flag, leagues that return no
+  // clubs send this straight into an endless loop of itself.
+  if (!setupTried && !setupBusy) {
+    setupBusy = true;
+    panel.innerHTML =
+      '<div class="setupInner">' +
+        '<div class="setupTitle">Finding the clubs</div>' +
+        '<div class="setupNote">One moment...</div>' +
+      '</div>';
+
+    // Four leagues is enough to fill a screen without a long wait.
+    for (const league of setupLeagues.slice(0, 4)) {
+      try {
+        const teams = await (await fetch("/api/teams?league=" + league.id)).json();
+        for (const team of teams) {
+          team.leagueId = league.id;
+          team.leagueName = league.name;
+          setupClubList.push(team);
+        }
+      } catch (error) {
+        // Skip that league.
+      }
+    }
+
+    setupBusy = false;
+    setupTried = true;
+    drawSetupClubs(panel);
+    return;
+  }
+
+  if (setupBusy) return;
+
+  const sorted = setupClubList.slice().sort(function (a, b) {
+    return a.name.localeCompare(b.name);
+  });
+
+  const rows = sorted.map(function (club) {
+    const picked = setupClubs.some(function (c) { return c.id === club.id; });
+    return '<div class="setupRow' + (picked ? " picked" : "") +
+      '" data-club="' + club.id + '">' +
+      (club.logo ? '<img src="' + club.logo + '" alt="">' : '<span class="setupBlank"></span>') +
+      '<span class="setupWho">' +
+        '<span class="setupName">' + club.name + '</span>' +
+        '<span class="setupWhere">' + (club.leagueName || "") + '</span>' +
+      '</span>' +
+      '<span class="setupTick">' + (picked ? "&#10003;" : "") + '</span>' +
+    '</div>';
+  }).join("");
+
+  panel.innerHTML =
+    '<div class="setupTop">' +
+      '<div class="setupBrand">Goal<span>Flash</span></div>' +
+      '<div class="setupTitle">Now pick your clubs</div>' +
+      '<div class="setupNote">Up to five. Their next games and results ' +
+        'go straight on your home screen.</div>' +
+    '</div>' +
+    '<div class="setupList">' +
+      (rows || '<div class="setupNote">No clubs came back for those ' +
+        'leagues. You can add them later from Favourites.</div>') +
+    '</div>' +
+    '<div class="setupFoot">' +
+      '<button class="setupSkip" id="setupBack">&lsaquo; Back</button>' +
+      '<button class="setupGo" id="setupDone">' +
+        (setupClubs.length === 0 ? "Skip for now" : "Done") +
+      '</button>' +
+    '</div>';
+
+  for (const row of panel.querySelectorAll(".setupRow")) {
+    row.onclick = function () {
+      const id = Number(this.getAttribute("data-club"));
+      const club = setupClubList.find(function (c) { return c.id === id; });
+      const at = setupClubs.findIndex(function (c) { return c.id === id; });
+
+      if (at !== -1) {
+        setupClubs.splice(at, 1);
+      } else {
+        if (setupClubs.length >= 5) return;
+        setupClubs.push(club);
+      }
+
+      drawSetupClubs(panel);
+    };
+  }
+
+  document.getElementById("setupBack").onclick = function () {
+    setupStep = "leagues";
+    // Changing the leagues should change the clubs on offer.
+    setupClubList = [];
+    setupTried = false;
+    drawSetup();
+  };
+
+  document.getElementById("setupDone").onclick = function () {
+    for (const club of setupClubs) {
+      if (!isFavTeam(club.id)) {
+        toggleFavTeam(club, { id: club.leagueId, name: club.leagueName });
+      }
+    }
+    finishSetup();
+  };
+}
 
 
 // ---------------------------------------------------------------
@@ -6223,6 +6552,7 @@ async function drawHomeLive(list) {
   // and gets filled once the live feed arrives.
   const featureBox = document.createElement("div");
   featureBox.id = "featureBox";
+  featureBox.className = "featureBoxPad";
   list.appendChild(featureBox);
 
   // Five slots each. Badges only, no names, so nothing collides.
@@ -6300,44 +6630,14 @@ async function drawHomeLive(list) {
   buildFeature(live);
   await paintFeature();
 
+  // The swipeable feed at the top of this tab is the live section
+  // now, so there is no separate grid of the same matches below it.
   if (live.length > 0) {
-    // Followed leagues first, then everyone else.
-    const mine = favLeagues.map(function (l) { return l.id; });
-    live.sort(function (a, b) {
-      const aMine = mine.includes(a.leagueId) ? 0 : 1;
-      const bMine = mine.includes(b.leagueId) ? 0 : 1;
-      return aMine - bMine;
-    });
-
     const heading = document.createElement("div");
     heading.className = "boardHead";
-    heading.innerHTML = 'Live now <span class="liveCount">' + live.length + '</span>';
-    list.appendChild(heading);
-
-    const grid = document.createElement("div");
-    grid.className = "liveGrid";
-    grid.innerHTML = live.slice(0, 15).map(function (m) {
-      const clock = m.minute !== null ? m.minute + "'" : (m.short || "LIVE");
-      return '<div class="liveCard" data-id="' + m.id + '">' +
-        '<div class="lcTop">' + clock + '</div>' +
-        '<div class="lcSide">' +
-          '<img src="' + m.homeLogo + '" alt="">' +
-          '<span class="lcTag">' + shortName(m.home) + '</span>' +
-          '<span class="lcScore">' + (m.hg === null ? "-" : m.hg) + '</span>' +
-        '</div>' +
-        '<div class="lcSide">' +
-          '<img src="' + m.awayLogo + '" alt="">' +
-          '<span class="lcTag">' + shortName(m.away) + '</span>' +
-          '<span class="lcScore">' + (m.ag === null ? "-" : m.ag) + '</span>' +
-        '</div>' +
-      '</div>';
-    }).join("");
-    list.appendChild(grid);
-
-    for (const card of grid.querySelectorAll(".liveCard")) {
-      const id = Number(card.getAttribute("data-id"));
-      card.onclick = function () { openMatch(id); };
-    }
+    heading.innerHTML = 'Live now <span class="liveCount">' +
+      live.length + '</span>';
+    list.insertBefore(heading, list.children[1] || null);
   }
 
 }
@@ -10371,7 +10671,13 @@ startSession()
     if (screen === "xp") drawXpScreen();
   });
 
-goTo("home");
+// A first run gets the setup screen; everybody else goes straight
+// to Home as before.
+if (needsSetup()) {
+  drawSetup();
+} else {
+  goTo("home");
+}
 
 // The ticker keeps live scores moving on its own, so only the
 // home screen needs periodic refreshing.
