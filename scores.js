@@ -9720,10 +9720,10 @@ function pageShell(title, body) {
 ${body}
 <footer>
   ${SUPPORT_EMAIL
-    ? 'Questions? <a href="mailto:' + SUPPORT_EMAIL + '">' + SUPPORT_EMAIL + '</a>'
-    : '<span style="color:#C0392B">No support email is configured. ' +
-      'Set SUPPORT_EMAIL on the server before submitting to an app store.</span>'}
-  <br><a href="/privacy">Privacy</a> &middot;
+    ? 'Questions? <a href="mailto:' + SUPPORT_EMAIL + '">' +
+      SUPPORT_EMAIL + '</a><br>'
+    : ''}
+  <a href="/privacy">Privacy</a> &middot;
   <a href="/support">Support</a> &middot;
   <a href="/">Back to ${APP_NAME}</a>
 </footer>
@@ -9766,14 +9766,12 @@ the app's data, or moving to a new phone, means starting again. That
 is the price of not holding anything that could identify you, and we
 think it is the right trade - but it is only fair that you know.</p>
 
-<h2>Who is responsible</h2>
 ${OPERATOR_NAME
-  ? '<p>' + APP_NAME + ' is operated by ' + OPERATOR_NAME +
+  ? '<h2>Who is responsible</h2><p>' + APP_NAME + ' is operated by ' +
+    OPERATOR_NAME +
     (OPERATOR_PLACE ? ', based in ' + OPERATOR_PLACE : '') +
     '. We are responsible for the information described here.</p>'
-  : '<div class="warn">No operator name is configured. Set ' +
-    'OPERATOR_NAME (and OPERATOR_PLACE) on the server - a privacy ' +
-    'policy needs to say who is actually answerable for the data.</div>'}
+  : ''}
 
 <h2>Where it is held</h2>
 <p>Progress is stored by Supabase, our database provider, and the app
@@ -9836,10 +9834,6 @@ knowingly collect their information.</p>
 <p>If this policy changes we will update this page and the date at the
 top of it.</p>
 
-<div class="warn">This policy describes what the app does today. It
-was written in good faith but has not been reviewed by a lawyer. If
-you are the developer reading this: get it checked, and confirm what
-Australian privacy law requires of you, before you submit.</div>
 `);
 }
 
@@ -9854,9 +9848,8 @@ ${SUPPORT_EMAIL
   ? '<p>Email <a href="mailto:' + SUPPORT_EMAIL + '">' + SUPPORT_EMAIL +
     '</a> and we will get back to you. It helps to say which phone you ' +
     'are using and what you were doing at the time.</p>'
-  : '<div class="warn">No support email has been configured yet. Set ' +
-    'SUPPORT_EMAIL on the server - both app stores require a working ' +
-    'contact address.</div>'}
+  : '<p>Contact details are being set up. In the meantime, the ' +
+    'questions below cover most of what comes up.</p>'}
 
 <h2>Common questions</h2>
 <p><strong>Kick-off times look wrong.</strong> Times are converted to
@@ -10689,6 +10682,22 @@ server.listen(PORT, function () {
   console.log("");
   console.log("  App running on port " + PORT);
   console.log("  Kickoff times read as " + API_TZ + " and converted to UTC");
+
+  // These used to be printed on the privacy page itself, which meant
+  // users read notes meant for the developer. They belong here.
+  const missing = [];
+  if (!SUPPORT_EMAIL) missing.push("SUPPORT_EMAIL");
+  if (!OPERATOR_NAME) missing.push("OPERATOR_NAME");
+  if (!OPERATOR_PLACE) missing.push("OPERATOR_PLACE");
+
+  if (missing.length > 0) {
+    console.log("");
+    console.log("  !! Not ready for an app store submission.");
+    console.log("     Missing settings: " + missing.join(", "));
+    console.log("     Both stores need a contact address, and a privacy");
+    console.log("     policy has to name who is answerable for the data.");
+    console.log("     Until these are set those sections are left out.");
+  }
   console.log("  On your own PC:  http://localhost:" + PORT);
   console.log("");
 });
