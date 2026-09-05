@@ -10356,6 +10356,33 @@ async function handleRequest(request, response) {
     return;
   }
 
+  // Every competition the account can see. This is what fills the
+  // country drawer and the favourites picker - without it both sit
+  // empty, because the app cannot read the page it gets instead.
+  if (address.pathname === "/api/leagues") {
+    const leagues = await getAllLeagues();
+
+    // ?debug=1 says why the list is empty, rather than handing back
+    // a bare [] that explains nothing.
+    if (address.searchParams.get("debug") === "1") {
+      const direct = await askApi("leagues", {});
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        leagues_we_would_send: leagues.length,
+        straight_from_the_api: direct === null ? null : direct.length,
+        first_row: direct && direct.length > 0 ? direct[0] : null,
+        recent_api_errors: apiTrouble,
+        host: API_HOST,
+        key_set: Boolean(API_KEY),
+      }, null, 2));
+      return;
+    }
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(leagues));
+    return;
+  }
+
   if (address.pathname === "/api/scorers") {
     const leagueId = Number(address.searchParams.get("league"));
     if (!leagueId) {
