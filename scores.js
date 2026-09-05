@@ -6564,6 +6564,22 @@ function affordableFor(slot) {
   return SQUAD_BUDGET - committed;
 }
 
+// A squad can be impossible to finish without ever going over the
+// cap: five expensive players and an empty place that nothing
+// affordable can fill. That is just as much a dead end, and it is
+// exactly what happens to an existing squad when the cap is cut.
+function squadStuck() {
+  if (overBudget()) return true;
+
+  for (const spot of FIVE_A_SIDE) {
+    if (playerInSlot(spot.slot)) continue;
+    if (cheapestFor(spot.position) > affordableFor(spot.slot) + 0.001) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function overBudget() {
   // Prices drift during a season, so a squad picked legally can
   // creep over. We never force a change - only new picks are
@@ -6633,14 +6649,16 @@ function changesLeft() {
 // gamed, because the only route over the cap is a price rise -
 // nobody can pick their way there.
 function canChangeSquad() {
-  if (overBudget()) return true;
+  if (squadStuck()) return true;
   return inChangeWindow() && changesLeft() > 0;
 }
 
-// True when a change is being allowed only to get back under the
-// cap. Those changes are free - they do not spend the weekly one.
+// Changes made to escape a stuck squad are free, and there is no
+// limit on them - it can take more than one removal to get back
+// inside the cap, and charging for the first would leave someone
+// worse off than before they started.
 function fixingOverspend() {
-  return overBudget();
+  return squadStuck();
 }
 
 function useSquadChange() {
@@ -6657,9 +6675,21 @@ function changeRuleText() {
     return {
       open: true,
       line: "Over the " + money(SQUAD_BUDGET) + " cap",
-      detail: "Rising prices have pushed your squad over the limit. " +
-        "You can change it back under whatever day it is, and it " +
-        "will not use your change for the week.",
+      detail: "Your squad is above the limit. Take players out until " +
+        "it is back under - any day, as many as it takes, and none " +
+        "of it uses your change for the week.",
+    };
+  }
+
+  // Under the cap, but with too little left to fill an empty place.
+  if (squadStuck()) {
+    return {
+      open: true,
+      line: money(Math.max(0, SQUAD_BUDGET - squadCost())) +
+        " left is not enough to fill your team",
+      detail: "Nobody available fits in the money you have spare. " +
+        "Take out whoever you like until it does - any day, as many " +
+        "as it takes, and it will not use your change for the week.",
     };
   }
 
@@ -7031,8 +7061,12 @@ function drawPlayerChooser(list) {
   // everybody. What matters then is only that the change moves you
   // in the right direction, so the test becomes "cheaper than
   // whoever is there now".
+  // "Cheaper than who is there" only makes sense when somebody is
+  // there, and only when the squad is actually over the cap. Being
+  // stuck with an empty place is fixed by removing someone else,
+  // so this slot keeps the ordinary budget rule.
   const sitting = playerInSlot(spot.slot);
-  const rescuing = fixingOverspend() && Boolean(sitting);
+  const rescuing = overBudget() && Boolean(sitting);
   const ceiling = rescuing
     ? (Number(sitting.price) || 0) - 0.1
     : affordableFor(spot.slot);
