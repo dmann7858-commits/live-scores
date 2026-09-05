@@ -3825,6 +3825,8 @@ body {
   font-size: 12px; color: #374151;
 }
 .chooserMax { color: #6B7280; }
+.chooserOver { background: #FEE2E2; color: #7F1D1D; }
+.chooserOver .chooserMax { color: #991B1B; }
 .playerCost {
   font-size: 12.5px; color: #6B7280; flex-shrink: 0;
   width: 50px; text-align: right;
@@ -6511,12 +6513,14 @@ const XP_PER_FPL_POINT = 15;
 //
 // Six players priced at Fantasy Premier League's own valuations.
 // The cheapest legal squad costs about 25.5m and the most
-// expensive about 65m, so a cap of 50m sits where it forces a
-// choice: two genuine premiums and a mid-priced third, paid for
-// with a cheap keeper and cheap defenders. Three premiums cannot
-// be made to fit.
+// expensive about 65m.
+//
+// At 38m you get one premium and one mid-priced player, and the
+// rest has to come from the bargain end. Two premiums cannot be
+// made to fit at any price. It is a tight cap on purpose - the
+// whole point is that nobody can just buy the best six.
 // ---------------------------------------------------------------
-const SQUAD_BUDGET = 50;
+const SQUAD_BUDGET = 38;
 
 function money(amount) {
   return "\u00a3" + (Number(amount) || 0).toFixed(1) + "m";
@@ -6621,8 +6625,22 @@ function changesLeft() {
 }
 
 // Taking a player out, or swapping one for another, both count.
+//
+// One exception: a squad that has drifted over the cap on rising
+// prices can always be edited, whatever day it is and whether or
+// not the weekly change has been used. Otherwise someone could be
+// stuck over the limit with no way to fix it. This cannot be
+// gamed, because the only route over the cap is a price rise -
+// nobody can pick their way there.
 function canChangeSquad() {
+  if (overBudget()) return true;
   return inChangeWindow() && changesLeft() > 0;
+}
+
+// True when a change is being allowed only to get back under the
+// cap. Those changes are free - they do not spend the weekly one.
+function fixingOverspend() {
+  return overBudget();
 }
 
 function useSquadChange() {
@@ -6634,6 +6652,17 @@ function useSquadChange() {
 
 // The one line that explains the rule, wherever the squad is shown.
 function changeRuleText() {
+  // Over the cap, none of the usual restrictions apply.
+  if (overBudget()) {
+    return {
+      open: true,
+      line: "Over the " + money(SQUAD_BUDGET) + " cap",
+      detail: "Rising prices have pushed your squad over the limit. " +
+        "You can change it back under whatever day it is, and it " +
+        "will not use your change for the week.",
+    };
+  }
+
   if (!inChangeWindow()) {
     return {
       open: false,
@@ -6691,8 +6720,12 @@ function removeFromSquad(slot) {
   if (!canChangeSquad()) return false;
   if (!fiveASide[slot]) return false;
 
+  // Getting back under the cap should not cost the weekly change.
+  const rescue = fixingOverspend();
+
   delete fiveASide[slot];
-  useSquadChange();
+  if (!rescue) useSquadChange();
+
   saveFiveASide();
   ensureSquadLocked();
   return true;
@@ -6993,14 +7026,26 @@ function drawPlayerChooser(list) {
 
   // How much this one place can take without leaving the rest of
   // the team unaffordable.
-  const ceiling = affordableFor(spot.slot);
+  //
+  // Over the cap, that sum comes out negative and would block
+  // everybody. What matters then is only that the change moves you
+  // in the right direction, so the test becomes "cheaper than
+  // whoever is there now".
+  const sitting = playerInSlot(spot.slot);
+  const rescuing = fixingOverspend() && Boolean(sitting);
+  const ceiling = rescuing
+    ? (Number(sitting.price) || 0) - 0.1
+    : affordableFor(spot.slot);
 
   const budget = document.createElement("div");
-  budget.className = "chooserBudget";
+  budget.className = "chooserBudget" + (rescuing ? " chooserOver" : "");
   budget.innerHTML =
     '<span>' + money(squadCost()) + ' of ' + money(SQUAD_BUDGET) + ' spent</span>' +
-    '<span class="chooserMax">up to ' + money(Math.max(0, ceiling)) +
-      ' for this place</span>';
+    '<span class="chooserMax">' +
+      (rescuing
+        ? "cheaper than " + money(sitting.price) + " only"
+        : "up to " + money(Math.max(0, ceiling)) + " for this place") +
+    '</span>';
   list.appendChild(budget);
 
   for (const player of eligible) {
@@ -7008,6 +7053,7 @@ function drawPlayerChooser(list) {
     const here = String(fiveASide[spot.slot]) === String(player.id);
     const price = Number(player.price) || 0;
     const tooDear = !here && price > ceiling + 0.001;
+    const dearLabel = rescuing ? " &middot; not cheaper" : " &middot; over your budget";
     const blocked = already || tooDear || !mayChange;
 
     const row = document.createElement("div");
@@ -7020,7 +7066,7 @@ function drawPlayerChooser(list) {
         '<span class="playerName">' + player.name + '</span>' +
         '<span class="playerTeam">' + (player.team || "") +
           (already ? " &middot; already picked" : "") +
-          (tooDear && !already ? " &middot; over your budget" : "") + '</span>' +
+          (tooDear && !already ? dearLabel : "") + '</span>' +
       '</span>' +
       '<span class="playerCost">' + money(price) + '</span>' +
       '<span class="playerPts">' + (Number(player.points) || 0) + '</span>' +
@@ -7028,8 +7074,10 @@ function drawPlayerChooser(list) {
 
     if (!blocked) {
       row.onclick = function () {
-        // Taking over an occupied place spends the weekly change.
-        if (occupied && String(fiveASide[spot.slot]) !== String(player.id)) {
+        // Taking over an occupied place spends the weekly change,
+        // unless the swap is only there to get back under the cap.
+        if (occupied && !rescuing &&
+            String(fiveASide[spot.slot]) !== String(player.id)) {
           useSquadChange();
         }
         fiveASide[spot.slot] = player.id;
