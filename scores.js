@@ -1040,6 +1040,27 @@ async function updateProfile(userId, fields) {
   return result.ok;
 }
 
+// A brand new anonymous account has no profile row until progress
+// is first pushed up. The league should not sit there refusing to
+// work while it waits for that, so it makes the row itself.
+async function ensureProfile(userId) {
+  const existing = await getProfile(userId);
+  if (existing) return existing;
+
+  await dbCall("/rest/v1/profiles", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates" },
+    body: [{
+      id: userId,
+      data: {},
+      xp: 0,
+      updated_at: new Date().toISOString(),
+    }],
+  });
+
+  return await getProfile(userId);
+}
+
 // Finds a group in this division with room in it, or starts a new
 // one. Groups are named like "2026-08-31|4|2".
 async function findGroup(division, week) {
@@ -9615,7 +9636,14 @@ loadFplPlayers()
 // then whatever the account has saved is pulled down.
 startSession()
   .then(pullProgress)
-  .then(function () { if (screen === "xp") drawXpScreen(); });
+  .then(function () {
+    // A new anonymous account starts empty on the server, so push
+    // whatever is already on this device up straight away. Without
+    // this, a fresh session has no row and no XP until something
+    // happens to change.
+    if (signedIn()) pushProgress();
+    if (screen === "xp") drawXpScreen();
+  });
 
 goTo("home");
 
@@ -10054,10 +10082,15 @@ async function handleRequest(request, response) {
       }
     }
 
+    // Make sure there is something to roll before rolling it.
+    await ensureProfile(who.id);
+
     const profile = await rollWeek(who.id);
     if (!profile) {
       response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: "No profile saved yet" }));
+      response.end(JSON.stringify({
+        error: "Could not set up your league place. Please try again.",
+      }));
       return;
     }
 
