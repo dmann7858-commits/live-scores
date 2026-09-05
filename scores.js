@@ -7538,11 +7538,21 @@ function awardSixASide(points) {
 // ---- The league table, and nothing else ----
 function drawXpLeagueTab(list) {
   if (!signedIn()) {
-    list.innerHTML =
-      '<div class="empty">Setting up your league place...</div>';
-    startSession().then(function () {
-      if (screen === "xp" && xpTab === "league") drawXpScreen();
-    });
+    // A session that has already failed should say so rather than
+    // pretending to still be working on it.
+    list.innerHTML = sessionError
+      ? '<div class="empty">The weekly league is not available.' +
+        '<br><br>' + sessionError +
+        '<br><br>Everything else in the app still works, and your ' +
+        'progress is safe on this device.</div>'
+      : '<div class="empty">Setting up your league place...</div>';
+
+    if (!sessionError) {
+      startSession().then(function () {
+        if (screen === "xp" && xpTab === "league") drawXpScreen();
+      });
+    }
+
     drawXpSplit(list);
     return;
   }
@@ -7724,6 +7734,7 @@ function signedIn() {
 // good. So an expired token is always renewed, never discarded.
 // ---------------------------------------------------------------
 let sessionStarting = null;
+let sessionError = "";
 
 function keepSession(result) {
   authToken = result.token || "";
@@ -7743,9 +7754,14 @@ async function startSession() {
         body: JSON.stringify({ refresh: authRefresh }),
       })).json();
 
-      if (!result.error) keepSession(result);
+      if (result.error) {
+        sessionError = result.error;
+      } else {
+        sessionError = "";
+        keepSession(result);
+      }
     } catch (error) {
-      // Offline. Whatever is on the device still works.
+      sessionError = "Could not reach the server.";
     }
     sessionStarting = null;
   })();
@@ -10289,6 +10305,64 @@ async function handleRequest(request, response) {
   if (address.pathname === "/privacy" || address.pathname === "/support") {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     response.end(address.pathname === "/privacy" ? privacyPage() : supportPage());
+    return;
+  }
+
+  // Checks every part of the setup and says which bit is missing.
+  // Open /api/diag on the deployed app when something will not save.
+  if (address.pathname === "/api/diag") {
+    const checks = [];
+    const add = function (name, ok, detail) {
+      checks.push({ check: name, ok: ok, detail: detail });
+    };
+
+    add("Supabase settings present", DB_ON,
+      DB_ON ? "SUPABASE_URL and SUPABASE_SERVICE_KEY are set"
+            : "Set SUPABASE_URL and SUPABASE_SERVICE_KEY on the server");
+
+    let userId = null;
+
+    if (DB_ON) {
+      const reachable = await dbCall("/rest/v1/profiles?select=id&limit=1");
+      add("Database reachable", reachable.status !== 0,
+        reachable.status === 0
+          ? "Could not connect. Is the project paused? Free Supabase " +
+            "projects pause after about a week of no use."
+          : "Answered with HTTP " + reachable.status);
+
+      // The one that is most likely to be switched off.
+      const anon = await signInAnonymously();
+      add("Anonymous sign-ins enabled", !anon.error,
+        anon.error
+          ? "Turn on Authentication, Sign In / Providers, Anonymous " +
+            "sign-ins in the Supabase dashboard"
+          : "Working - a test session was created");
+
+      if (!anon.error) userId = anon.userId;
+
+      // The two columns the name rule needs.
+      const columns = await dbCall(
+        "/rest/v1/profiles?select=name_changes,pro_until&limit=1");
+      add("Profile columns added", columns.ok,
+        columns.ok
+          ? "name_changes and pro_until are present"
+          : "Run the ALTER TABLE statements in the Supabase SQL editor");
+
+      // Tidy up the test user so it does not sit in the table.
+      if (userId) await deleteAccount(userId);
+    }
+
+    const failed = checks.filter(function (c) { return !c.ok; });
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      ready: failed.length === 0,
+      summary: failed.length === 0
+        ? "Everything is set up. Progress and the XP league will save."
+        : "Not ready yet - " + failed.length + " thing" +
+          (failed.length === 1 ? "" : "s") + " to fix, listed below.",
+      checks: checks,
+    }, null, 2));
     return;
   }
 
