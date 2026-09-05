@@ -22,6 +22,16 @@ const PORT = process.env.PORT || 3000;
 // submit anything - the pages say so plainly if you have not.
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || "";
 const APP_NAME = "GoalFlash";
+
+// Who is answerable for the data. Both stores and Australian privacy
+// law expect a named, contactable entity - not just an app name.
+const OPERATOR_NAME = process.env.OPERATOR_NAME || "";
+const OPERATOR_PLACE = process.env.OPERATOR_PLACE || "";
+
+// Fixed on purpose. This was generated from the clock, so the policy
+// claimed to have been updated today no matter when it was read.
+// Change it by hand whenever the policy actually changes.
+const POLICY_UPDATED = "2026-09-04";
 const BASE = "https://apiv3.apifootball.com/";
 
 // apifootball hands kickoff times back in Europe/Berlin unless it is
@@ -826,8 +836,8 @@ const MY_LEAGUE_IDS = MY_LEAGUES.map(function (l) { return l.id; });
 // ACCOUNTS AND SAVED PROGRESS
 //
 // The browser never talks to the database directly. It sends an
-// email and password here, gets a token back, and hands that token
-// over on every save.
+// no credentials here, gets an anonymous token back, and hands that
+// token over on every save.
 // ---------------------------------------------------------------
 async function dbCall(path, options) {
   const settings = options || {};
@@ -861,45 +871,60 @@ async function dbCall(path, options) {
   return { ok: response.ok, status: response.status, data: data };
 }
 
-// Creates an account and returns a token straight away.
-async function signUp(email, password) {
+// ---------------------------------------------------------------
+// ANONYMOUS ACCOUNTS
+//
+// Nobody signs in. The app quietly asks for an anonymous user the
+// first time it runs, and that user owns the saved progress from
+// then on. No email address is ever collected or stored.
+//
+// This needs "Anonymous sign-ins" switching on in the Supabase
+// dashboard, under Authentication, Sign In / Providers.
+//
+// The refresh token matters more than usual here. An access token
+// lasts about an hour; without a refresh there is no way back into
+// an anonymous account, and the person loses everything. So both
+// tokens are handed to the app and the refresh path below is the
+// only thing standing between a user and a wiped account.
+// ---------------------------------------------------------------
+async function signInAnonymously() {
   const result = await dbCall("/auth/v1/signup", {
     method: "POST",
-    body: { email: email, password: password },
+    body: {},
   });
 
-  if (!result.ok) {
+  if (!result.ok || !result.data || !result.data.access_token) {
     const message = (result.data && (result.data.msg || result.data.message ||
-      result.data.error_description)) || "Could not create that account";
-    return { error: message };
-  }
+      result.data.error_description)) || "";
 
-  // Some projects need the email confirming before a token appears.
-  if (!result.data.access_token) {
-    return { needsConfirming: true };
+    console.log("   !! anonymous sign-in failed" + (message ? ": " + message : ""));
+    console.log("      Is 'Anonymous sign-ins' turned on in Supabase?");
+
+    return { error: "Could not start a session. Please try again." };
   }
 
   return {
     token: result.data.access_token,
+    refresh: result.data.refresh_token || "",
     userId: result.data.user && result.data.user.id,
-    email: email,
   };
 }
 
-async function signIn(email, password) {
-  const result = await dbCall("/auth/v1/token?grant_type=password", {
+// Trades a refresh token for a fresh access token.
+async function refreshSession(refreshToken) {
+  const result = await dbCall("/auth/v1/token?grant_type=refresh_token", {
     method: "POST",
-    body: { email: email, password: password },
+    body: { refresh_token: refreshToken },
   });
 
-  if (!result.ok || !result.data.access_token) {
-    return { error: "Wrong email or password" };
+  if (!result.ok || !result.data || !result.data.access_token) {
+    return { error: "Session expired" };
   }
 
   return {
     token: result.data.access_token,
+    refresh: result.data.refresh_token || refreshToken,
     userId: result.data.user && result.data.user.id,
-    email: email,
   };
 }
 
@@ -910,7 +935,8 @@ async function whoIs(token) {
   });
 
   if (!result.ok || !result.data || !result.data.id) return null;
-  return { id: result.data.id, email: result.data.email };
+  // The email is deliberately not returned - nothing stores one.
+  return { id: result.data.id };
 }
 
 async function loadProgress(userId) {
@@ -923,7 +949,7 @@ async function loadProgress(userId) {
   return result.data[0].data || null;
 }
 
-async function saveProgressFor(userId, email, data) {
+async function saveProgressFor(userId, data) {
   // xp is kept in its own column as well, because the league has
   // to sort by it and you cannot sort inside a lump of JSON.
   const result = await dbCall("/rest/v1/profiles", {
@@ -931,7 +957,6 @@ async function saveProgressFor(userId, email, data) {
     headers: { Prefer: "resolution=merge-duplicates" },
     body: [{
       id: userId,
-      email: email,
       data: data,
       xp: Number(data && data.xp) || 0,
       updated_at: new Date().toISOString(),
@@ -967,12 +992,44 @@ function weekKeyServer(date) {
 async function getProfile(userId) {
   const result = await dbCall(
     "/rest/v1/profiles?id=eq." + userId +
-    "&select=id,email,name,division,group_key,week_key,week_start_xp,xp,last_result");
+    "&select=id,name,division,group_key,week_key,week_start_xp,xp," +
+    "last_result,name_changes,pro_until");
 
   if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) {
     return null;
   }
   return result.data[0];
+}
+
+// ---------------------------------------------------------------
+// NAMES AND SUBSCRIPTIONS
+//
+// Everyone gets to set their league name once for nothing. Changing
+// it afterwards is a paid feature.
+//
+// Two columns are needed for this. Run these once in the Supabase
+// SQL editor:
+//
+//   alter table profiles
+//     add column if not exists name_changes integer not null default 0;
+//   alter table profiles
+//     add column if not exists pro_until timestamptz;
+//
+// pro_until is set by the server and nothing else. When in-app
+// purchases exist, the receipt gets validated and this column is
+// written - never trust the app to say it has paid.
+// ---------------------------------------------------------------
+const FREE_NAME_CHANGES = 1;
+
+function isPro(profile) {
+  if (!profile || !profile.pro_until) return false;
+  const until = new Date(profile.pro_until);
+  return !isNaN(until) && until.getTime() > Date.now();
+}
+
+function mayChangeName(profile) {
+  if (isPro(profile)) return true;
+  return (Number(profile && profile.name_changes) || 0) < FREE_NAME_CHANGES;
 }
 
 async function updateProfile(userId, fields) {
@@ -2838,6 +2895,21 @@ const PAGE = `
     border: 1px solid #DDD; border-radius: 8px;
     font-size: 14px; outline: none;
   }
+  .nameNote {
+    padding: 0 16px 12px; font-size: 11.5px;
+    color: #6B7280; line-height: 1.5;
+  }
+  .nameLocked { padding: 12px 16px 14px; border-top: 1px solid #ECEEF1; }
+  .nameLockedTop {
+    display: flex; align-items: center; gap: 9px; margin-bottom: 6px;
+  }
+  .nameLockedWho { font-size: 15px; font-weight: 600; }
+  .nameLockedTag {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+    padding: 3px 8px; border-radius: 8px;
+    background: #F1EFE8; color: #854F0B;
+  }
+  .nameLocked .nameNote { padding: 0 0 10px; }
   .nameBtn {
     background: #185FA5; color: #fff; border: none;
     padding: 9px 18px; border-radius: 8px;
@@ -3962,7 +4034,7 @@ function load(name, fallback) {
 // Declared here rather than beside the sign-in code, because the
 // startup checks below run before that point in the file.
 let authToken = localStorage.getItem("authToken") || "";
-let authEmail = localStorage.getItem("authEmail") || "";
+let authRefresh = localStorage.getItem("authRefresh") || "";
 
 let xp = load("xp", 0);
 let coins = load("coins", 0);
@@ -7232,62 +7304,6 @@ function drawXpOverview(list) {
   const division = divisionFor(level);
   const intoLevel = xp % 1000;
 
-  // ---- Account ----
-  // Only shown when signed out. Once someone is in there is no
-  // reason to keep a login form on the page; signing out lives in
-  // Settings.
-  if (!signedIn()) {
-    const account = document.createElement("div");
-    account.className = "acctBox";
-    account.innerHTML =
-      '<div class="acctHead">Save your progress</div>' +
-      '<div class="acctNote">Right now everything is on this device only. ' +
-        'Sign in and it follows you to any phone.</div>' +
-      '<input class="acctField" id="acctEmail" type="email" ' +
-        'placeholder="Email" autocomplete="email">' +
-      '<input class="acctField" id="acctPass" type="password" ' +
-        'placeholder="Password, 8 characters or more" autocomplete="current-password">' +
-      '<div class="acctButtons">' +
-        '<button class="acctBtn" id="signInBtn">Sign in</button>' +
-        '<button class="acctBtn ghost" id="signUpBtn">Create account</button>' +
-      '</div>' +
-      '<div class="acctMsg" id="acctMsg"></div>';
-    list.appendChild(account);
-
-    const runAuth = async function (mode) {
-      const email = document.getElementById("acctEmail").value.trim();
-      const password = document.getElementById("acctPass").value;
-      const message = document.getElementById("acctMsg");
-
-      message.className = "acctMsg";
-      message.textContent = "Just a moment...";
-
-      let result;
-      try {
-        result = await doAuth(mode, email, password);
-      } catch (error) {
-        message.className = "acctMsg bad";
-        message.textContent = "Could not reach the server.";
-        return;
-      }
-
-      if (result.error) {
-        message.className = "acctMsg bad";
-        message.textContent = result.error;
-        return;
-      }
-      if (result.needsConfirming) {
-        message.className = "acctMsg";
-        message.textContent = "Check your email to confirm, then sign in.";
-        return;
-      }
-      drawXpScreen();
-    };
-
-    document.getElementById("signInBtn").onclick = function () { runAuth("signin"); };
-    document.getElementById("signUpBtn").onclick = function () { runAuth("signup"); };
-  }
-
   // ---- Who you are ----
   // The ring carries the same crest as the badge in the bar, on
   // white with a gold rim so it can actually be made out.
@@ -7523,8 +7539,10 @@ function awardSixASide(points) {
 function drawXpLeagueTab(list) {
   if (!signedIn()) {
     list.innerHTML =
-      '<div class="empty">Sign in to join a weekly league.<br><br>' +
-      'The sign-in form is on the XP page - tap the back arrow.</div>';
+      '<div class="empty">Setting up your league place...</div>';
+    startSession().then(function () {
+      if (screen === "xp" && xpTab === "league") drawXpScreen();
+    });
     drawXpSplit(list);
     return;
   }
@@ -7606,28 +7624,75 @@ function drawXpLeagueTab(list) {
         '<span><i class="downDot"></i>Relegation</span>' +
       '</div>';
 
-      // Let them choose the name others see.
-      html += '<div class="nameRow">' +
-        '<input class="nameField" id="lgName" maxlength="18" placeholder="Your name in the league" value="' +
-          (data.name || "") + '">' +
-        '<button class="nameBtn" id="lgNameBtn">Save</button>' +
-      '</div>';
+      // Setting a name is free once. Changing it after that is a
+      // paid feature, and the server decides - not this screen.
+      if (data.canRename) {
+        html += '<div class="nameRow">' +
+          '<input class="nameField" id="lgName" maxlength="18" ' +
+            'placeholder="Your name in the league" value="' +
+            (data.name || "") + '">' +
+          '<button class="nameBtn" id="lgNameBtn">Save</button>' +
+        '</div>' +
+        '<div class="nameNote" id="lgNameNote">' +
+          (data.name
+            ? "You can change this once more for free."
+            : "Choose carefully - you can set this once for free.") +
+        '</div>';
+      } else {
+        html += '<div class="nameLocked">' +
+          '<div class="nameLockedTop">' +
+            '<span class="nameLockedWho">' + (data.name || "Player") + '</span>' +
+            '<span class="nameLockedTag">Locked</span>' +
+          '</div>' +
+          '<div class="nameNote">You have used your free name change. ' +
+            'Change it whenever you like with a subscription.</div>' +
+          '<button class="nameBtn" id="lgProBtn">See subscription</button>' +
+        '</div>';
+      }
 
       leagueBox.innerHTML = html;
 
-      document.getElementById("lgNameBtn").onclick = async function () {
-        const name = document.getElementById("lgName").value.trim();
-        if (!name) return;
-        await fetch("/api/league", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + authToken,
-          },
-          body: JSON.stringify({ name: name }),
-        });
-        drawXpScreen();
-      };
+      const proButton = document.getElementById("lgProBtn");
+      if (proButton) {
+        proButton.onclick = function () {
+          const note = proButton.parentNode.querySelector(".nameNote");
+          note.textContent = "Subscriptions are not switched on yet. " +
+            "They arrive with the phone app.";
+        };
+      }
+
+      const nameButton = document.getElementById("lgNameBtn");
+      if (nameButton) {
+        nameButton.onclick = async function () {
+          const name = document.getElementById("lgName").value.trim();
+          const note = document.getElementById("lgNameNote");
+          if (!name) return;
+
+          nameButton.disabled = true;
+
+          let answer;
+          try {
+            answer = await (await fetch("/api/league", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + authToken,
+              },
+              body: JSON.stringify({ name: name }),
+            })).json();
+          } catch (error) {
+            answer = { message: "Could not reach the server." };
+          }
+
+          nameButton.disabled = false;
+
+          if (answer && answer.error === "nameLocked") {
+            note.textContent = answer.message;
+            return;
+          }
+          drawXpScreen();
+        };
+      }
     })();
   }
 
@@ -7643,6 +7708,56 @@ function drawXpLeagueTab(list) {
 // around and survives a cleared browser.
 // ---------------------------------------------------------------
 function signedIn() {
+  return Boolean(authToken);
+}
+
+// ---------------------------------------------------------------
+// THE SESSION
+//
+// There is no sign-in screen. The app asks the server for an
+// anonymous session the first time it runs and hangs on to it.
+// Nothing about the person is collected.
+//
+// The refresh token is the important one. Access tokens last about
+// an hour, and for an anonymous account there is no email to sign
+// back in with - lose the session and the account is gone for
+// good. So an expired token is always renewed, never discarded.
+// ---------------------------------------------------------------
+let sessionStarting = null;
+
+function keepSession(result) {
+  authToken = result.token || "";
+  authRefresh = result.refresh || authRefresh;
+  localStorage.setItem("authToken", authToken);
+  localStorage.setItem("authRefresh", authRefresh);
+}
+
+async function startSession() {
+  if (sessionStarting) return sessionStarting;
+
+  sessionStarting = (async function () {
+    try {
+      const result = await (await fetch("/api/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh: authRefresh }),
+      })).json();
+
+      if (!result.error) keepSession(result);
+    } catch (error) {
+      // Offline. Whatever is on the device still works.
+    }
+    sessionStarting = null;
+  })();
+
+  return sessionStarting;
+}
+
+// Renews an expired session rather than throwing it away. Returns
+// true if there is a usable token afterwards.
+async function renewSession() {
+  if (!authRefresh) return false;
+  await startSession();
   return Boolean(authToken);
 }
 
@@ -7743,8 +7858,8 @@ function pushProgress() {
   // Wait a moment in case several things change at once.
   clearTimeout(savePending);
   savePending = setTimeout(async function () {
-    try {
-      await fetch("/api/progress", {
+    const send = async function () {
+      return fetch("/api/progress", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -7752,6 +7867,13 @@ function pushProgress() {
         },
         body: JSON.stringify({ data: gatherProgress() }),
       });
+    };
+
+    try {
+      const response = await send();
+      // A stale token means renew and try once more, never give up
+      // on the data.
+      if (response.status === 401 && await renewSession()) await send();
     } catch (error) {
       // Offline. It will go up next time something changes.
     }
@@ -7764,7 +7886,19 @@ async function pullProgress() {
     const response = await fetch("/api/progress", {
       headers: { "Authorization": "Bearer " + authToken },
     });
-    if (response.status === 401) { signOut(); return; }
+    // Never sign out here. For an anonymous account that would
+    // throw away the only way back in.
+    if (response.status === 401) {
+      const renewed = await renewSession();
+      if (!renewed) return;
+      const second = await fetch("/api/progress", {
+        headers: { "Authorization": "Bearer " + authToken },
+      });
+      if (second.status === 401) return;
+      applyProgress((await second.json()).data);
+      return;
+    }
+
     const result = await response.json();
     applyProgress(result.data);
   } catch (error) {
@@ -7772,34 +7906,17 @@ async function pullProgress() {
   }
 }
 
+// Only used when an account is deliberately deleted. There is no
+// sign-out button any more, because there is nothing to sign into.
 function signOut() {
   authToken = "";
-  authEmail = "";
+  authRefresh = "";
   localStorage.removeItem("authToken");
+  localStorage.removeItem("authRefresh");
   localStorage.removeItem("authEmail");
 }
 
-async function doAuth(mode, email, password) {
-  const response = await fetch("/api/account", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: mode, email: email, password: password }),
-  });
 
-  const result = await response.json();
-  if (result.error) return result;
-
-  if (result.needsConfirming) return result;
-
-  authToken = result.token;
-  authEmail = result.email;
-  localStorage.setItem("authToken", authToken);
-  localStorage.setItem("authEmail", authEmail);
-
-  await pullProgress();
-  pushProgress();
-  return result;
-}
 
 
 // ---------------------------------------------------------------
@@ -8083,11 +8200,14 @@ function drawSettings() {
   // ---- Account ----
   section("Account");
   if (signedIn()) {
-    row("Signed in as", authEmail);
-    row("Sign out", "&rsaquo;", function () {
-      signOut();
-      drawSettings();
-    });
+    row("Your progress", "Saved");
+
+    const accountNote = document.createElement("div");
+    accountNote.className = "setNote";
+    accountNote.textContent =
+      "There is no sign-in and no email address. Your progress is " +
+      "kept against an anonymous account tied to this device.";
+    list.appendChild(accountNote);
 
     // Both app stores require this to be reachable in the app, not
     // by emailing someone. Two taps, because it cannot be undone.
@@ -8133,11 +8253,12 @@ function drawSettings() {
       "progress from our servers straight away. It cannot be undone.";
     list.appendChild(deleteNote);
   } else {
-    row("Not signed in", "&rsaquo;", function () { goTo("xp"); });
+    row("Setting up", "&rsaquo;", function () { startSession(); });
     const note = document.createElement("div");
     note.className = "setNote";
     note.textContent =
-      "Your progress is only on this device. Sign in from the XP League tab to keep it safe.";
+      "No session yet, so progress is only on this device. It will " +
+      "sort itself out next time you are online.";
     list.appendChild(note);
   }
 
@@ -9474,10 +9595,11 @@ loadFplPlayers()
     refreshXpIfShowing();
   });
 
-// If already signed in, fetch whatever the account has saved.
-if (signedIn()) {
-  pullProgress().then(function () { if (screen === "xp") drawXpScreen(); });
-}
+// No sign-in screen: the session is arranged quietly on startup,
+// then whatever the account has saved is pulled down.
+startSession()
+  .then(pullProgress)
+  .then(function () { if (screen === "xp") drawXpScreen(); });
 
 goTo("home");
 
@@ -9548,7 +9670,7 @@ function pageShell(title, body) {
 <header><div class="inner">
   <div class="brand">Goal<span>Flash</span></div>
   <h1>${title}</h1>
-  <div class="when">Last updated ${new Date().toISOString().slice(0, 10)}</div>
+  <div class="when">Last updated ${POLICY_UPDATED}</div>
 </div></header>
 <div class="wrap">
 ${body}
@@ -9571,33 +9693,73 @@ function privacyPage() {
 <p>${APP_NAME} is a football scores app. This page explains what it
 stores about you, why, and how to get rid of it.</p>
 
-<h2>Using the app without an account</h2>
-<p>You can use ${APP_NAME} without signing in. Everything - your XP,
-your followed clubs and leagues, your starred matches and your
-6-a-side squad - is then held only in your device's own storage.
-None of it reaches us.</p>
+<h2>The short version</h2>
+<p>We do not ask who you are, and we have no way of finding out.
+There is no sign-in, no email address, no password and no name unless
+you choose to type one. We collect no personal information at all.</p>
 
-<h2>If you create an account</h2>
-<p>Creating an account stores two things on our servers:</p>
-<ul>
-  <li><strong>Your email address</strong>, used to identify your
-      account and let you sign back in.</li>
-  <li><strong>Your password</strong>, which is hashed by our
-      authentication provider. We never see or store the password
-      itself.</li>
-</ul>
-<p>Once signed in, your progress is also saved so it follows you to
-another phone: XP and coins, day streak, the clubs and leagues you
-follow, the matches you star, your 6-a-side squad, and your progress
-through the challenges. A display name, if you set one, is visible to
-other people in your weekly XP league.</p>
+<h2>How your progress is saved</h2>
+<p>The first time you open ${APP_NAME} it quietly creates an anonymous
+account. It has no email address attached to it and no way of being
+traced back to a person - it is a random identifier and nothing more.
+Your progress is stored against it so the app can pick up where you
+left off.</p>
+<p>What is stored: your XP and coins, your day streak, the clubs and
+leagues you follow, the matches you star, your 6-a-side squad and your
+progress through the challenges. Football preferences, in other words.</p>
+<p>Because there is no email address, there is also no way for us -
+or anyone else - to work out whose account is whose.</p>
+
+<h2>The name you choose</h2>
+<p>If you set a display name for the weekly XP league, other players
+in your group can see it. That is the only thing about you anyone else
+can see, and you decide what it says. Please do not use your real name
+if you would rather not be identified.</p>
+
+<h2>What this means if you change phone</h2>
+<p>An anonymous account lives on the device that created it. Clearing
+the app's data, or moving to a new phone, means starting again. That
+is the price of not holding anything that could identify you, and we
+think it is the right trade - but it is only fair that you know.</p>
+
+<h2>Who is responsible</h2>
+${OPERATOR_NAME
+  ? '<p>' + APP_NAME + ' is operated by ' + OPERATOR_NAME +
+    (OPERATOR_PLACE ? ', based in ' + OPERATOR_PLACE : '') +
+    '. We are responsible for the information described here.</p>'
+  : '<div class="warn">No operator name is configured. Set ' +
+    'OPERATOR_NAME (and OPERATOR_PLACE) on the server - a privacy ' +
+    'policy needs to say who is actually answerable for the data.</div>'}
+
+<h2>Where it is held</h2>
+<p>Progress is stored by Supabase, our database provider, and the app
+runs on Render. Both operate outside Australia. Since none of what we
+store identifies you, nothing personal crosses a border - but you
+should know where the servers are.</p>
+
+<h2>How long we keep it</h2>
+<p>Progress is kept while the anonymous account exists. Delete it from
+inside the app and everything goes immediately. We keep no backups of
+deleted accounts.</p>
+
+<h2>Seeing your information</h2>
+<p>Everything we hold is already on your screen - it is your XP, your
+clubs and your squad. There is nothing held back that you could ask
+us for.</p>
+
+<h2>Keeping it safe</h2>
+<p>Traffic between the app and our servers is encrypted. Passwords are
+hashed by our authentication provider and are never visible to us. No
+system is perfect, and we will not pretend otherwise - but we hold as
+little as we can, which is the best protection there is.</p>
 
 <h2>What we do not do</h2>
 <ul>
+  <li>No email addresses, ever.</li>
   <li>No advertising, and no advertising identifiers.</li>
   <li>No analytics or tracking software.</li>
   <li>No location data.</li>
-  <li>We do not sell or share your information with anyone.</li>
+  <li>We do not sell or share anything with anyone.</li>
 </ul>
 
 <h2>Other services the app touches</h2>
@@ -9616,11 +9778,11 @@ Alerts are about matches you chose to follow and nothing else. You can
 withdraw permission at any time in your phone's settings.</p>
 
 <h2>Deleting your data</h2>
-<p>You can delete your account from inside the app, under Settings,
-Account. This removes your login and all saved progress from our
-servers immediately and permanently. There is no recovery afterwards.</p>
+<p>Settings, Account, Delete account. This removes the anonymous
+account and all its progress from our servers immediately and
+permanently. There is no recovery afterwards.</p>
 <p>"Clear this device", also under Settings, wipes the copy held on
-your phone only, and does not touch an account.</p>
+your phone only.</p>
 
 <h2>Children</h2>
 <p>${APP_NAME} is not directed at children under 13 and we do not
@@ -9670,7 +9832,19 @@ score while they are in your team become XP. Anything they scored
 before you picked them stays behind. XP is paid once a gameweek is
 finished and its bonus points have been confirmed.</p>
 
-<p><strong>I want my account gone.</strong> Settings, Account, Delete
+<p><strong>Do I need to sign in?</strong> No. There is no sign-in and
+no email address. The app creates an anonymous account for you the
+first time it runs.</p>
+
+<p><strong>Will my progress move to a new phone?</strong> No. An
+anonymous account belongs to the device that made it, so clearing the
+app's data or changing phone means starting again. It is the trade for
+holding nothing that identifies you.</p>
+
+<p><strong>Why can I not change my league name?</strong> Setting it is
+free once. Changing it after that is a subscription feature.</p>
+
+<p><strong>I want my data gone.</strong> Settings, Account, Delete
 account. It is immediate and cannot be undone.</p>
 
 <h2>Where the data comes from</h2>
@@ -9703,8 +9877,19 @@ const server = http.createServer(async function (request, response) {
 async function handleRequest(request, response) {
   const address = new URL(request.url, "http://localhost");
 
-  // ---- Accounts ----
+  // The old email sign-in endpoint is gone on purpose. Nothing in
+  // this app collects an email address any more, so there is no
+  // route that could store one.
   if (address.pathname === "/api/account" && request.method === "POST") {
+    response.writeHead(410, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      error: "Accounts no longer use email. Sessions are anonymous.",
+    }));
+    return;
+  }
+
+  // ---- Starting, or resuming, an anonymous session ----
+  if (address.pathname === "/api/session" && request.method === "POST") {
     if (!DB_ON) {
       response.writeHead(503, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ error: "Accounts are not set up yet" }));
@@ -9715,30 +9900,24 @@ async function handleRequest(request, response) {
     for await (const chunk of request) body += chunk;
 
     let sent;
-    try { sent = JSON.parse(body); } catch (error) {
-      response.writeHead(400, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: "Could not read that" }));
-      return;
+    try { sent = JSON.parse(body); } catch (error) { sent = {}; }
+
+    // An existing session is renewed rather than replaced. Creating
+    // a new anonymous user here would silently orphan someone's
+    // whole account, so it is only ever the last resort.
+    if (sent.refresh) {
+      const renewed = await refreshSession(String(sent.refresh));
+      if (!renewed.error) {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify(renewed));
+        return;
+      }
     }
 
-    const email = String(sent.email || "").trim().toLowerCase();
-    const password = String(sent.password || "");
-
-    if (!email.includes("@") || password.length < 8) {
-      response.writeHead(400, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({
-        error: "Need an email address and a password of at least 8 characters",
-      }));
-      return;
-    }
-
-    const result = sent.mode === "signup"
-      ? await signUp(email, password)
-      : await signIn(email, password);
-
-    response.writeHead(result.error ? 400 : 200,
+    const fresh = await signInAnonymously();
+    response.writeHead(fresh.error ? 503 : 200,
       { "Content-Type": "application/json" });
-    response.end(JSON.stringify(result));
+    response.end(JSON.stringify(fresh));
     return;
   }
 
@@ -9802,7 +9981,7 @@ async function handleRequest(request, response) {
       return;
     }
 
-    const saved = await saveProgressFor(who.id, who.email, sent.data || {});
+    const saved = await saveProgressFor(who.id, sent.data || {});
     response.writeHead(saved ? 200 : 500, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ saved: saved }));
     return;
@@ -9834,7 +10013,29 @@ async function handleRequest(request, response) {
       try { sent = JSON.parse(body); } catch (error) { sent = {}; }
 
       const name = String(sent.name || "").trim().slice(0, 18);
-      if (name) await updateProfile(who.id, { name: name });
+
+      if (name) {
+        const current = await getProfile(who.id);
+
+        if (!mayChangeName(current)) {
+          response.writeHead(403, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({
+            error: "nameLocked",
+            message: "You have used your free name change. Changing it " +
+              "again needs a subscription.",
+          }));
+          return;
+        }
+
+        // Counted on the server, so the app cannot award itself
+        // extra changes by editing what it sends.
+        if (name !== (current && current.name)) {
+          await updateProfile(who.id, {
+            name: name,
+            name_changes: (Number(current && current.name_changes) || 0) + 1,
+          });
+        }
+      }
     }
 
     const profile = await rollWeek(who.id);
@@ -9852,6 +10053,8 @@ async function handleRequest(request, response) {
     response.end(JSON.stringify({
       division: Number(profile.division) || 1,
       name: profile.name || "",
+      canRename: mayChangeName(profile),
+      pro: isPro(profile),
       position: place === -1 ? null : place + 1,
       table: table.map(function (row, index) {
         return {
