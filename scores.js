@@ -2710,9 +2710,10 @@ const PAGE = `
 
   /* First-run setup */
   .setup {
-    position: fixed; inset: 0; z-index: 60;
-    background: #0B1E3D; color: #fff;
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 60; background: #0B1E3D; color: #fff;
     display: flex; flex-direction: column;
+    overflow: hidden;
   }
   .setupTop {
     padding: calc(26px + env(safe-area-inset-top, 0px)) 20px 16px;
@@ -2732,7 +2733,13 @@ const PAGE = `
   .setupInner .setupTitle { font-size: 18px; }
 
   .setupList {
-    flex: 1; overflow-y: auto; padding: 4px 12px 12px;
+    /* min-height: 0 is the whole fix. A flex child defaults to
+       min-height: auto, which refuses to shrink below its content,
+       so overflow-y never engages and the list simply grows until
+       it pushes the buttons off the bottom of the screen. */
+    flex: 1 1 auto; min-height: 0;
+    overflow-y: auto; overscroll-behavior: contain;
+    padding: 4px 12px 12px;
     -webkit-overflow-scrolling: touch;
   }
   .setupRow {
@@ -4812,8 +4819,19 @@ function popularLeagues() {
 
   for (const country of grouped.order.slice(0, grouped.pinnedCount || 9)) {
     const leagues = grouped.byCountry[country] || [];
-    if (leagues[0]) out.push(leagues[0]);
-    if (country === "England" && leagues[1]) out.push(leagues[1]);
+
+    // One competition per tier. Taking the first two outright let
+    // "Premier League - Summer Series" - a pre-season friendly that
+    // also matches "premier league" - stand in for the Championship.
+    const byTier = {};
+    for (const league of leagues) {
+      const tier = rankOf(league);
+      if (tier < 0) continue;
+      if (byTier[tier] === undefined) byTier[tier] = league;
+    }
+
+    if (byTier[0]) out.push(byTier[0]);
+    if (country === "England" && byTier[1]) out.push(byTier[1]);
   }
 
   return out;
