@@ -1,14 +1,19 @@
 // scores.js
-// Live football scores app, using apifootball.com
+// Live football scores app, using api-football.com
 //
-// Sign up:  https://apifootball.com/register/
+// Sign up:  https://www.api-football.com/
 // Your key: on the dashboard after you log in
 
 const http = require("http");
 const fs = require("fs");
 const pathlib = require("path");
 
-const API_KEY = process.env.APIFOOTBALL_KEY || "PASTE_YOUR_KEY_HERE";
+// API-Football (api-sports.io). Put the key in APIFOOTBALL_KEY on
+// the server. If you signed up through RapidAPI instead, also set
+// APIFOOTBALL_HOST to api-football-v1.p.rapidapi.com and the
+// headers switch themselves.
+const API_KEY = process.env.APIFOOTBALL_KEY || "";
+const API_HOST = process.env.APIFOOTBALL_HOST || "v3.football.api-sports.io";
 
 // Where accounts and saved progress live. Both come from settings
 // on the server, never from the code.
@@ -32,61 +37,10 @@ const OPERATOR_PLACE = process.env.OPERATOR_PLACE || "";
 // claimed to have been updated today no matter when it was read.
 // Change it by hand whenever the policy actually changes.
 const POLICY_UPDATED = "2026-09-04";
-const BASE = "https://apiv3.apifootball.com/";
-
-// apifootball hands kickoff times back in Europe/Berlin unless it is
-// told otherwise. We ask for UTC so there is one fixed reference
-// point, and the phone turns that into whatever time the person is
-// actually in. Never render these times without converting first.
-// Which timezone the kickoff times coming back from the API are
-// actually in.
-//
-// We ask for UTC. apifootball ignores that and keeps sending its
-// own default, Europe/Berlin - proved by a live Liga 1 match that
-// the API reported at minute 1 while its kickoff time was still
-// two hours in the future, exactly Berlin's summer offset. So we
-// convert from Berlin, and daylight saving comes out in the wash
-// because the offset is read off the clock rather than a table.
-//
-// The same value is sent to the API and used to convert, so if
-// they ever start honouring the parameter this still holds. Set
-// APIFOOTBALL_TZ to override.
-const API_TZ = process.env.APIFOOTBALL_TZ || "Europe/Berlin";
-
-// Minutes that a zone is ahead of UTC at a given instant, worked
-// out from the clock rather than a table, so daylight saving is
-// handled for free.
-function zoneOffsetMinutes(timeZone, when) {
-  const format = new Intl.DateTimeFormat("en-US", {
-    timeZone: timeZone, hour12: false,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-  });
-
-  const parts = {};
-  for (const part of format.formatToParts(when)) parts[part.type] = part.value;
-
-  const asIfUtc = Date.UTC(
-    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
-    Number(parts.hour) % 24, Number(parts.minute), Number(parts.second));
-
-  return (asIfUtc - when.getTime()) / 60000;
-}
-
-// "2026-09-11" + "19:00" in some zone, turned into a real instant.
-// Two passes, because the offset itself depends on the instant and
-// the clocks can change between the guess and the answer.
-function toUtcIso(dateText, timeText) {
-  const naive = Date.parse(dateText + "T" + timeText + ":00Z");
-  if (isNaN(naive)) return dateText + "T" + timeText + ":00Z";
-  if (API_TZ === "UTC") return new Date(naive).toISOString();
-
-  let instant = naive;
-  for (let pass = 0; pass < 2; pass++) {
-    instant = naive - zoneOffsetMinutes(API_TZ, new Date(instant)) * 60000;
-  }
-  return new Date(instant).toISOString();
-}
+// This provider sends kickoff times as full ISO 8601 with the
+// offset already on them, so there is nothing to convert. The
+// Europe/Berlin workaround the old provider needed has been
+// removed - leaving it in would shift every kickoff again.
 
 // ---------------------------------------------------------------
 // THE BADGE
@@ -824,9 +778,16 @@ const LOGO_BYTES = Buffer.from(LOGO_BASE64, "base64");
 
 // Leagues to start with. The free plan only carries two, so these
 // are them. Once you upgrade, add more from the Leagues screen.
+// API-Football's own league numbers, which bear no relation to the
+// old provider's. Browsable at dashboard.api-football.com if you
+// want to add more.
 const MY_LEAGUES = [
-  { id: 63,  name: "Championship", table: true },
-  { id: 169, name: "Ligue 2",      table: true },
+  { id: 39,  name: "Premier League", table: true },
+  { id: 40,  name: "Championship",   table: true },
+  { id: 140, name: "La Liga",        table: true },
+  { id: 135, name: "Serie A",        table: true },
+  { id: 78,  name: "Bundesliga",     table: true },
+  { id: 61,  name: "Ligue 1",        table: true },
 ];
 
 const MY_LEAGUE_IDS = MY_LEAGUES.map(function (l) { return l.id; });
@@ -1195,172 +1156,101 @@ async function groupTable(groupKey) {
 
 // ---------------------------------------------------------------
 // TALKING TO THE API
-// Everything goes through here, so if the provider ever changes
-// again this is the only part that needs rewriting.
+//
+// API-Football (api-sports.io). Two things differ from most APIs
+// and both will bite if forgotten:
+//
+//   1. The key goes in a header, never the query string, and the
+//      service rejects any header it does not recognise.
+//   2. Every answer is wrapped in an envelope. A bare list never
+//      comes back, and trouble arrives in "errors" rather than as
+//      an HTTP status - a 200 can still be a failure.
+//
+// Signing up through RapidAPI instead changes the host and the
+// header names, so set APIFOOTBALL_HOST and this handles the rest.
 // ---------------------------------------------------------------
-// Only the fixture endpoints understand a timezone, so it is added
-// where it belongs rather than to every request.
-function buildUrl(action, extra) {
-  const wantsTz = action.indexOf("events") !== -1 || action.indexOf("comm") !== -1;
-  return BASE + "?action=" + action + (extra || "") +
-    (wantsTz ? "&timezone=" + encodeURIComponent(API_TZ) : "") +
-    "&APIkey=" + API_KEY;
+const ON_RAPIDAPI = API_HOST.indexOf("rapidapi") !== -1;
+const BASE = "https://" + API_HOST + (ON_RAPIDAPI ? "/v3/" : "/");
+
+function apiHeaders() {
+  return ON_RAPIDAPI
+    ? { "x-rapidapi-key": API_KEY, "x-rapidapi-host": API_HOST }
+    : { "x-apisports-key": API_KEY };
 }
 
-async function askApi(action, extra) {
-  if (!API_KEY || API_KEY === "PASTE_YOUR_KEY_HERE") {
+// Seasons are named by the year they start in, so 2026 means
+// 2026/27. Everything before July belongs to the previous one.
+function currentSeason() {
+  const now = new Date();
+  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+}
+
+// Returns the "response" list, or null if anything went wrong.
+async function askApi(path, params) {
+  if (!API_KEY) {
     console.log("!! NO API KEY SET. Check the APIFOOTBALL_KEY setting.");
     return null;
   }
 
-  const url = buildUrl(action, extra);
+  const query = [];
+  for (const key of Object.keys(params || {})) {
+    const value = params[key];
+    if (value === undefined || value === null || value === "") continue;
+    query.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
+  }
 
-  // Never print the key itself into the logs.
-  console.log("fetching: " + action + (extra || ""));
+  const url = BASE + path + (query.length ? "?" + query.join("&") : "");
+  console.log("fetching: " + path + (query.length ? "?" + query.join("&") : ""));
 
   let response;
   try {
-    response = await fetch(url);
+    response = await fetch(url, { headers: apiHeaders() });
   } catch (error) {
     console.log("   !! could not reach the API: " + error.message);
     return null;
   }
 
-  console.log("   http status: " + response.status);
+  // Worth watching in the logs - it is how you find out you are
+  // near the daily ceiling before users do.
+  const left = response.headers.get("x-ratelimit-requests-remaining");
+  if (left !== null && Number(left) < 500) {
+    console.log("   !! only " + left + " requests left today");
+  }
 
   let data;
   try {
     data = await response.json();
   } catch (error) {
-    console.log("   !! answer was not readable");
+    console.log("   !! answer was not readable (HTTP " + response.status + ")");
     return null;
   }
 
-  // This API reports trouble as an object with an error number,
-  // rather than as a list. A list means it worked.
-  if (!Array.isArray(data)) {
-    console.log("   !! API SAYS: " + JSON.stringify(data).slice(0, 300));
+  // errors is [] when all is well, and an object describing the
+  // problem when it is not.
+  const errors = data && data.errors;
+  const hasErrors = errors &&
+    (Array.isArray(errors) ? errors.length > 0 : Object.keys(errors).length > 0);
+
+  if (hasErrors) {
+    console.log("   !! API SAYS: " + JSON.stringify(errors).slice(0, 300));
     return null;
   }
 
-  console.log("   " + data.length + " rows back");
-  return data;
-}
-
-
-// Same as askApi, but accepts an object rather than a list.
-// The live comments endpoint answers with match ids as keys.
-async function askApiObject(action, extra) {
-  if (!API_KEY || API_KEY === "PASTE_YOUR_KEY_HERE") return null;
-
-  const url = buildUrl(action, extra);
-  console.log("fetching: " + action + (extra || ""));
-
-  let response;
-  try {
-    response = await fetch(url);
-  } catch (error) {
-    console.log("   !! could not reach the API: " + error.message);
+  if (!data || !Array.isArray(data.response)) {
+    console.log("   !! unexpected answer shape");
     return null;
   }
 
-  console.log("   http status: " + response.status);
-
-  let data;
-  try {
-    data = await response.json();
-  } catch (error) {
-    return null;
-  }
-
-  // An error comes back as an object with an error number in it.
-  if (data && data.error) {
-    console.log("   !! API SAYS: " + JSON.stringify(data));
-    return null;
-  }
-
-  return data;
-}
-
-// Minute-by-minute commentary, if the plan includes it. Returns an
-// empty list rather than failing when it does not.
-async function getLiveComments(matchId) {
-  const name = "comments-" + matchId;
-  const hit = fromCache(name, 30);
-  if (hit) return hit;
-
-  const data = await askApiObject("get_live_odds_commnets", "&match_id=" + matchId);
-
-  if (!data || typeof data !== "object") {
-    console.log("   no live comments available");
-    return intoCache(name, []);
-  }
-
-  // The answer is keyed by match id, so dig the one match out.
-  const entry = data[String(matchId)] || Object.values(data)[0];
-  const comments = (entry && entry.live_comments) || [];
-
-  console.log("   " + comments.length + " live comments");
-
-  const homeName = String(entry && entry.match_hometeam_name || "").toLowerCase();
-  const awayName = String(entry && entry.match_awayteam_name || "").toLowerCase();
-
-  const sideOf = function (text) {
-    const lower = text.toLowerCase();
-    if (homeName && lower.startsWith(homeName)) return "home";
-    if (awayName && lower.startsWith(awayName)) return "away";
-    if (homeName && lower.includes(homeName)) return "home";
-    if (awayName && lower.includes(awayName)) return "away";
-    return null;
-  };
-
-  const feed = comments.map(function (comment) {
-    // Times arrive as "44:58", so take the minutes off the front.
-    const clock = String(comment.time || "");
-    const minute = parseInt(clock.split(":")[0], 10);
-    return {
-      minute: Number.isNaN(minute) ? 0 : minute,
-      clock: clock,
-      kind: kindOfComment(comment.text || ""),
-      text: String(comment.text || "").trim(),
-      side: sideOf(String(comment.text || "")),
-      live: true,
-    };
-  }).filter(function (moment) { return moment.text !== ""; });
-
-  return intoCache(name, feed);
-}
-
-// Works out what sort of moment a line of commentary describes,
-// so it can get the right icon and colour.
-function kindOfComment(text) {
-  const lower = text.toLowerCase();
-
-  // Order matters. "dangerous attack" must be caught before
-  // "attack", and "goal kick" must not be read as a goal.
-  if (lower.includes("goal") && !lower.includes("goal kick")) return "goal";
-  if (lower.includes("red card")) return "red";
-  if (lower.includes("yellow")) return "yellow";
-  if (lower.includes("penalty")) return "penalty";
-  if (lower.includes("substitut")) return "sub";
-  if (lower.includes("dangerous")) return "danger";
-  if (lower.includes("corner")) return "corner";
-  if (lower.includes("possession")) return "possession";
-  if (lower.includes("attack")) return "attack";
-  if (lower.includes("free kick")) return "freekick";
-  if (lower.includes("goal kick")) return "goalkick";
-  if (lower.includes("throw")) return "throw";
-  if (lower.includes("offside")) return "offside";
-  if (lower.includes("shot") || lower.includes("save")) return "shot";
-  if (lower.includes("half time") || lower.includes("kick off")) return "start";
-  return "note";
+  console.log("   " + data.response.length + " rows back");
+  return data.response;
 }
 
 
 // ---------------------------------------------------------------
 // TRANSLATION
-// apifootball sends one shape, the screens expect another. These
-// two functions are the bridge between them.
+//
+// The screens already expect this shape, so most of what used to
+// be here has gone - the API hands back nearly the right thing.
 // ---------------------------------------------------------------
 function numberOrNull(value) {
   if (value === "" || value === null || value === undefined) return null;
@@ -1368,113 +1258,106 @@ function numberOrNull(value) {
   return Number.isNaN(n) ? null : n;
 }
 
+// Which short codes mean a game is actually being played. Needed
+// because a finished match still reports an elapsed minute, and
+// left alone that would make every result look live.
+const IN_PLAY = ["1H", "2H", "ET", "BT", "P", "LIVE", "INT", "SUSP"];
+const FINISHED = ["FT", "AET", "PEN"];
+const CALLED_OFF = ["PST", "CANC", "ABD", "AWD", "WO"];
+
 function readStatus(raw) {
-  const status = String(raw.match_status || "").trim();
-  const lower = status.toLowerCase();
+  const status = (raw.fixture && raw.fixture.status) || {};
+  const short = String(status.short || "NS");
+  const long = String(status.long || short);
+  const minute = numberOrNull(status.elapsed);
 
-  // Some rows carry a separate live flag, so trust that first.
-  const liveFlag = String(raw.match_live || "").trim() === "1";
-
-  // A bare number is the minute. So is something like "45+2".
-  const minute = parseInt(status, 10);
-  if (!Number.isNaN(minute) && /^\d/.test(status)) {
-    return { short: "LIVE", long: "In play", elapsed: minute };
+  if (short === "HT") return { short: "HT", long: long, elapsed: null };
+  if (IN_PLAY.indexOf(short) !== -1) {
+    return { short: short, long: long, elapsed: minute };
   }
-
-  if (lower === "" ) {
-    // Empty usually means not started, but if the live flag is set
-    // the game is on and the API just has no minute for it.
-    return liveFlag
-      ? { short: "LIVE", long: "In play", elapsed: null }
-      : { short: "NS", long: "Not started", elapsed: null };
+  if (FINISHED.indexOf(short) !== -1) {
+    return { short: short, long: long, elapsed: null };
   }
-
-  if (lower.includes("half") || lower === "ht" || lower === "break") {
-    return { short: "HT", long: "Half time", elapsed: null };
+  if (CALLED_OFF.indexOf(short) !== -1) {
+    return { short: "PST", long: long, elapsed: null };
   }
-  if (lower.includes("finish") || lower === "ft" || lower === "ended" ||
-      lower.includes("after et") || lower === "aet" || lower === "pen" ||
-      lower.includes("full")) {
-    return { short: "FT", long: "Finished", elapsed: null };
-  }
-  if (lower.includes("postpon") || lower.includes("cancel") ||
-      lower.includes("abandon") || lower.includes("suspend")) {
-    return { short: "PST", long: status, elapsed: null };
-  }
-
-  // Something we have not seen before. If the live flag is on,
-  // treat it as being played.
-  return liveFlag
-    ? { short: "LIVE", long: status || "In play", elapsed: null }
-    : { short: status, long: status, elapsed: null };
+  return { short: short, long: long, elapsed: null };
 }
 
-// Turns the goals, cards and substitutions into one list of
-// moments in time order, each with a line of text. The API does
-// not send written commentary on this plan, so we write it from
-// what actually happened.
+// Turns the event list into readable commentary. Richer than
+// before, because assists and VAR decisions come through now.
 function buildCommentary(raw) {
-  const home = raw.match_hometeam_name;
-  const away = raw.match_awayteam_name;
+  const home = raw.teams && raw.teams.home && raw.teams.home.name;
+  const away = raw.teams && raw.teams.away && raw.teams.away.name;
   const feed = [];
 
-  const minuteOf = function (value) {
-    const n = parseInt(String(value || "").replace("'", ""), 10);
-    return Number.isNaN(n) ? 0 : n;
-  };
+  for (const event of (raw.events || [])) {
+    const minute = Number(event.time && event.time.elapsed) || 0;
+    const extra = Number(event.time && event.time.extra) || 0;
+    const side = event.team && event.team.name === home ? "home" : "away";
+    const who = (event.player && event.player.name) || "";
+    const helper = (event.assist && event.assist.name) || "";
+    const detail = String(event.detail || "");
+    const type = String(event.type || "").toLowerCase();
 
-  for (const goal of (raw.goalscorer || [])) {
-    const isHome = Boolean(goal.home_scorer);
-    const scorer = isHome ? goal.home_scorer : goal.away_scorer;
-    if (!scorer) continue;
+    let kind = "note";
+    let text = "";
 
-    const own = String(goal.info || "").toLowerCase().includes("own goal");
-    const pen = String(goal.info || "").toLowerCase().includes("penalty");
-
-    let text = "GOAL! " + scorer.trim();
-    if (own) text = "OWN GOAL. " + scorer.trim();
-    else if (pen) text = "PENALTY SCORED. " + scorer.trim();
-
-    text += " for " + (isHome ? home : away) + ".";
-    if (goal.score) text += " It is " + goal.score.replace(/\s+/g, " ").trim() + ".";
-
-    feed.push({ minute: minuteOf(goal.time), kind: "goal", text: text });
-  }
-
-  for (const card of (raw.cards || [])) {
-    const isHome = Boolean(card.home_fault);
-    const player = (isHome ? card.home_fault : card.away_fault) || "";
-    if (!player) continue;
-
-    const red = String(card.card || "").toLowerCase().includes("red");
-    const text = (red ? "RED CARD. " : "Yellow card. ") + player.trim() +
-                 " of " + (isHome ? home : away) + ".";
-
-    feed.push({ minute: minuteOf(card.time), kind: red ? "red" : "yellow", text: text });
-  }
-
-  const subs = raw.substitutions || {};
-  for (const side of ["home", "away"]) {
-    for (const sub of (subs[side] || [])) {
-      const who = String(sub.substitution || "").trim();
-      if (!who) continue;
-      feed.push({
-        minute: minuteOf(sub.time),
-        kind: "sub",
-        text: "Substitution for " + (side === "home" ? home : away) + ": " + who + ".",
-      });
+    if (type === "goal") {
+      if (detail === "Own Goal") {
+        kind = "goal";
+        text = "OWN GOAL. " + who + ", against " + (side === "home" ? home : away) + ".";
+      } else if (detail === "Penalty") {
+        kind = "goal";
+        text = "PENALTY SCORED. " + who + " for " + (side === "home" ? home : away) + ".";
+      } else if (detail === "Missed Penalty") {
+        kind = "penalty";
+        text = "Penalty missed by " + who + ".";
+      } else {
+        kind = "goal";
+        text = "GOAL! " + who + " for " + (side === "home" ? home : away) + ".";
+        if (helper) text += " Assisted by " + helper + ".";
+      }
+    } else if (type === "card") {
+      const red = detail.toLowerCase().indexOf("red") !== -1;
+      kind = red ? "red" : "yellow";
+      text = (red ? "RED CARD. " : "Yellow card. ") + who +
+        " of " + (side === "home" ? home : away) + ".";
+    } else if (type === "subst") {
+      kind = "sub";
+      text = "Substitution for " + (side === "home" ? home : away) + ": " +
+        (helper || "?") + " on, " + (who || "?") + " off.";
+    } else if (type === "var") {
+      kind = "danger";
+      text = "VAR: " + detail + (who ? " - " + who : "") + ".";
+    } else {
+      text = detail + (who ? " - " + who : "");
     }
+
+    if (!text.trim()) continue;
+
+    feed.push({
+      minute: minute + extra,
+      kind: kind,
+      text: text,
+      side: side,
+    });
   }
 
   feed.sort(function (a, b) { return a.minute - b.minute; });
 
-  // Bookend it so the feed reads like a match rather than a list.
   const status = readStatus(raw);
-  feed.unshift({ minute: 0, kind: "start", text: "Kick off. " + home + " against " + away + "." });
+  feed.unshift({
+    minute: 0, kind: "start",
+    text: "Kick off. " + home + " against " + away + ".",
+  });
 
-  if (status.short === "FT") {
-    const score = (raw.match_hometeam_score || "0") + "-" + (raw.match_awayteam_score || "0");
-    feed.push({ minute: 91, kind: "end", text: "Full time. " + home + " " + score + " " + away + "." });
+  if (FINISHED.indexOf(status.short) !== -1) {
+    const score = (raw.goals && raw.goals.home) + "-" + (raw.goals && raw.goals.away);
+    feed.push({
+      minute: 91, kind: "end",
+      text: "Full time. " + home + " " + score + " " + away + ".",
+    });
   } else if (status.short === "HT") {
     feed.push({ minute: 46, kind: "end", text: "Half time." });
   }
@@ -1482,159 +1365,202 @@ function buildCommentary(raw) {
   return feed;
 }
 
-// Splits "4-2-3-1" into rows of players in front of the keeper.
-function readFormation(text, howMany) {
-  const rows = String(text || "").split("-")
-    .map(function (n) { return parseInt(n, 10); })
-    .filter(function (n) { return !Number.isNaN(n) && n > 0; });
-
-  const total = rows.reduce(function (a, b) { return a + b; }, 0);
-
-  // Fall back to a sensible shape if the formation is missing or
-  // does not add up to the number of outfield players.
-  if (rows.length === 0 || total !== howMany) {
-    if (howMany === 10) return [4, 4, 2];
-    return [howMany];
-  }
-  return rows;
+// Player photographs sit at a predictable address.
+function playerPhoto(id) {
+  return id
+    ? "https://media.api-sports.io/football/players/" + id + ".png"
+    : "";
 }
 
-// Turns one side's line-up into players with a place on the pitch.
-function layOutSide(side, formation, squad) {
-  const starters = (side.starting_lineups || []).slice();
-
-  // lineup_position is 1 for the keeper, then up the pitch.
-  starters.sort(function (a, b) {
-    return Number(a.lineup_position) - Number(b.lineup_position);
-  });
-
-  const withInfo = starters.map(function (player) {
-    const extra = squad[String(player.player_key)] || {};
-    return {
-      name: player.lineup_player,
-      number: player.lineup_number || extra.number || "",
-      key: String(player.player_key),
-      image: extra.image || "",
-    };
-  });
-
-  if (withInfo.length === 0) {
+// Lays a side out from its grid references - "2:3" being the
+// third player in the second row. Far better than guessing from
+// the formation string, which is what the old provider forced.
+function layOutSide(side, scorers) {
+  const starters = (side && side.startXI) || [];
+  if (starters.length === 0) {
     return { keeper: null, rows: [], bench: [], coach: "", missing: [] };
   }
 
-  const keeper = withInfo[0];
-  const outfield = withInfo.slice(1);
-  const shape = readFormation(formation, outfield.length);
+  const asPlayer = function (entry) {
+    const p = entry.player || entry;
+    return {
+      name: p.name || "",
+      number: p.number || "",
+      key: String(p.id || ""),
+      image: playerPhoto(p.id),
+      grid: p.grid || "",
+    };
+  };
 
-  const rows = [];
-  let at = 0;
-  for (const count of shape) {
-    rows.push(outfield.slice(at, at + count));
-    at += count;
+  const all = starters.map(asPlayer);
+  const byRow = {};
+  let keeper = null;
+
+  for (const player of all) {
+    const bits = String(player.grid || "").split(":");
+    const row = Number(bits[0]);
+
+    if (!row || Number.isNaN(row)) continue;
+    if (row === 1 && !keeper) { keeper = player; continue; }
+
+    if (!byRow[row]) byRow[row] = [];
+    byRow[row].push({ player: player, at: Number(bits[1]) || 0 });
   }
 
-  // The bench and whoever is in charge.
-  const bench = (side.substitutes || []).map(function (player) {
-    const extra = squad[String(player.player_key)] || {};
+  // No grid at all: fall back to the order given.
+  if (!keeper && all.length > 0) keeper = all[0];
+
+  const rows = Object.keys(byRow)
+    .map(Number)
+    .sort(function (a, b) { return a - b; })
+    .map(function (row) {
+      return byRow[row]
+        .sort(function (a, b) { return a.at - b.at; })
+        .map(function (entry) { return entry.player; });
+    });
+
+  const bench = ((side && side.substitutes) || []).map(asPlayer);
+  const coach = (side && side.coach && side.coach.name) || "";
+
+  return { keeper: keeper, rows: rows, bench: bench, coach: coach, missing: [] };
+}
+
+// Match statistics arrive as one block per team; the screen wants
+// one row per measure with both figures on it.
+function mergeStatistics(raw) {
+  const blocks = raw.statistics || [];
+  if (blocks.length < 2) return [];
+
+  const homeId = raw.teams && raw.teams.home && raw.teams.home.id;
+  const homeBlock = blocks.find(function (b) {
+    return b.team && b.team.id === homeId;
+  }) || blocks[0];
+  const awayBlock = blocks.find(function (b) { return b !== homeBlock; }) || blocks[1];
+
+  const awayByType = {};
+  for (const item of (awayBlock.statistics || [])) {
+    awayByType[item.type] = item.value;
+  }
+
+  return (homeBlock.statistics || []).map(function (item) {
+    const away = awayByType[item.type];
     return {
-      name: player.lineup_player,
-      number: player.lineup_number || extra.number || "",
-      image: extra.image || "",
+      type: item.type,
+      home: item.value === null ? "0" : String(item.value),
+      away: away === null || away === undefined ? "0" : String(away),
     };
   });
-
-  const coachEntry = (side.coach || [])[0];
-  const coach = coachEntry ? coachEntry.lineup_player : "";
-
-  const missing = (side.missing_players || []).map(function (player) {
-    return player.lineup_player;
-  });
-
-  return {
-    keeper: keeper, rows: rows,
-    bench: bench, coach: coach, missing: missing,
-  };
 }
 
 function translateMatch(raw) {
-  const goals = raw.goalscorer || [];
+  const fixture = raw.fixture || {};
+  const league = raw.league || {};
+  const teams = raw.teams || {};
+  const goals = raw.goals || {};
 
-  return {
+  const lineups = raw.lineups || [];
+  const homeLine = lineups[0] || null;
+  const awayLine = lineups[1] || null;
+
+  const scorers = {};
+  for (const event of (raw.events || [])) {
+    if (String(event.type || "").toLowerCase() === "goal" &&
+        event.player && event.player.name) {
+      scorers[event.player.name.trim()] = true;
+    }
+  }
+
+  const match = {
     fixture: {
-      id: Number(raw.match_id),
-      // Their date and time arrive separately.
-      // Always a real instant. Without this the phone reads the
-      // time as its own local one and everybody outside the API's
-      // timezone sees the wrong kickoff.
-      date: toUtcIso(raw.match_date, raw.match_time || "00:00"),
+      id: Number(fixture.id),
+      // Already a real instant with its offset attached, so no
+      // conversion is needed or wanted here.
+      date: fixture.date,
       status: readStatus(raw),
     },
     league: {
-      id: Number(raw.league_id),
-      name: raw.league_name,
-      country: raw.country_name,
-      logo: raw.league_logo || raw.country_logo || "",
+      id: Number(league.id),
+      name: league.name,
+      country: league.country,
+      logo: league.logo || league.flag || "",
     },
     teams: {
       home: {
-        id: Number(raw.match_hometeam_id) || null,
-        name: raw.match_hometeam_name,
-        logo: raw.team_home_badge || "",
+        id: (teams.home && Number(teams.home.id)) || null,
+        name: teams.home && teams.home.name,
+        logo: (teams.home && teams.home.logo) || "",
       },
       away: {
-        id: Number(raw.match_awayteam_id) || null,
-        name: raw.match_awayteam_name,
-        logo: raw.team_away_badge || "",
+        id: (teams.away && Number(teams.away.id)) || null,
+        name: teams.away && teams.away.name,
+        logo: (teams.away && teams.away.logo) || "",
       },
     },
     goals: {
-      home: numberOrNull(raw.match_hometeam_score),
-      away: numberOrNull(raw.match_awayteam_score),
+      home: numberOrNull(goals.home),
+      away: numberOrNull(goals.away),
     },
-    // Goals only, in the shape the match screen already reads.
-    events: goals
-      .filter(function (g) { return g.home_scorer || g.away_scorer; })
-      .map(function (g) {
-        const isHome = Boolean(g.home_scorer);
+    events: (raw.events || [])
+      .filter(function (e) {
+        return String(e.type || "").toLowerCase() === "goal" &&
+               e.detail !== "Missed Penalty";
+      })
+      .map(function (e) {
         return {
           type: "Goal",
-          time: { elapsed: parseInt(g.time, 10) || 0 },
-          player: { name: isHome ? g.home_scorer : g.away_scorer },
-          team: { name: isHome ? raw.match_hometeam_name : raw.match_awayteam_name },
+          time: { elapsed: Number(e.time && e.time.elapsed) || 0 },
+          player: { name: (e.player && e.player.name) || "Unknown" },
+          team: { name: (e.team && e.team.name) || "" },
         };
       }),
-    statistics: raw.statistics || [],
+    statistics: mergeStatistics(raw),
     commentary: buildCommentary(raw),
     formations: {
-      home: raw.match_hometeam_system || "",
-      away: raw.match_awayteam_system || "",
+      home: (homeLine && homeLine.formation) || "",
+      away: (awayLine && awayLine.formation) || "",
     },
-    // Filled in later, once the squads have been looked up.
     pitch: null,
     extras: {
-      stadium: raw.match_stadium || "",
-      referee: raw.match_referee || "",
-      round: raw.match_round || "",
+      stadium: (fixture.venue && fixture.venue.name) || "",
+      referee: fixture.referee || "",
+      round: league.round || "",
     },
   };
+
+  if (homeLine || awayLine) {
+    const home = layOutSide(homeLine, scorers);
+    const away = layOutSide(awayLine, scorers);
+    if (home.keeper || away.keeper) {
+      match.pitch = { home: home, away: away };
+    }
+  }
+
+  return match;
 }
 
 function translateTableRow(raw) {
-  const scored = Number(raw.overall_league_GF) || 0;
-  const conceded = Number(raw.overall_league_GA) || 0;
+  const all = raw.all || {};
+  const scored = Number(all.goals && all.goals.for) || 0;
+  const conceded = Number(all.goals && all.goals.against) || 0;
 
   return {
-    rank: Number(raw.overall_league_position),
-    team: { name: raw.team_name, logo: raw.team_badge || "" },
-    // Their spelling of "played" has a typo in it, so try both.
-    all: { played: Number(raw.overall_league_payed || raw.overall_league_played) || 0 },
-    goalsDiff: scored - conceded,
-    points: Number(raw.overall_league_PTS) || 0,
-    // This API does not say what each position means, so no
-    // promotion or relegation colours for now.
-    description: "",
+    rank: Number(raw.rank),
+    team: {
+      name: raw.team && raw.team.name,
+      logo: (raw.team && raw.team.logo) || "",
+    },
+    all: { played: Number(all.played) || 0 },
+    goalsDiff: numberOrNull(raw.goalsDiff) === null
+      ? scored - conceded
+      : Number(raw.goalsDiff),
+    points: Number(raw.points) || 0,
+    // This provider does say what each position means, so the
+    // promotion and relegation colours are finally possible.
+    description: raw.description || "",
   };
 }
+
+
 
 
 // ---------------------------------------------------------------
@@ -1659,14 +1585,13 @@ function intoCache(name, data) {
 // A standing check on the clock. The API tells us how many minutes
 // a live game has been going; our kickoff time implies a figure of
 // its own. If the two disagree by more than about twenty minutes
-// across several matches at once, the timezone is wrong - which is
-// how the Europe/Berlin problem was found in the first place.
+// across several matches at once, something is wrong with the
+// timestamps and every screen will be showing the wrong time.
 function checkClockDrift(matches) {
   const gaps = [];
 
   for (const match of matches) {
     const elapsed = match.fixture.status.elapsed;
-    // First and last few minutes are noisy; skip them.
     if (elapsed === null || elapsed < 5 || elapsed > 85) continue;
 
     const kickoff = new Date(match.fixture.date);
@@ -1683,8 +1608,7 @@ function checkClockDrift(matches) {
   if (Math.abs(middle) > 20) {
     console.log("   !! CLOCK DRIFT: kickoff times look " +
       (Math.round(middle / 6) / 10) + " hours out across " +
-      gaps.length + " live matches. API_TZ is currently " + API_TZ +
-      ". Open /api/tzcheck.");
+      gaps.length + " live matches.");
   }
 }
 
@@ -1692,7 +1616,7 @@ async function getLiveScores() {
   const hit = fromCache("live", 60);
   if (hit) return hit;
 
-  const raw = await askApi("get_events", "&match_live=1");
+  const raw = await askApi("fixtures", { live: "all" });
   if (raw === null) return cache["live"] ? cache["live"].data : [];
 
   const matches = raw.map(translateMatch);
@@ -1705,21 +1629,23 @@ async function getFixturesFor(date) {
   const hit = fromCache(name, 600);
   if (hit) return hit;
 
-  const raw = await askApi("get_events", "&from=" + date + "&to=" + date);
+  const raw = await askApi("fixtures", { date: date });
   if (raw === null) return cache[name] ? cache[name].data : [];
 
   return intoCache(name, raw.map(translateMatch));
 }
 
 // A span of days in one request. The fixtures screen asks for the
-// day either side of the one being shown, because a match at half
-// past midnight in Perth is still the night before in UTC.
+// day either side of the one being shown, so it can pick out its
+// own local day whatever timezone the phone is in.
 async function getFixturesRange(from, to) {
   const name = "fixtures-" + from + "-" + to;
   const hit = fromCache(name, 600);
   if (hit) return hit;
 
-  const raw = await askApi("get_events", "&from=" + from + "&to=" + to);
+  const raw = await askApi("fixtures", {
+    from: from, to: to, season: currentSeason(),
+  });
   if (raw === null) return cache[name] ? cache[name].data : [];
 
   return intoCache(name, raw.map(translateMatch));
@@ -1730,28 +1656,35 @@ async function getTableFor(leagueId) {
   const hit = fromCache(name, 1800);
   if (hit) return hit;
 
-  const raw = await askApi("get_standings", "&league_id=" + leagueId);
+  const raw = await askApi("standings", {
+    league: leagueId, season: currentSeason(),
+  });
   if (raw === null) return cache[name] ? cache[name].data : [];
 
-  const rows = raw
+  // standings comes back as one entry per league, each holding
+  // groups of rows - a single table is the usual case, but cups
+  // arrive as several.
+  const groups = (raw[0] && raw[0].league && raw[0].league.standings) || [];
+  const flat = [];
+  for (const group of groups) for (const row of group) flat.push(row);
+
+  const rows = flat
     .map(translateTableRow)
     .sort(function (a, b) { return a.rank - b.rank; });
 
   return intoCache(name, rows);
 }
 
-// Just the score and the teams. No line-ups, no squad lookups, so
-// it costs one API call rather than three.
+// Just the score and the teams, for the followed-matches list.
 async function getMatchLight(fixtureId) {
   const name = "light-" + fixtureId;
   const hit = fromCache(name, 60);
   if (hit) return hit;
 
-  // If the full version is already cached, reuse it for free.
   const full = cache["match-" + fixtureId];
   if (full && (Date.now() - full.time) / 1000 < 60) return full.data;
 
-  const result = await askApi("get_events", "&match_id=" + fixtureId);
+  const result = await askApi("fixtures", { id: fixtureId });
   if (result === null || result.length === 0) {
     return cache[name] ? cache[name].data : null;
   }
@@ -1759,54 +1692,24 @@ async function getMatchLight(fixtureId) {
   return intoCache(name, translateMatch(result[0]));
 }
 
+// The full match: events, line-ups and statistics all arrive in
+// the one answer, so this costs a single request rather than the
+// three the old provider needed.
 async function getMatch(fixtureId) {
   const name = "match-" + fixtureId;
   const hit = fromCache(name, 60);
   if (hit) return hit;
 
-  const result = await askApi("get_events", "&match_id=" + fixtureId);
+  const result = await askApi("fixtures", { id: fixtureId });
   if (result === null || result.length === 0) {
     return cache[name] ? cache[name].data : null;
   }
 
-  const raw = result[0];
-  const match = translateMatch(raw);
+  const match = translateMatch(result[0]);
 
-  // Look up both squads so the pitch can show faces. Cached for a
-  // day, so it is one extra call per club per day.
-  const lineup = raw.lineup || {};
-  const hasLineup =
-    (lineup.home && (lineup.home.starting_lineups || []).length > 0) ||
-    (lineup.away && (lineup.away.starting_lineups || []).length > 0);
-
-  // Minute-by-minute commentary, live matches only.
-  if (String(raw.match_live || "").trim() === "1") {
-    const live = await getLiveComments(fixtureId);
-    if (live.length > 0) {
-      // Keep our own goal and card lines, drop the plain kick off
-      // marker since the real feed has its own.
-      const ours = (match.commentary || []).filter(function (m) {
-        return m.kind === "goal" || m.kind === "red" || m.kind === "yellow";
-      });
-      match.commentary = ours.concat(live).sort(function (a, b) {
-        return a.minute - b.minute;
-      });
-      match.hasLiveCommentary = true;
-    }
-  }
-
-  if (hasLineup) {
-    console.log("   line-up found, looking up squads");
-    const homeSquad = raw.match_hometeam_id ? await getSquad(raw.match_hometeam_id) : {};
-    const awaySquad = raw.match_awayteam_id ? await getSquad(raw.match_awayteam_id) : {};
-
-    match.pitch = {
-      home: layOutSide(lineup.home || {}, raw.match_hometeam_system, homeSquad),
-      away: layOutSide(lineup.away || {}, raw.match_awayteam_system, awaySquad),
-    };
-  } else {
-    console.log("   no line-up in this response");
-  }
+  // There is no live text commentary on this provider. The feed
+  // built from the events is what the Commentary tab shows.
+  match.hasLiveCommentary = false;
 
   return intoCache(name, match);
 }
@@ -1817,40 +1720,57 @@ async function getLeagueFixtures(leagueId, from, to) {
   const hit = fromCache(name, 900);
   if (hit) return hit;
 
-  const raw = await askApi("get_events",
-    "&league_id=" + leagueId + "&from=" + from + "&to=" + to);
+  const raw = await askApi("fixtures", {
+    league: leagueId, season: currentSeason(), from: from, to: to,
+  });
   if (raw === null) return cache[name] ? cache[name].data : [];
 
   return intoCache(name, raw.map(translateMatch));
 }
 
-// A club's squad, kept for a day. Used to find player photos,
-// because the line-up data only carries names and keys.
+// A club's players with their season figures, for the Stats tab.
+// Paginated, so a couple of pages are pulled and then it stops.
 async function getSquad(teamId) {
   const name = "squad-" + teamId;
   const hit = fromCache(name, 86400);
   if (hit) return hit;
 
-  const raw = await askApi("get_teams", "&team_id=" + teamId);
-  if (raw === null || raw.length === 0) {
-    return cache[name] ? cache[name].data : {};
+  const byId = {};
+  let page = 1;
+
+  while (page <= 3) {
+    const raw = await askApi("players", {
+      team: teamId, season: currentSeason(), page: page,
+    });
+    if (raw === null || raw.length === 0) break;
+
+    for (const entry of raw) {
+      const player = entry.player || {};
+      const stats = (entry.statistics || [])[0] || {};
+      const games = stats.games || {};
+      const goals = stats.goals || {};
+      const cards = stats.cards || {};
+
+      byId[String(player.id)] = {
+        name: player.name || "",
+        image: player.photo || playerPhoto(player.id),
+        number: games.number || "",
+        position: games.position || "",
+        goals: Number(goals.total) || 0,
+        assists: Number(goals.assists) || 0,
+        yellow: Number(cards.yellow) || 0,
+        red: Number(cards.red) || 0,
+        played: Number(games.appearences) || 0,
+        rating: games.rating || "",
+      };
+    }
+
+    if (raw.length < 20) break;
+    page++;
   }
 
-  // Key the players by their id so the line-up can look them up.
-  const byId = {};
-  for (const player of (raw[0].players || [])) {
-    byId[String(player.player_id)] = {
-      name: player.player_name || "",
-      image: player.player_image || "",
-      number: player.player_number || "",
-      position: player.player_type || "",
-      goals: Number(player.player_goals) || 0,
-      assists: Number(player.player_assists) || 0,
-      yellow: Number(player.player_yellow_cards) || 0,
-      red: Number(player.player_red_cards) || 0,
-      played: Number(player.player_match_played) || 0,
-      rating: player.player_rating || "",
-    };
+  if (Object.keys(byId).length === 0) {
+    return cache[name] ? cache[name].data : {};
   }
 
   return intoCache(name, byId);
@@ -1862,8 +1782,9 @@ async function getTeamFixtures(teamId, from, to) {
   const hit = fromCache(name, 900);
   if (hit) return hit;
 
-  const raw = await askApi("get_events",
-    "&team_id=" + teamId + "&from=" + from + "&to=" + to);
+  const raw = await askApi("fixtures", {
+    team: teamId, season: currentSeason(), from: from, to: to,
+  });
   if (raw === null) return cache[name] ? cache[name].data : [];
 
   return intoCache(name, raw.map(translateMatch));
@@ -1875,11 +1796,11 @@ async function getSeason(teamId) {
   const hit = fromCache(name, 3600);
   if (hit) return hit;
 
-  const span = seasonRange();
-  const raw = await askApi("get_events",
-    "&team_id=" + teamId + "&from=" + span.from + "&to=" + span.to);
-
+  const raw = await askApi("fixtures", {
+    team: teamId, season: currentSeason(),
+  });
   if (raw === null) return cache[name] ? cache[name].data : [];
+
   return intoCache(name, raw.map(translateMatch));
 }
 
@@ -1889,15 +1810,18 @@ async function getTeams(leagueId) {
   const hit = fromCache(name, 86400);
   if (hit) return hit;
 
-  const raw = await askApi("get_teams", "&league_id=" + leagueId);
+  const raw = await askApi("teams", {
+    league: leagueId, season: currentSeason(),
+  });
   if (raw === null) return cache[name] ? cache[name].data : [];
 
-  const teams = raw.map(function (t) {
+  const teams = raw.map(function (entry) {
+    const team = entry.team || {};
     return {
-      id: Number(t.team_key),
-      name: t.team_name,
-      logo: t.team_badge || "",
-      squad: (t.players || []).length,
+      id: Number(team.id),
+      name: team.name,
+      logo: team.logo || "",
+      squad: 0,
     };
   });
 
@@ -1910,27 +1834,36 @@ async function getTopScorers(leagueId) {
   const hit = fromCache(name, 3600);
   if (hit) return hit;
 
-  const raw = await askApi("get_topscorers", "&league_id=" + leagueId);
+  const raw = await askApi("players/topscorers", {
+    league: leagueId, season: currentSeason(),
+  });
   if (raw === null) return cache[name] ? cache[name].data : [];
 
-  const scorers = raw.map(function (s) {
+  const scorers = raw.map(function (entry, index) {
+    const player = entry.player || {};
+    const stats = (entry.statistics || [])[0] || {};
+    const goals = stats.goals || {};
+    const penalty = stats.penalty || {};
+
     return {
-      place: Number(s.player_place) || 0,
-      name: s.player_name,
-      team: s.team_name,
-      goals: Number(s.goals) || 0,
-      assists: Number(s.assists) || 0,
-      penalties: Number(s.penalty_goals) || 0,
+      place: index + 1,
+      name: player.name || "",
+      team: (stats.team && stats.team.name) || "",
+      goals: Number(goals.total) || 0,
+      assists: Number(goals.assists) || 0,
+      penalties: Number(penalty.scored) || 0,
     };
   });
 
   return intoCache(name, scorers);
 }
 
+
+
 // ---------------------------------------------------------------
 // NEWS
 //
-// There is no news endpoint on apifootball, so headlines come from
+// There is no news endpoint on this provider, so headlines come from
 // public RSS feeds. Only the headline, the source and a link out are
 // kept - the article itself stays with whoever wrote it.
 // ---------------------------------------------------------------
@@ -2211,16 +2144,18 @@ async function getAllLeagues() {
   const hit = fromCache("allLeagues", 86400);
   if (hit) return hit;
 
-  const raw = await askApi("get_leagues", "");
+  const raw = await askApi("leagues", { current: "true" });
   if (raw === null) return cache["allLeagues"] ? cache["allLeagues"].data : [];
 
   const list = raw.map(function (item) {
+    const league = item.league || {};
+    const country = item.country || {};
     return {
-      id: Number(item.league_id),
-      name: item.league_name,
-      country: item.country_name,
-      logo: item.league_logo || item.country_logo || "",
-      type: "League",
+      id: Number(league.id),
+      name: league.name,
+      country: country.name || "World",
+      logo: league.logo || country.flag || "",
+      type: league.type || "League",
     };
   });
 
@@ -4286,6 +4221,25 @@ function divisionFor(level) {
     if (level >= division.from) found = division;
   }
   return found;
+}
+
+// ---------------------------------------------------------------
+// LEAVING THE OLD PROVIDER BEHIND
+//
+// League, team and fixture numbers are completely different on
+// API-Football, so everything saved under the old ones is now
+// meaningless - a followed club would point at some other club
+// entirely. This clears those once, and only once.
+//
+// XP, coins, streaks, challenges and the 6-a-side squad are all
+// untouched: none of them hold a football id.
+// ---------------------------------------------------------------
+if (localStorage.getItem("provider") !== "api-football") {
+  for (const key of ["myLeagues_v2", "leagueNames_v2",
+                     "favLeagues", "favTeams", "alerts", "badgeClub"]) {
+    localStorage.removeItem(key);
+  }
+  localStorage.setItem("provider", "api-football");
 }
 
 // The key is versioned, so switching data provider does not leave
@@ -7883,6 +7837,10 @@ async function renewSession() {
 // Everything worth keeping, in one lump.
 function gatherProgress() {
   return {
+    // Which provider the football ids below belong to. Without
+    // this, a saved copy from the old provider would come back
+    // down on the next sync and undo the clear-out above.
+    provider: "api-football",
     xp: xp,
     coins: coins,
     streak: streak,
@@ -7923,9 +7881,15 @@ function applyProgress(data) {
     coins = Number(data.coins) || 0;
     streak = Number(data.streak) || 0;
     shields = Number(data.shields) || 0;
-    if (Array.isArray(data.alerts)) alerts = data.alerts;
-    if (Array.isArray(data.favTeams)) favTeams = data.favTeams;
-    if (Array.isArray(data.favLeagues)) favLeagues = data.favLeagues;
+    // Football ids are only worth restoring if they were saved
+    // against this provider. Anything older points at other clubs
+    // entirely, so it is left behind rather than reinstated.
+    if (data.provider === "api-football") {
+      if (Array.isArray(data.alerts)) alerts = data.alerts;
+      if (Array.isArray(data.favTeams)) favTeams = data.favTeams;
+      if (Array.isArray(data.favLeagues)) favLeagues = data.favLeagues;
+      if (data.badgeClub) badgeClub = data.badgeClub;
+    }
     if (data.claimed) claimed = data.claimed;
     if (data.dailyCounts && data.dailyCounts.day === todayKey) {
       dailyCounts = data.dailyCounts;
@@ -7958,7 +7922,6 @@ function applyProgress(data) {
     }
     if (typeof data.weekStartXp === "number") weekStartXp = data.weekStartXp;
     if (data.bestDivision) bestDivision = data.bestDivision;
-    if (data.badgeClub) badgeClub = data.badgeClub;
     saveHistory();
   }
 
@@ -8422,7 +8385,7 @@ function drawSettings() {
   row("Support", "&rsaquo;", function () {
     window.open("/support", "_blank");
   });
-  row("Football data", "apifootball.com");
+  row("Football data", "api-football.com");
 
   // Kickoff times are converted on the device, so it helps to be
   // able to see what the device believes.
@@ -9887,7 +9850,7 @@ little as we can, which is the best protection there is.</p>
 </ul>
 
 <h2>Other services the app touches</h2>
-<p>Match data comes from apifootball.com, Premier League player data
+<p>Match data comes from api-football.com, Premier League player data
 from the Fantasy Premier League service, and news headlines from
 publishers' public feeds. Those requests are made by our server, not
 by your phone, so those services do not see you.</p>
@@ -9968,7 +9931,7 @@ account. It is immediate and cannot be undone.</p>
 
 <h2>Where the data comes from</h2>
 <p>Scores, fixtures, tables and line-ups are provided by
-apifootball.com. Premier League player statistics come from the
+api-football.com. Premier League player statistics come from the
 Fantasy Premier League service. News headlines are from publishers'
 own feeds and link back to the original articles.</p>
 `);
@@ -10540,190 +10503,54 @@ async function handleRequest(request, response) {
     return;
   }
 
-  // Lays out exactly what the API sent and what we made of it, so
-  // a wrong kickoff time can be diagnosed rather than guessed at.
-  // Open /api/tzcheck on the deployed app.
-  if (address.pathname === "/api/tzcheck") {
-    const date = address.searchParams.get("date") || isoToday();
+  // What the API really sent, for when a field has moved or the
+  // key is being refused. Open /api/raw on the deployed app.
+  if (address.pathname === "/api/raw") {
+    const what = address.searchParams.get("of") || "live";
 
-    // Same request twice: once asking for UTC, once asking for
-    // nothing at all. If the two disagree, the provider honours
-    // the timezone parameter. If they match, it is ignoring it.
-    const url = BASE + "?action=get_events&from=" + date + "&to=" + date +
-      "&timezone=UTC&APIkey=" + API_KEY;
-    const bare = BASE + "?action=get_events&from=" + date + "&to=" + date +
-      "&APIkey=" + API_KEY;
-
-    const grab = async function (target) {
-      try {
-        const answer = await fetch(target);
-        const rows = await answer.json();
-        if (!Array.isArray(rows) || rows.length === 0) return null;
-        return rows[0];
-      } catch (error) {
-        return null;
-      }
+    const calls = {
+      live: ["fixtures", { live: "all" }],
+      today: ["fixtures", { date: isoToday() }],
+      leagues: ["leagues", { current: "true" }],
+      status: ["status", {}],
     };
 
-    const asked = await grab(url);
-    const notAsked = await grab(bare);
-
-    const sample = asked || notAsked;
-    const now = new Date();
+    const call = calls[what] || calls.live;
+    const raw = await askApi(call[0], call[1]);
 
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({
-      note: "If askedForUtc and askedForNothing show the same time, " +
-            "the provider is ignoring the timezone parameter. Set " +
-            "APIFOOTBALL_TZ to the zone it really uses - most " +
-            "likely Europe/Berlin - and redeploy.",
-      configured_API_TZ: API_TZ,
-      server_utc_now: now.toISOString(),
-      askedForUtc: asked && {
-        match: asked.match_hometeam_name + " v " + asked.match_awayteam_name,
-        match_date: asked.match_date,
-        match_time: asked.match_time,
-      },
-      askedForNothing: notAsked && {
-        match: notAsked.match_hometeam_name + " v " + notAsked.match_awayteam_name,
-        match_date: notAsked.match_date,
-        match_time: notAsked.match_time,
-      },
-      whatWeStore: sample
-        ? toUtcIso(sample.match_date, sample.match_time || "00:00")
-        : null,
-      soAPhoneWouldShow: sample
-        ? {
-            in_Perth: new Date(toUtcIso(sample.match_date, sample.match_time || "00:00"))
-              .toLocaleString("en-GB", { timeZone: "Australia/Perth" }),
-            in_London: new Date(toUtcIso(sample.match_date, sample.match_time || "00:00"))
-              .toLocaleString("en-GB", { timeZone: "Europe/London" }),
-          }
-        : null,
+      asked_for: what,
+      options: Object.keys(calls),
+      host: API_HOST,
+      key_set: Boolean(API_KEY),
+      season: currentSeason(),
+      rows: raw === null ? null : raw.length,
+      first_row: raw && raw.length > 0 ? raw[0] : null,
+      note: raw === null
+        ? "Nothing came back. Check the server log for what the API said."
+        : "Use ?of=today, ?of=leagues or ?of=status for the others.",
     }, null, 2));
     return;
   }
 
-  if (address.pathname === "/api/leagues") {
-    const leagues = await getAllLeagues();
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(leagues));
-    return;
-  }
-
-  // Shows the raw, untranslated answer. Handy when field names
-  // do not match what the code expects.
-  if (address.pathname === "/api/raw") {
-    const raw = await askApi("get_events", "&match_live=1");
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(raw ? raw.slice(0, 2) : null, null, 2));
-    return;
-  }
-
-  // Lists every different match_status value the API is sending
-  // today, with an example of each. This is how we find out what
-  // words it actually uses for finished, half time and so on.
-  // Shows what the API really sends for one match: whether there
-  // is a line-up at all, and what the fields are called.
-  if (address.pathname === "/api/rawmatch") {
-    let id = address.searchParams.get("id");
-
-    // No id given, so pick a live match and use that.
-    if (!id) {
-      const live = await askApi("get_events", "&match_live=1");
-      if (live === null || live.length === 0) {
-        response.writeHead(200, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({
-          error: "nothing live right now, so pass ?id=MATCHID instead",
-        }, null, 2));
-        return;
-      }
-      id = live[0].match_id;
-    }
-
-    const raw = await askApi("get_events", "&match_id=" + id);
-
-    if (raw === null || raw.length === 0) {
-      response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: "nothing came back for that match" }, null, 2));
-      return;
-    }
-
-    const row = raw[0];
-    const lineup = row.lineup || {};
-    const homeStart = (lineup.home && lineup.home.starting_lineups) || [];
-    const awayStart = (lineup.away && lineup.away.starting_lineups) || [];
+  // The account itself: what plan, and how many requests are left.
+  if (address.pathname === "/api/quota") {
+    const raw = await askApi("status", {});
 
     response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({
-      match_id: row.match_id,
-      match: row.match_hometeam_name + " v " + row.match_awayteam_name,
-      status: row.match_status,
-      home_id: row.match_hometeam_id,
-      away_id: row.match_awayteam_id,
-      formations: {
-        home: row.match_hometeam_system,
-        away: row.match_awayteam_system,
-      },
-      lineup_present: Boolean(row.lineup),
-      home_starters: homeStart.length,
-      away_starters: awayStart.length,
-      first_home_player: homeStart[0] || null,
-      all_top_level_fields: Object.keys(row),
+    response.end(JSON.stringify(raw && raw[0] ? raw[0] : {
+      error: "Could not read your API account. Is the key right?",
+      host: API_HOST,
     }, null, 2));
     return;
   }
 
-  // Shows whether a club's squad photos can be reached.
-  if (address.pathname === "/api/rawsquad") {
-    const teamId = address.searchParams.get("team");
-    if (!teamId) {
-      response.writeHead(400, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: "add ?team=TEAMID" }, null, 2));
-      return;
-    }
-
-    const raw = await askApi("get_teams", "&team_id=" + teamId);
-    const team = raw && raw[0];
-
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({
-      team: team ? team.team_name : null,
-      player_count: team ? (team.players || []).length : 0,
-      first_player: team && team.players ? team.players[0] : null,
-    }, null, 2));
-    return;
-  }
-
-  // Checks whether live commentary is included in the plan.
-  if (address.pathname === "/api/commentcheck") {
-    const live = await askApi("get_events", "&match_live=1");
-    if (live === null || live.length === 0) {
-      response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: "nothing live to test with" }, null, 2));
-      return;
-    }
-
-    const id = live[0].match_id;
-    const data = await askApiObject("get_live_odds_commnets", "&match_id=" + id);
-    const entry = data && (data[String(id)] || Object.values(data)[0]);
-    const comments = (entry && entry.live_comments) || [];
-
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({
-      tested_match: live[0].match_hometeam_name + " v " + live[0].match_awayteam_name,
-      match_id: id,
-      available: comments.length > 0,
-      comment_count: comments.length,
-      sample: comments.slice(0, 8),
-      raw_if_empty: comments.length === 0 ? data : undefined,
-    }, null, 2));
-    return;
-  }
-
+  // Which match statuses are in play today, and what we make of
+  // them. Handy if a game ever looks stuck on the wrong state.
   if (address.pathname === "/api/statuses") {
     const date = address.searchParams.get("date") || isoToday();
-    const raw = await askApi("get_events", "&from=" + date + "&to=" + date);
+    const raw = await askApi("fixtures", { date: date });
 
     if (raw === null) {
       response.writeHead(200, { "Content-Type": "application/json" });
@@ -10733,15 +10560,17 @@ async function handleRequest(request, response) {
 
     const seen = {};
     for (const row of raw) {
-      const key = JSON.stringify(row.match_status);
+      const status = (row.fixture && row.fixture.status) || {};
+      const key = String(status.short);
+
       if (!seen[key]) {
         seen[key] = {
-          match_status: row.match_status,
+          short: status.short,
+          long: status.long,
           count: 0,
-          example: row.match_hometeam_name + " " + row.match_hometeam_score +
-                   "-" + row.match_awayteam_score + " " + row.match_awayteam_name,
-          match_time: row.match_time,
-          live: row.match_live,
+          we_read_it_as: readStatus(row),
+          example: (row.teams && row.teams.home && row.teams.home.name) + " v " +
+                   (row.teams && row.teams.away && row.teams.away.name),
         };
       }
       seen[key].count++;
@@ -10756,6 +10585,7 @@ async function handleRequest(request, response) {
     return;
   }
 
+
   response.writeHead(200, { "Content-Type": "text/html" });
   response.end(PAGE.replace("__LEAGUES__", JSON.stringify(MY_LEAGUES)));
 }
@@ -10763,7 +10593,10 @@ async function handleRequest(request, response) {
 server.listen(PORT, function () {
   console.log("");
   console.log("  App running on port " + PORT);
-  console.log("  Kickoff times read as " + API_TZ + " and converted to UTC");
+  console.log("  Football data from " + API_HOST);
+  if (!API_KEY) {
+    console.log("  !! APIFOOTBALL_KEY is not set - no match data will load");
+  }
 
   // These used to be printed on the privacy page itself, which meant
   // users read notes meant for the developer. They belong here.
