@@ -1748,6 +1748,167 @@ async function getMatch(fixtureId) {
   return intoCache(name, match);
 }
 
+// ---------------------------------------------------------------
+// EVERYTHING AROUND A MATCH
+//
+// The match centre's Facts and News tabs. Four calls, gathered
+// once and kept for a quarter of an hour, because none of it
+// changes minute to minute.
+//
+// One thing this provider does NOT give: where the ball is. There
+// are no corner, free kick or throw-in events, and no pitch
+// coordinates on anything. Aggregate counts are all there is, so
+// that is all these tabs claim.
+// ---------------------------------------------------------------
+async function getH2H(homeId, awayId) {
+  const name = "h2h-" + homeId + "-" + awayId;
+  const hit = fromCache(name, 86400);
+  if (hit) return hit;
+
+  const raw = await askApi("fixtures/headtohead", {
+    h2h: homeId + "-" + awayId, last: 10,
+  });
+  if (raw === null) return cache[name] ? cache[name].data : null;
+
+  let homeWins = 0, awayWins = 0, draws = 0;
+  const recent = [];
+
+  for (const row of raw) {
+    const goals = row.goals || {};
+    const teams = row.teams || {};
+    const wasHome = teams.home && teams.home.id === homeId;
+
+    if (goals.home === goals.away) {
+      draws++;
+    } else {
+      const homeScored = Number(goals.home) > Number(goals.away);
+      if (homeScored === Boolean(wasHome)) homeWins++;
+      else awayWins++;
+    }
+
+    recent.push({
+      date: row.fixture && row.fixture.date,
+      league: row.league && row.league.name,
+      home: teams.home && teams.home.name,
+      away: teams.away && teams.away.name,
+      score: goals.home + "-" + goals.away,
+    });
+  }
+
+  recent.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+
+  return intoCache(name, {
+    played: raw.length,
+    homeWins: homeWins,
+    awayWins: awayWins,
+    draws: draws,
+    recent: recent.slice(0, 6),
+  });
+}
+
+// Form, season records and a like-for-like comparison. This is
+// what the preview is written from - every figure in it is theirs,
+// not ours.
+async function getPrediction(fixtureId) {
+  const name = "pred-" + fixtureId;
+  const hit = fromCache(name, 3600);
+  if (hit) return hit;
+
+  const raw = await askApi("predictions", { fixture: fixtureId });
+  if (raw === null || raw.length === 0) {
+    return cache[name] ? cache[name].data : null;
+  }
+
+  const entry = raw[0] || {};
+  const guess = entry.predictions || {};
+  const teams = entry.teams || {};
+
+  const sideOf = function (side) {
+    const team = teams[side] || {};
+    const last5 = team.last_5 || {};
+    const league = team.league || {};
+    const fixtures = league.fixtures || {};
+    const goals = league.goals || {};
+
+    return {
+      name: team.name || "",
+      logo: team.logo || "",
+      form: league.form || "",
+      last5Form: last5.form || "",
+      last5Attack: last5.att || "",
+      last5Defence: last5.def || "",
+      played: (fixtures.played && fixtures.played.total) || 0,
+      won: (fixtures.wins && fixtures.wins.total) || 0,
+      drawn: (fixtures.draws && fixtures.draws.total) || 0,
+      lost: (fixtures.loses && fixtures.loses.total) || 0,
+      scored: (goals.for && goals.for.total && goals.for.total.total) || 0,
+      conceded: (goals.against && goals.against.total && goals.against.total.total) || 0,
+      cleanSheets: (league.clean_sheet && league.clean_sheet.total) || 0,
+      blanks: (league.failed_to_score && league.failed_to_score.total) || 0,
+    };
+  };
+
+  return intoCache(name, {
+    advice: guess.advice || "",
+    winnerName: (guess.winner && guess.winner.name) || "",
+    winnerComment: (guess.winner && guess.winner.comment) || "",
+    percent: guess.percent || {},
+    comparison: entry.comparison || {},
+    home: sideOf("home"),
+    away: sideOf("away"),
+  });
+}
+
+// Who is unavailable, and why.
+async function getInjuries(fixtureId, homeId) {
+  const name = "inj-" + fixtureId;
+  const hit = fromCache(name, 3600);
+  if (hit) return hit;
+
+  const raw = await askApi("injuries", { fixture: fixtureId });
+  if (raw === null) return cache[name] ? cache[name].data : { home: [], away: [] };
+
+  const out = { home: [], away: [] };
+
+  for (const row of raw) {
+    const player = row.player || {};
+    const side = (row.team && row.team.id === homeId) ? "home" : "away";
+
+    out[side].push({
+      name: player.name || "",
+      photo: player.photo || "",
+      // "Missing Fixture" or "Questionable", with the cause in reason.
+      type: player.type || "",
+      reason: player.reason || "",
+    });
+  }
+
+  return intoCache(name, out);
+}
+
+// All of it together, for one fixture.
+async function getMatchExtra(fixtureId) {
+  const name = "extra-" + fixtureId;
+  const hit = fromCache(name, 900);
+  if (hit) return hit;
+
+  const match = await getMatchLight(fixtureId);
+  if (!match) return null;
+
+  const homeId = match.teams.home.id;
+  const awayId = match.teams.away.id;
+
+  const h2h = homeId && awayId ? await getH2H(homeId, awayId) : null;
+  const prediction = await getPrediction(fixtureId);
+  const injuries = await getInjuries(fixtureId, homeId);
+
+  return intoCache(name, {
+    h2h: h2h,
+    prediction: prediction,
+    injuries: injuries,
+  });
+}
+
 // Fixtures for one league across a date range.
 async function getLeagueFixtures(leagueId, from, to) {
   const name = "lf-" + leagueId + "-" + from;
@@ -2423,6 +2584,7 @@ const PAGE = `
   .bigScore .clock { font-size: 12px; color: #EF9F27; margin-top: 2px; }
 
   .tabs { display: flex; background: #fff; border-bottom: 1px solid #E8E8E4; }
+  .tabsUnder .tab { font-size: 13px; padding: 9px 0; }
   .tab {
     flex: 1; text-align: center; padding: 11px 0;
     font-size: 14px; color: #777; cursor: pointer;
@@ -3859,6 +4021,99 @@ body {
   background: #16A34A; flex-shrink: 0;
 }
 .lockPaid { font-size: 11.5px; color: #6B7280; margin-top: 7px; }
+
+/* =============================================================
+   MATCH FACTS AND NEWS
+   ============================================================= */
+.tabsUnder { border-bottom: 1px solid #E3E6EA; }
+
+.factBox {
+  background: #fff; margin: 0 12px 10px;
+  border: 1px solid #ECEEF1; border-radius: 12px;
+  padding: 4px 14px; box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.factRow {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 14px; padding: 10px 0; border-bottom: 1px solid #F2F4F6;
+}
+.factRow:last-child { border-bottom: none; }
+.factLabel { font-size: 13px; color: #6B7280; flex-shrink: 0; }
+.factValue { font-size: 13.5px; color: #111827; text-align: right; }
+
+.h2hCounts { display: flex; padding: 14px 0 6px; }
+.h2hSide { flex: 1; text-align: center; min-width: 0; }
+.h2hSide b { display: block; font-size: 24px; font-weight: 700; color: #111827; }
+.h2hSide span {
+  display: block; font-size: 11px; color: #6B7280; margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.h2hNote {
+  font-size: 11px; color: #9CA3AF; text-align: center; padding-bottom: 12px;
+}
+.h2hRow {
+  display: flex; align-items: center; gap: 12px;
+  background: #fff; margin: 0 12px 6px; padding: 10px 14px;
+  border: 1px solid #ECEEF1; border-radius: 10px;
+}
+.h2hWhen { font-size: 11px; color: #9CA3AF; width: 74px; flex-shrink: 0; }
+.h2hGame {
+  flex: 1; min-width: 0; font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.compareRow {
+  display: flex; align-items: center;
+  padding: 9px 0; border-bottom: 1px solid #F2F4F6;
+}
+.compareRow:last-child { border-bottom: none; }
+.compareHead { font-weight: 600; }
+.compareHead .compareHome, .compareHead .compareAway {
+  font-size: 12px; color: #111827;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.compareHome, .compareAway {
+  width: 34%; font-size: 13.5px; color: #111827;
+}
+.compareHome { text-align: left; }
+.compareAway { text-align: right; }
+.compareLabel { flex: 1; text-align: center; font-size: 11.5px; color: #6B7280; }
+
+.formRow { display: inline-flex; gap: 3px; }
+.formPill {
+  width: 17px; height: 17px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.formPill.win { background: #16A34A; }
+.formPill.draw { background: #9CA3AF; }
+.formPill.loss { background: #E24B4A; }
+.formLine {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 11px 0; border-bottom: 1px solid #F2F4F6;
+}
+.formLine:last-child { border-bottom: none; }
+.formWho {
+  font-size: 13.5px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.newsBox {
+  background: #fff; margin: 0 12px 10px; padding: 4px 15px 12px;
+  border: 1px solid #ECEEF1; border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.newsBox p { font-size: 14px; line-height: 1.55; color: #374151; }
+
+.outSide { padding: 12px 0; border-bottom: 1px solid #F2F4F6; }
+.outSide:last-child { border-bottom: none; }
+.outWho { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.outRow {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; padding: 5px 0;
+}
+.outName { font-size: 13.5px; color: #111827; }
+.outWhy { font-size: 11.5px; color: #92400E; text-align: right; }
+.outNone { font-size: 12.5px; color: #9CA3AF; }
 
 /* Where the XP came from. */
 .splitRow {
@@ -8881,6 +9136,10 @@ function drawMatch(match) {
       '<div class="tab' + (matchTab === "comm" ? " on" : "") + '" id="tabComm">Commentary</div>' +
       '<div class="tab' + (matchTab === "pitch" ? " on" : "") + '" id="tabPitch">Line-ups</div>' +
       '<div class="tab' + (matchTab === "stats" ? " on" : "") + '" id="tabStats">Stats</div>' +
+    '</div>' +
+    '<div class="tabs tabsUnder">' +
+      '<div class="tab' + (matchTab === "facts" ? " on" : "") + '" id="tabFacts">Facts</div>' +
+      '<div class="tab' + (matchTab === "news" ? " on" : "") + '" id="tabNews">News</div>' +
     '</div>';
 
   document.getElementById("backBtn").onclick = closeMatch;
@@ -8915,6 +9174,12 @@ function drawMatch(match) {
   };
   document.getElementById("tabStats").onclick = function () {
     matchTab = "stats"; tally("mstats"); drawMatch(match);
+  };
+  document.getElementById("tabFacts").onclick = function () {
+    matchTab = "facts"; tally("facts"); drawMatch(match);
+  };
+  document.getElementById("tabNews").onclick = function () {
+    matchTab = "news"; tally("preview"); drawMatch(match);
   };
 
   list.innerHTML = "";
@@ -9280,6 +9545,11 @@ function drawMatch(match) {
     return;
   }
 
+  if (matchTab === "facts" || matchTab === "news") {
+    drawMatchExtra(match, list);
+    return;
+  }
+
   // Stats. This API sends one flat list with a home and away value
   // on each row, rather than a separate list per team.
   const stats = match.statistics || [];
@@ -9319,6 +9589,377 @@ function drawMatch(match) {
   }
 
   list.appendChild(box);
+}
+
+
+// ---------------------------------------------------------------
+// FACTS AND NEWS
+//
+// Both tabs run off one fetch, kept for the session so flicking
+// between them costs nothing.
+// ---------------------------------------------------------------
+let matchExtras = {};   // fixture id -> { at, data }
+
+async function loadMatchExtra(fixtureId) {
+  const saved = matchExtras[fixtureId];
+  if (saved && Date.now() - saved.at < 900000) return saved.data;
+
+  try {
+    const data = await (await fetch("/api/match-extra?id=" + fixtureId)).json();
+    matchExtras[fixtureId] = { at: Date.now(), data: data };
+    return data;
+  } catch (error) {
+    return saved ? saved.data : null;
+  }
+}
+
+function drawMatchExtra(match, list) {
+  const known = matchExtras[match.fixture.id];
+
+  if (!known) {
+    list.innerHTML = '<div class="empty">Loading...</div>';
+    loadMatchExtra(match.fixture.id).then(function () {
+      if (screen === "match" && (matchTab === "facts" || matchTab === "news")) {
+        drawMatch(match);
+      }
+    });
+    return;
+  }
+
+  if (matchTab === "facts") drawFactsTab(match, known.data, list);
+  else drawNewsTab(match, known.data, list);
+}
+
+// A row of label and value, the shape both tabs are built from.
+function factRow(label, value) {
+  if (value === null || value === undefined || value === "") return "";
+  return '<div class="factRow">' +
+    '<span class="factLabel">' + label + '</span>' +
+    '<span class="factValue">' + value + '</span>' +
+  '</div>';
+}
+
+function sectionHead(list, title) {
+  const head = document.createElement("div");
+  head.className = "boxHead";
+  head.textContent = title;
+  list.appendChild(head);
+}
+
+// Turns "WWDLW" into coloured pills, newest last.
+function formPills(form) {
+  if (!form) return "";
+  return '<span class="formRow">' + String(form).split("").map(function (letter) {
+    const kind = letter === "W" ? "win" : (letter === "D" ? "draw" : "loss");
+    return '<span class="formPill ' + kind + '">' + letter + '</span>';
+  }).join("") + '</span>';
+}
+
+// ---- Facts ----
+function drawFactsTab(match, extra, list) {
+  const kickoff = new Date(match.fixture.date);
+  const extras = match.extras || {};
+
+  sectionHead(list, "The match");
+  const details = document.createElement("div");
+  details.className = "factBox";
+  details.innerHTML =
+    factRow("Competition", match.league.name) +
+    factRow("Country", match.league.country) +
+    factRow("Round", extras.round) +
+    factRow("Kick off", isNaN(kickoff) ? "" :
+      kickoff.toLocaleString([], {
+        weekday: "long", day: "numeric", month: "long",
+        hour: "2-digit", minute: "2-digit",
+      })) +
+    factRow("Ground", extras.stadium) +
+    factRow("Referee", extras.referee);
+  list.appendChild(details);
+
+  // ---- Head to head ----
+  const h2h = extra && extra.h2h;
+  if (h2h && h2h.played > 0) {
+    sectionHead(list, "Head to head");
+
+    const box = document.createElement("div");
+    box.className = "factBox";
+    box.innerHTML =
+      '<div class="h2hCounts">' +
+        '<span class="h2hSide">' +
+          '<b>' + h2h.homeWins + '</b><span>' + match.teams.home.name + '</span>' +
+        '</span>' +
+        '<span class="h2hSide"><b>' + h2h.draws + '</b><span>Drawn</span></span>' +
+        '<span class="h2hSide">' +
+          '<b>' + h2h.awayWins + '</b><span>' + match.teams.away.name + '</span>' +
+        '</span>' +
+      '</div>' +
+      '<div class="h2hNote">Last ' + h2h.played + ' meetings</div>';
+    list.appendChild(box);
+
+    for (const game of h2h.recent) {
+      const when = new Date(game.date);
+      const row = document.createElement("div");
+      row.className = "h2hRow";
+      row.innerHTML =
+        '<span class="h2hWhen">' + (isNaN(when) ? "" :
+          when.toLocaleDateString([], { day: "numeric", month: "short", year: "2-digit" })) +
+        '</span>' +
+        '<span class="h2hGame">' + game.home + ' ' + game.score + ' ' + game.away + '</span>';
+      list.appendChild(row);
+    }
+  }
+
+  // ---- Season so far ----
+  const guess = extra && extra.prediction;
+  if (guess) {
+    sectionHead(list, "This season");
+
+    const table = document.createElement("div");
+    table.className = "factBox";
+
+    const line = function (label, home, away) {
+      return '<div class="compareRow">' +
+        '<span class="compareHome">' + home + '</span>' +
+        '<span class="compareLabel">' + label + '</span>' +
+        '<span class="compareAway">' + away + '</span>' +
+      '</div>';
+    };
+
+    table.innerHTML =
+      '<div class="compareRow compareHead">' +
+        '<span class="compareHome">' + match.teams.home.name + '</span>' +
+        '<span class="compareLabel"></span>' +
+        '<span class="compareAway">' + match.teams.away.name + '</span>' +
+      '</div>' +
+      line("Played", guess.home.played, guess.away.played) +
+      line("Won", guess.home.won, guess.away.won) +
+      line("Drawn", guess.home.drawn, guess.away.drawn) +
+      line("Lost", guess.home.lost, guess.away.lost) +
+      line("Scored", guess.home.scored, guess.away.scored) +
+      line("Conceded", guess.home.conceded, guess.away.conceded) +
+      line("Clean sheets", guess.home.cleanSheets, guess.away.cleanSheets) +
+      line("Failed to score", guess.home.blanks, guess.away.blanks) +
+      line("Form", formPills(guess.home.form.slice(-5)),
+                   formPills(guess.away.form.slice(-5)));
+    list.appendChild(table);
+  }
+
+  // ---- Match statistics, once there are any ----
+  const stats = match.statistics || [];
+  if (stats.length > 0) {
+    sectionHead(list, "Match statistics");
+
+    const box = document.createElement("div");
+    box.className = "statBox";
+
+    for (const item of stats) {
+      const homeValue = item.home === undefined ? "0" : item.home;
+      const awayValue = item.away === undefined ? "0" : item.away;
+      const homeNum = Number(String(homeValue).replace("%", "")) || 0;
+      const awayNum = Number(String(awayValue).replace("%", "")) || 0;
+      const total = homeNum + awayNum;
+      const width = total === 0 ? 50 : (homeNum / total) * 100;
+
+      const stat = document.createElement("div");
+      stat.className = "stat";
+      stat.innerHTML =
+        '<div class="statTop">' +
+          '<span class="statVal">' + homeValue + '</span>' +
+          '<span class="statName">' + (item.type || "") + '</span>' +
+          '<span class="statVal">' + awayValue + '</span>' +
+        '</div>' +
+        '<div class="statBar">' +
+          '<div class="statHome" style="width:' + width + '%"></div>' +
+          '<div class="statAway" style="width:' + (100 - width) + '%"></div>' +
+        '</div>';
+      box.appendChild(stat);
+    }
+    list.appendChild(box);
+  }
+
+  // The details above are always worth showing, so this adds a note
+  // rather than wiping them - an earlier version replaced the lot
+  // with an empty message and threw away the useful part.
+  if (!h2h && !guess && stats.length === 0) {
+    const note = document.createElement("div");
+    note.className = "extras";
+    note.textContent =
+      "Head to head, form and match statistics are not published for " +
+      "this fixture yet. They usually fill in closer to kick off.";
+    list.appendChild(note);
+  }
+}
+
+// ---- News ----
+// Every sentence below is built from figures the provider gave us.
+// Nothing here is invented, and nothing is claimed that the data
+// does not actually say.
+function previewSentences(match, extra) {
+  const guess = extra && extra.prediction;
+  if (!guess) return [];
+
+  const lines = [];
+  const home = guess.home;
+  const away = guess.away;
+  const homeName = match.teams.home.name;
+  const awayName = match.teams.away.name;
+
+  const record = function (side, name) {
+    if (!side.played) return "";
+    return name + " have won " + side.won + " of " + side.played +
+      ", scoring " + side.scored + " and conceding " + side.conceded + ".";
+  };
+
+  if (record(home, homeName)) lines.push(record(home, homeName));
+  if (record(away, awayName)) lines.push(record(away, awayName));
+
+  // Recent form, in words rather than letters.
+  const runOf = function (side, name) {
+    const form = String(side.last5Form || side.form || "").slice(-5);
+    if (!form) return "";
+    const wins = (form.match(/W/g) || []).length;
+    const draws = (form.match(/D/g) || []).length;
+    const losses = (form.match(/L/g) || []).length;
+    return name + " come in on " + wins + " win" + (wins === 1 ? "" : "s") +
+      ", " + draws + " draw" + (draws === 1 ? "" : "s") + " and " +
+      losses + " defeat" + (losses === 1 ? "" : "s") + " from their last " +
+      form.length + ".";
+  };
+
+  if (runOf(home, homeName)) lines.push(runOf(home, homeName));
+  if (runOf(away, awayName)) lines.push(runOf(away, awayName));
+
+  // Where each side is stronger, straight from the comparison.
+  const compare = guess.comparison || {};
+  const gap = function (key, label) {
+    const pair = compare[key];
+    if (!pair) return "";
+    const h = Number(String(pair.home || "").replace("%", ""));
+    const a = Number(String(pair.away || "").replace("%", ""));
+    if (!h && !a) return "";
+    if (Math.abs(h - a) < 10) return "";
+    return (h > a ? homeName : awayName) + " rate higher on " + label +
+      " (" + Math.max(h, a) + "% against " + Math.min(h, a) + "%).";
+  };
+
+  for (const [key, label] of [["att", "attack"], ["def", "defence"], ["form", "form"]]) {
+    const line = gap(key, label);
+    if (line) lines.push(line);
+  }
+
+  // Clean sheets and blanks are the clearest read on both ends.
+  if (home.cleanSheets || away.cleanSheets) {
+    lines.push(homeName + " have kept " + home.cleanSheets +
+      " clean sheet" + (home.cleanSheets === 1 ? "" : "s") + " to " +
+      awayName + "'s " + away.cleanSheets + ".");
+  }
+  if (home.blanks || away.blanks) {
+    lines.push(homeName + " have failed to score " + home.blanks +
+      " time" + (home.blanks === 1 ? "" : "s") + ", " + awayName + " " +
+      away.blanks + ".");
+  }
+
+  return lines;
+}
+
+function drawNewsTab(match, extra, list) {
+  const guess = extra && extra.prediction;
+  const injuries = (extra && extra.injuries) || { home: [], away: [] };
+  const played = stateOf(match) !== "upcoming";
+
+  // ---- What happened, or what to expect ----
+  sectionHead(list, played ? "The match" : "Before kick off");
+
+  const lines = previewSentences(match, extra);
+  const summary = document.createElement("div");
+  summary.className = "newsBox";
+
+  if (played) {
+    const scorers = (match.events || []).map(function (e) {
+      return e.player.name + " " + e.time.elapsed + "'";
+    });
+
+    summary.innerHTML =
+      '<p>' + match.teams.home.name + ' ' +
+        (match.goals.home === null ? "-" : match.goals.home) + '-' +
+        (match.goals.away === null ? "-" : match.goals.away) + ' ' +
+        match.teams.away.name +
+        (match.fixture.status.short === "FT" ? ", full time." : ", in play.") + '</p>' +
+      (scorers.length > 0
+        ? '<p>Scorers: ' + scorers.join(", ") + '.</p>'
+        : '<p>No goals yet.</p>') +
+      lines.map(function (line) { return '<p>' + line + '</p>'; }).join("");
+  } else if (lines.length > 0) {
+    summary.innerHTML = lines.map(function (line) {
+      return '<p>' + line + '</p>';
+    }).join("");
+  } else {
+    summary.innerHTML =
+      '<p>Nothing published for this match yet. Form and team news ' +
+      'usually arrive a day or two before kick off.</p>';
+  }
+  list.appendChild(summary);
+
+  // ---- Form guide ----
+  if (guess) {
+    sectionHead(list, "Form");
+    const form = document.createElement("div");
+    form.className = "factBox";
+    form.innerHTML =
+      '<div class="formLine">' +
+        '<span class="formWho">' + match.teams.home.name + '</span>' +
+        formPills(String(guess.home.form).slice(-5)) +
+      '</div>' +
+      '<div class="formLine">' +
+        '<span class="formWho">' + match.teams.away.name + '</span>' +
+        formPills(String(guess.away.form).slice(-5)) +
+      '</div>';
+    list.appendChild(form);
+  }
+
+  // ---- Who is missing ----
+  sectionHead(list, "Team news");
+
+  const missingBox = document.createElement("div");
+  missingBox.className = "factBox";
+
+  const sideOut = function (side, name) {
+    if (side.length === 0) {
+      return '<div class="outSide">' +
+        '<div class="outWho">' + name + '</div>' +
+        '<div class="outNone">Nobody listed as unavailable</div>' +
+      '</div>';
+    }
+    return '<div class="outSide">' +
+      '<div class="outWho">' + name + '</div>' +
+      side.map(function (player) {
+        return '<div class="outRow">' +
+          '<span class="outName">' + player.name + '</span>' +
+          '<span class="outWhy">' + (player.reason || player.type || "") + '</span>' +
+        '</div>';
+      }).join("") +
+    '</div>';
+  };
+
+  missingBox.innerHTML =
+    sideOut(injuries.home, match.teams.home.name) +
+    sideOut(injuries.away, match.teams.away.name);
+  list.appendChild(missingBox);
+
+  // ---- Line-ups, once they are out ----
+  if (match.pitch) {
+    const note = document.createElement("div");
+    note.className = "extras";
+    note.innerHTML = "Line-ups are out - see the Line-ups tab. " +
+      match.teams.home.name + " " + (match.formations.home || "") + ", " +
+      match.teams.away.name + " " + (match.formations.away || "") + ".";
+    list.appendChild(note);
+  } else if (!played) {
+    const note = document.createElement("div");
+    note.className = "extras";
+    note.textContent = "Line-ups usually appear about an hour before kick off.";
+    list.appendChild(note);
+  }
 }
 
 
@@ -10269,6 +10910,20 @@ async function handleRequest(request, response) {
       : await getMatch(fixtureId);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(match));
+    return;
+  }
+
+  if (address.pathname === "/api/match-extra") {
+    const fixtureId = Number(address.searchParams.get("id"));
+    if (!fixtureId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("null");
+      return;
+    }
+
+    const extra = await getMatchExtra(fixtureId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(extra));
     return;
   }
 
