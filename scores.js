@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-06-safe-start";
+const BUILD = "2026-09-06-grouped";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -3918,6 +3918,32 @@ body {
   cursor: pointer; user-select: none; line-height: 1;
 }
 .fixStar.on { color: #F5A623; }
+.fixGroup { margin-bottom: 4px; }
+.fixHead {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 4px 9px; cursor: pointer; user-select: none;
+}
+.fixHead img { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
+.fixHeadBlank { width: 20px; flex-shrink: 0; }
+.fixHeadName {
+  flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600;
+  color: #111827;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fixHeadCount {
+  font-size: 11px; color: #6B7280; background: #E8EDF3;
+  border-radius: 9px; padding: 2px 8px; flex-shrink: 0;
+}
+.fixHeadChevron {
+  font-size: 10px; color: #9CA3AF; flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.fixHeadChevron.folded { transform: rotate(180deg); }
+
+/* With the heading naming the competition, the card's own top row
+   only carries the time and the star. */
+.fixCard .featTop { min-height: 16px; }
+
 .fixMore { padding: 4px 12px 18px; text-align: center; }
 .fixMoreBtn {
   width: 100%; background: #fff; color: #1E6FD9;
@@ -5435,8 +5461,9 @@ function fixtureCard(match) {
   // near the screen, which matters on a long list.
   return '<div class="feature fixCard" data-id="' + match.fixture.id + '">' +
     '<div class="featTop">' +
-      '<span class="featComp">' + (match.league.country || "") +
-        ' &middot; ' + (match.league.name || "") + '</span>' +
+      // The heading above the group names the competition now, so
+      // repeating it on every card is just noise.
+      '<span class="featComp"></span>' +
       '<span class="fixRight">' +
         (status
           ? '<span class="' + (live ? "featClock" : "fixWhen") + '">' +
@@ -5484,6 +5511,25 @@ function wireFixtureCards(within) {
   }
 }
 
+// Competitions the person has folded away, so the choice survives
+// a redraw when a score changes.
+const foldedLeagues = {};
+
+function leagueHeading(league, count) {
+  const folded = foldedLeagues[league.id];
+
+  return '<div class="fixHead" data-league="' + league.id + '">' +
+    (league.logo
+      ? '<img src="' + league.logo + '" alt="" loading="lazy">'
+      : '<span class="fixHeadBlank"></span>') +
+    '<span class="fixHeadName">' +
+      (league.country ? league.country + " - " : "") + (league.name || "") +
+    '</span>' +
+    '<span class="fixHeadCount">' + count + '</span>' +
+    '<span class="fixHeadChevron' + (folded ? " folded" : "") + '">&#9650;</span>' +
+  '</div>';
+}
+
 function drawMatches(matches, showKickoffTimes) {
   const list = document.getElementById("list");
   list.innerHTML = "";
@@ -5493,40 +5539,85 @@ function drawMatches(matches, showKickoffTimes) {
     return;
   }
 
+  // The matches arrive already ordered by competition, so walking
+  // them once is enough to group them - no second pass needed.
+  const groups = [];
+  for (const match of matches) {
+    const last = groups[groups.length - 1];
+    if (last && last.league.id === match.league.id) {
+      last.matches.push(match);
+    } else {
+      groups.push({ league: match.league, matches: [match] });
+    }
+  }
+
   const stack = document.createElement("div");
   stack.className = "fixStack";
   list.appendChild(stack);
-
-  let shown = 0;
 
   const more = document.createElement("div");
   more.className = "fixMore";
   list.appendChild(more);
 
-  const addPage = function () {
-    const next = matches.slice(shown, shown + FIXTURE_PAGE);
-    shown += next.length;
+  let at = 0;        // which group we have reached
+  let shown = 0;     // matches drawn so far
 
-    // Each page is its own block. The cards carry their own spacing,
-    // so a wrapper changes nothing on screen and keeps this simple.
+  const redraw = function () {
+    // Folding a competition changes what is on screen, so the
+    // simplest correct thing is to start the list again.
+    drawMatches(matches, showKickoffTimes);
+  };
+
+  const addPage = function () {
     const page = document.createElement("div");
-    page.innerHTML = next.map(fixtureCard).join("");
-    wireFixtureCards(page);
+    let added = 0;
+
+    while (at < groups.length && added < FIXTURE_PAGE) {
+      const group = groups[at];
+      const folded = foldedLeagues[group.league.id];
+
+      const block = document.createElement("div");
+      block.className = "fixGroup";
+      block.innerHTML =
+        leagueHeading(group.league, group.matches.length) +
+        (folded ? "" : group.matches.map(fixtureCard).join(""));
+
+      page.appendChild(block);
+      wireFixtureCards(block);
+
+      // A folded competition costs nothing to draw, so it does not
+      // use up any of the page.
+      if (!folded) {
+        added += group.matches.length;
+        shown += group.matches.length;
+      }
+      at++;
+    }
+
     stack.appendChild(page);
 
-    const left = matches.length - shown;
-    if (left <= 0) {
-      more.innerHTML = matches.length > FIXTURE_PAGE
-        ? '<div class="fixCount">That is all ' + matches.length + '</div>'
+    for (const head of page.querySelectorAll(".fixHead")) {
+      const id = Number(head.getAttribute("data-league"));
+      head.onclick = function () {
+        if (foldedLeagues[id]) delete foldedLeagues[id];
+        else foldedLeagues[id] = true;
+        redraw();
+      };
+    }
+
+    const leftGroups = groups.length - at;
+    if (leftGroups <= 0) {
+      more.innerHTML = groups.length > 1
+        ? '<div class="fixCount">' + matches.length + ' games in ' +
+          groups.length + ' competitions</div>'
         : "";
       return;
     }
 
     more.innerHTML =
-      '<button class="fixMoreBtn">Show ' +
-        Math.min(FIXTURE_PAGE, left) + ' more' +
-      '</button>' +
-      '<div class="fixCount">' + shown + ' of ' + matches.length + '</div>';
+      '<button class="fixMoreBtn">Show more competitions</button>' +
+      '<div class="fixCount">' + shown + ' of ' + matches.length +
+        ' games shown</div>';
 
     more.querySelector(".fixMoreBtn").onclick = addPage;
   };
@@ -9261,7 +9352,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-06-safe-start");
+  row("Build", "2026-09-06-grouped");
 
   // ---- Clearing up ----
   section("Data");
