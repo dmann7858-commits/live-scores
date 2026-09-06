@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-06-grouped";
+const BUILD = "2026-09-06-grouped-b";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -5532,10 +5532,21 @@ function leagueHeading(league, count) {
 
 function drawMatches(matches, showKickoffTimes) {
   const list = document.getElementById("list");
+
+  // The fixtures screen puts its filter bar at the top of this same
+  // list, after this function has run. Folding a competition calls
+  // us again, so without holding on to the bar it would disappear
+  // the first time somebody tapped a league heading.
+  const bar = list.querySelector(".filterBar");
+
   list.innerHTML = "";
+  if (bar) list.appendChild(bar);
 
   if (matches.length === 0) {
-    list.innerHTML = '<div class="empty">Nothing to show here.</div>';
+    const nothing = document.createElement("div");
+    nothing.className = "empty";
+    nothing.textContent = "Nothing to show here.";
+    list.appendChild(nothing);
     return;
   }
 
@@ -9352,7 +9363,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-06-grouped");
+  row("Build", "2026-09-06-grouped-b");
 
   // ---- Clearing up ----
   section("Data");
