@@ -28,6 +28,12 @@ const PORT = process.env.PORT || 3000;
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || "";
 const APP_NAME = "GoalFlash";
 
+// Which build this is. Bumped by hand whenever the file changes,
+// so there is a way to tell at a glance whether what is running is
+// what was last sent. Chasing a bug in code that was never
+// deployed wastes more time than anything else.
+const BUILD = "2026-09-06-live-feed";
+
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
 const OPERATOR_NAME = process.env.OPERATOR_NAME || "";
@@ -3678,16 +3684,24 @@ body {
 .featureBoxPad { padding: 12px 6px 4px; }
 
 .feature {
-  flex: 0 0 100%; scroll-snap-align: start;
   background: #0B1E3D; color: #fff; cursor: pointer;
   border-radius: 14px; padding: 14px 14px 12px;
   box-shadow: 0 2px 10px rgba(11,30,61,0.18);
-  /* The gap between cards is a transparent border, so the snap
-     points still land exactly one card apart. */
+}
+
+/* Inside the swipe track it is one card per screen. The gap is a
+   transparent border rather than a margin, so the snap points
+   still land exactly one card apart. */
+.featTrack .feature {
+  flex: 0 0 100%; scroll-snap-align: start;
   border-left: 6px solid transparent;
   border-right: 6px solid transparent;
   background-clip: padding-box;
 }
+
+/* Stacked down the page it is an ordinary card. */
+.liveStack { padding: 0 12px 4px; }
+.liveStack .feature { margin-bottom: 10px; }
 .feature:active { opacity: 0.92; }
 .featTop {
   display: flex; align-items: center; justify-content: space-between;
@@ -5332,6 +5346,10 @@ async function loadTicker() {
     const response = await fetch("/api/ticker");
     const fresh = await response.json();
 
+    // A malformed answer should leave the ticker as it was rather
+    // than emptying it and throwing on the next draw.
+    if (!Array.isArray(fresh)) return;
+
     // Keep our place in the list if the same games are still on.
     const wasShowing = tickerMatches[tickerAt] ? tickerMatches[tickerAt].id : null;
     tickerMatches = fresh;
@@ -6050,11 +6068,16 @@ function buildFeature(live) {
     })
     .sort(function (a, b) { return a.rank - b.rank; });
 
-  const before = featureList[featureAt] ? featureList[featureAt].id : null;
+  const followed = ranked.filter(function (entry) { return entry.rank < 20; });
 
-  // Twelve is plenty to swipe through. Beyond that it is a list
-  // rather than a feed, and every card costs a lookup for scorers.
-  featureList = ranked.slice(0, 12).map(function (entry) { return entry.item; });
+  // Their own matches take the top card and cycle between them.
+  // With none of theirs on, the biggest game in the world stands
+  // in - one card, sitting still, rather than a slideshow of
+  // matches nobody asked about.
+  const chosen = followed.length > 0 ? followed.slice(0, 4) : ranked.slice(0, 1);
+
+  const before = featureList[featureAt] ? featureList[featureAt].id : null;
+  featureList = chosen.map(function (entry) { return entry.item; });
 
   const stillThere = featureList.findIndex(function (item) {
     return item.id === before;
@@ -6229,8 +6252,73 @@ function markFeatureDots() {
   }
 }
 
+// ---------------------------------------------------------------
+// LIVE NOW
+//
+// The same card as the one at the top, stacked down the page. The
+// featured card is whatever matters most to this person; this is
+// everything else being played.
+// ---------------------------------------------------------------
+const LIVE_LIST_MAX = 15;
+
+function drawLiveList(list, live) {
+  if (!live || live.length === 0) return;
+
+  // Whatever is already on the card above does not need repeating
+  // directly underneath it.
+  const onTop = {};
+  for (const item of featureList) onTop[item.id] = true;
+
+  const rest = live
+    .map(function (item) {
+      return { item: item, rank: featureRank(item) };
+    })
+    .sort(function (a, b) { return a.rank - b.rank; })
+    .map(function (entry) { return entry.item; })
+    .filter(function (item) { return !onTop[item.id]; })
+    .slice(0, LIVE_LIST_MAX);
+
+  if (rest.length === 0) return;
+
+  const heading = document.createElement("div");
+  heading.className = "boardHead";
+  heading.innerHTML = 'Live now <span class="liveCount">' +
+    live.length + '</span>';
+  list.appendChild(heading);
+
+  const stack = document.createElement("div");
+  stack.className = "liveStack";
+  stack.innerHTML = rest.map(featureCard).join("");
+  list.appendChild(stack);
+
+  for (const card of stack.querySelectorAll(".feature")) {
+    const id = Number(card.getAttribute("data-feature"));
+    card.onclick = function () { tally("feature"); openMatch(id); };
+  }
+
+  // Scorers come in one at a time behind the list, so fifteen
+  // cards do not fire fifteen requests at once.
+  fillStackGoals(rest);
+}
+
+async function fillStackGoals(items) {
+  for (const item of items) {
+    // Somebody may have moved on before this gets round to them.
+    if (screen !== "home" || homeTab !== "live") return;
+
+    const match = await featureDetail(item.id);
+    if (!match) continue;
+
+    const card = document.querySelector('[data-feature="' + item.id + '"]');
+    if (!card) continue;
+
+    const quiet = card.querySelector(".featQuiet");
+    if (quiet) quiet.outerHTML = featureGoalsHtml(match, item);
+  }
+}
+
 // Fetches scorers for the card on screen and the one either side,
-// rather than all twelve at once.
+// rather than all of them at once.
 async function fillFeatureGoals(index) {
   const wanted = [index - 1, index, index + 1].filter(function (at) {
     return at >= 0 && at < featureList.length;
@@ -6378,15 +6466,8 @@ async function drawHomeLive(list) {
   buildFeature(live);
   await paintFeature();
 
-  // The swipeable feed at the top of this tab is the live section
-  // now, so there is no separate grid of the same matches below it.
-  if (live.length > 0) {
-    const heading = document.createElement("div");
-    heading.className = "boardHead";
-    heading.innerHTML = 'Live now <span class="liveCount">' +
-      live.length + '</span>';
-    list.insertBefore(heading, list.children[1] || null);
-  }
+  // Everything being played, under the clubs and leagues board.
+  drawLiveList(list, live);
 
 }
 
@@ -8738,6 +8819,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
+  row("Build", "2026-09-06-live-feed");
 
   // ---- Clearing up ----
   section("Data");
@@ -10670,6 +10752,8 @@ own feeds and link back to the original articles.</p>
 // ---------------------------------------------------------------
 // THE SERVER
 // ---------------------------------------------------------------
+const STARTED_AT = new Date().toISOString();
+
 const server = http.createServer(async function (request, response) {
   try {
     await handleRequest(request, response);
@@ -11315,6 +11399,18 @@ async function handleRequest(request, response) {
   }
 
   // The account itself: what plan, and how many requests are left.
+  // Which build is actually running. Open /api/version.
+  if (address.pathname === "/api/version") {
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      build: BUILD,
+      started: STARTED_AT,
+      note: "If this build is not the one you were expecting, the " +
+            "newest file has not reached Render.",
+    }, null, 2));
+    return;
+  }
+
   if (address.pathname === "/api/quota") {
     const raw = await askApi("status", {});
 
@@ -11373,6 +11469,7 @@ async function handleRequest(request, response) {
 server.listen(PORT, function () {
   console.log("");
   console.log("  App running on port " + PORT);
+  console.log("  Build: " + BUILD);
   console.log("  Football data from " + API_HOST);
   if (!API_KEY) {
     console.log("  !! APIFOOTBALL_KEY is not set - no match data will load");
