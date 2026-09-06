@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-06-live-feed";
+const BUILD = "2026-09-06-no-freeze";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -4725,6 +4725,45 @@ setInterval(checkForGoals, 30000);
 checkForGoals();
 
 
+// A fetch that gives up rather than waiting forever. Anything a
+// screen waits on has to be time-boxed, or one slow answer leaves
+// the whole app sitting on whatever was drawn last.
+async function fetchJson(url, seconds) {
+  const stop = new AbortController();
+  const timer = setTimeout(function () { stop.abort(); }, (seconds || 12) * 1000);
+
+  try {
+    const answer = await fetch(url, { signal: stop.signal });
+    return await answer.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The full competition list runs to over a thousand entries and can
+// take a while on a cold server. Fetched once, in the background,
+// and the screens that need it redraw when it lands.
+let leaguesLoading = null;
+
+function loadLeagues() {
+  if (allLeagues !== null) return Promise.resolve(allLeagues);
+  if (leaguesLoading) return leaguesLoading;
+
+  leaguesLoading = (async function () {
+    try {
+      allLeagues = await fetchJson("/api/leagues", 20);
+      if (!Array.isArray(allLeagues)) allLeagues = [];
+    } catch (error) {
+      allLeagues = [];
+    }
+    leaguesLoading = null;
+    return allLeagues;
+  })();
+
+  return leaguesLoading;
+}
+
+
 // ---------------------------------------------------------------
 // WHICH SCREEN
 // ---------------------------------------------------------------
@@ -5553,14 +5592,8 @@ function closeDrawer() {
 
 document.getElementById("burger").onclick = async function () {
   openDrawer();
-  // Fetch the league list the first time it is opened.
   if (allLeagues === null) {
-    try {
-      const response = await fetch("/api/leagues");
-      allLeagues = await response.json();
-    } catch (error) {
-      allLeagues = [];
-    }
+    await loadLeagues();
     buildDrawer();
   }
 };
@@ -6458,7 +6491,8 @@ async function drawHomeLive(list) {
   // One request feeds both the card at the top and the grid here.
   let live = [];
   try {
-    live = await (await fetch("/api/ticker")).json();
+    live = await fetchJson("/api/ticker", 12);
+    if (!Array.isArray(live)) live = [];
   } catch (error) {
     live = [];
   }
@@ -8819,7 +8853,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-06-live-feed");
+  row("Build", "2026-09-06-no-freeze");
 
   // ---- Clearing up ----
   section("Data");
@@ -10219,14 +10253,12 @@ async function refresh() {
   const list = document.getElementById("list");
   const updated = document.getElementById("updated");
 
-  // Most screens need the league list, so fetch it once up front.
-  if (allLeagues === null &&
-      ["favourites", "home", "fixtures"].includes(screen)) {
-    try {
-      allLeagues = await (await fetch("/api/leagues")).json();
-    } catch (error) {
-      allLeagues = [];
-    }
+  // Home does not use the competition list at all - it runs off the
+  // followed clubs and the live feed. Waiting on a thousand leagues
+  // before drawing anything is what left the app sitting on
+  // "Loading..." with an empty bar.
+  if (allLeagues === null && ["favourites", "fixtures"].includes(screen)) {
+    await loadLeagues();
   }
 
   if (screen === "club") {
@@ -10502,6 +10534,11 @@ startSession()
   });
 
 goTo("home");
+
+// Nothing on Home needs the competition list, but the drawer and
+// Favourites do, so it is warmed quietly in the background rather
+// than made into anybody's first wait.
+loadLeagues();
 
 // The ticker keeps live scores moving on its own, so only the
 // home screen needs periodic refreshing.
