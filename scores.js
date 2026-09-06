@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-06-paged";
+const BUILD = "2026-09-06-safe-start";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -1469,6 +1469,170 @@ function mergeStatistics(raw) {
   });
 }
 
+// ---------------------------------------------------------------
+// COMMENTARY FROM THE STATISTICS
+//
+// The events feed carries four things only: goals, cards,
+// substitutions and VAR. No corners, no shots, no free kicks, and
+// no position on the pitch for any of it.
+//
+// The statistics block does carry running totals though. Read them
+// a minute apart and the differences are events with a time on
+// them: corners taken, shots on and off target, fouls given,
+// offsides, saves, and possession swinging one way or the other.
+//
+// Two honest limits, and neither is worked around:
+//   - the minute is accurate to the gap between readings, so a
+//     corner at 57 may be logged at 58;
+//   - nothing here knows where the ball was, so nothing here
+//     claims to. No "dangerous attack", no pitch positions.
+//
+// A restart loses what has been gathered so far, because it is all
+// held in memory. The match's own goals and cards survive that,
+// since those come from the provider each time.
+// ---------------------------------------------------------------
+const statSnapshots = {};    // fixture id -> { at, minute, values }
+const derivedFeed = {};      // fixture id -> the lines worked out so far
+const DERIVED_MAX = 150;
+
+// The measures worth watching, and what an increase means.
+const WATCHED = [
+  { type: "Corner Kicks", kind: "corner",
+    line: function (team, n) {
+      return n === 1 ? "Corner to " + team + "."
+                     : n + " corners in quick succession for " + team + ".";
+    } },
+  { type: "Shots on Goal", kind: "shot",
+    line: function (team, n) {
+      return n === 1 ? "Shot on target from " + team + "."
+                     : n + " shots on target from " + team + ".";
+    } },
+  { type: "Shots off Goal", kind: "shot",
+    line: function (team, n) {
+      return n === 1 ? team + " shoot wide."
+                     : n + " off target from " + team + ".";
+    } },
+  { type: "Blocked Shots", kind: "shot",
+    line: function (team, n) {
+      return n === 1 ? "Shot from " + team + " blocked."
+                     : n + " shots from " + team + " blocked.";
+    } },
+  { type: "Goalkeeper Saves", kind: "save",
+    line: function (team, n) {
+      return n === 1 ? "Save by the " + team + " keeper."
+                     : n + " saves by the " + team + " keeper.";
+    } },
+  { type: "Offsides", kind: "offside",
+    line: function (team, n) {
+      return n === 1 ? "Offside against " + team + "."
+                     : n + " offsides against " + team + ".";
+    } },
+];
+
+function readStatValues(raw) {
+  const blocks = raw.statistics || [];
+  if (blocks.length < 2) return null;
+
+  const homeId = raw.teams && raw.teams.home && raw.teams.home.id;
+  const homeBlock = blocks.find(function (b) {
+    return b.team && b.team.id === homeId;
+  }) || blocks[0];
+  const awayBlock = blocks.find(function (b) { return b !== homeBlock; }) || blocks[1];
+
+  const readSide = function (block) {
+    const out = {};
+    for (const item of (block.statistics || [])) {
+      const value = item.value;
+      if (value === null || value === undefined) { out[item.type] = 0; continue; }
+      out[item.type] = Number(String(value).replace("%", "")) || 0;
+    }
+    return out;
+  };
+
+  return { home: readSide(homeBlock), away: readSide(awayBlock) };
+}
+
+// Compares this reading with the last one and turns the differences
+// into lines. Returns everything worked out for this match so far.
+function deriveCommentary(fixtureId, raw) {
+  const status = (raw.fixture && raw.fixture.status) || {};
+  const minute = Number(status.elapsed) || 0;
+  const values = readStatValues(raw);
+
+  if (!derivedFeed[fixtureId]) derivedFeed[fixtureId] = [];
+  if (!values) return derivedFeed[fixtureId];
+
+  const before = statSnapshots[fixtureId];
+  statSnapshots[fixtureId] = { at: Date.now(), minute: minute, values: values };
+
+  // Nothing to compare against yet. The first reading only sets the
+  // baseline - inventing lines for everything that happened before
+  // the app was opened would put them all at the wrong minute.
+  if (!before) return derivedFeed[fixtureId];
+  if (minute <= before.minute) return derivedFeed[fixtureId];
+
+  const homeName = (raw.teams && raw.teams.home && raw.teams.home.name) || "Home";
+  const awayName = (raw.teams && raw.teams.away && raw.teams.away.name) || "Away";
+  const feed = derivedFeed[fixtureId];
+
+  const note = function (kind, text, side) {
+    feed.push({
+      minute: minute, kind: kind, text: text, side: side, derived: true,
+    });
+  };
+
+  for (const watch of WATCHED) {
+    for (const side of ["home", "away"]) {
+      const now = values[side][watch.type] || 0;
+      const was = before.values[side][watch.type] || 0;
+      const gained = now - was;
+      if (gained > 0) {
+        note(watch.kind, watch.line(side === "home" ? homeName : awayName, gained), side);
+      }
+    }
+  }
+
+  // A foul conceded is a free kick for the other side, which is the
+  // way round that matters to somebody reading it.
+  for (const side of ["home", "away"]) {
+    const gained = (values[side]["Fouls"] || 0) - (before.values[side]["Fouls"] || 0);
+    if (gained > 0) {
+      const against = side === "home" ? awayName : homeName;
+      note("freekick",
+        gained === 1
+          ? "Free kick to " + against + "."
+          : gained + " free kicks to " + against + ".",
+        side === "home" ? "away" : "home");
+    }
+  }
+
+  // Possession, but only when it has genuinely moved. Small wobbles
+  // every minute would drown everything else out.
+  const nowHome = values.home["Ball Possession"] || 0;
+  const wasHome = before.values.home["Ball Possession"] || 0;
+
+  if (nowHome && wasHome && Math.abs(nowHome - wasHome) >= 4) {
+    const rising = nowHome > wasHome;
+    note("possession",
+      (rising ? homeName : awayName) + " are seeing more of the ball - " +
+      (rising ? nowHome : (values.away["Ball Possession"] || 0)) + "% now.",
+      rising ? "home" : "away");
+  }
+
+  // Keep the newest, so a long match cannot grow without limit.
+  if (feed.length > DERIVED_MAX) {
+    derivedFeed[fixtureId] = feed.slice(-DERIVED_MAX);
+  }
+
+  return derivedFeed[fixtureId];
+}
+
+// Once a match is over there is no reason to hold on to any of it.
+function forgetDerived(fixtureId) {
+  delete statSnapshots[fixtureId];
+  delete derivedFeed[fixtureId];
+}
+
 function translateMatch(raw) {
   const fixture = raw.fixture || {};
   const league = raw.league || {};
@@ -1745,11 +1909,28 @@ async function getMatch(fixtureId) {
     return cache[name] ? cache[name].data : null;
   }
 
-  const match = translateMatch(result[0]);
+  const raw = result[0];
+  const match = translateMatch(raw);
 
-  // There is no live text commentary on this provider. The feed
-  // built from the events is what the Commentary tab shows.
-  match.hasLiveCommentary = false;
+  const state = match.fixture.status;
+  const inPlay = state.elapsed !== null || state.short === "HT";
+
+  if (inPlay) {
+    // Every visit to an open match is itself a reading, so no
+    // background job is needed - only matches somebody is actually
+    // watching get polled, and the cache keeps that to once a
+    // minute however many people are looking.
+    const derived = deriveCommentary(fixtureId, raw);
+
+    if (derived.length > 0) {
+      match.commentary = match.commentary
+        .concat(derived)
+        .sort(function (a, b) { return a.minute - b.minute; });
+      match.hasLiveCommentary = true;
+    }
+  } else if (FINISHED.indexOf(state.short) !== -1) {
+    forgetDerived(fixtureId);
+  }
 
   return intoCache(name, match);
 }
@@ -2652,6 +2833,8 @@ const PAGE = `
     margin-left: 8px;
   }
   .commRow.start .commText, .commRow.end .commText { color: #555; font-style: italic; }
+  .commRow.commDerived .commText { color: #5A6472; }
+  .commRow.save .commText, .commRow.offside .commText { color: #5A6472; }
 
   /* Pitch view */
   .pitchWrap { background: #fff; padding: 12px 8px 16px; }
@@ -3583,6 +3766,20 @@ body {
 .lgYou .lgName { color: #1E6FD9; }
 .setRow { border-bottom-color: #ECEEF1; }
 
+.startupError {
+  display: none; margin: 60px 16px; padding: 18px;
+  background: #FEF3C7; border-radius: 14px;
+  color: #92400E; font-size: 14px; line-height: 1.5;
+}
+.startupWhat {
+  margin: 10px 0 14px; font-family: ui-monospace, monospace;
+  font-size: 12px; word-break: break-word;
+}
+#startupReset {
+  width: 100%; padding: 12px; border: none; border-radius: 10px;
+  background: #92400E; color: #fff; font-size: 14px; cursor: pointer;
+}
+
 /* =============================================================
    CHROME THAT FOLLOWS YOU DOWN THE PAGE
    Only one of these three is ever on screen at a time, so they
@@ -4218,6 +4415,41 @@ body {
 </head>
 <body>
 
+<div class="startupError" id="startupError"></div>
+
+<script>
+// Installed before anything else, so a fault in the main script is
+// reported rather than leaving a half-drawn screen and no clue.
+// A silent failure looks exactly like a slow network, which is how
+// this went unexplained for so long.
+(function () {
+  function show(what) {
+    var box = document.getElementById("startupError");
+    if (!box) return;
+    box.style.display = "block";
+    box.innerHTML =
+      '<b>GoalFlash hit a problem starting up</b>' +
+      '<div class="startupWhat">' + String(what).slice(0, 300) + '</div>' +
+      '<button id="startupReset">Clear this device and reload</button>';
+
+    document.getElementById("startupReset").onclick = function () {
+      try { localStorage.clear(); } catch (error) { /* nothing to do */ }
+      location.reload();
+    };
+  }
+
+  window.onerror = function (message, source, line) {
+    show(message + "  (line " + line + ")");
+  };
+
+  window.addEventListener("unhandledrejection", function (event) {
+    // Only worth shouting about before the app has drawn.
+    if (window.__started) return;
+    show((event.reason && event.reason.message) || event.reason);
+  });
+})();
+</script>
+
 <div class="shade" id="shade"></div>
 <div class="drawer" id="drawer">
   <div class="drawerTop">
@@ -4335,21 +4567,98 @@ body {
 const LEAGUES = __LEAGUES__;
 
 // ---------------------------------------------------------------
+// STORAGE
+//
+// Two ways the browser's own store can stop this app dead, and both
+// of them look exactly like a freeze on startup:
+//
+//   1. Safari refuses writes in private browsing, and any browser
+//      refuses them when the device is out of space. The throw
+//      lands on a line near the top and nothing below it ever runs.
+//   2. A value half-written during one of those failures throws on
+//      the way back in the next time the app opens - which leaves
+//      it broken until somebody clears their data by hand.
+//
+// So nothing here is allowed to throw. A store that cannot be
+// written to is a nuisance; one that throws is a dead app.
+// ---------------------------------------------------------------
+const inMemory = {};
+let storeUsable = true;
+
+try {
+  localStorage.setItem("__check", "1");
+  localStorage.removeItem("__check");
+} catch (error) {
+  storeUsable = false;
+}
+
+const keep = {
+  getItem: function (name) {
+    try {
+      if (storeUsable) return localStorage.getItem(name);
+    } catch (error) {
+      storeUsable = false;
+    }
+    return inMemory[name] === undefined ? null : inMemory[name];
+  },
+
+  setItem: function (name, value) {
+    inMemory[name] = String(value);
+    try {
+      if (storeUsable) localStorage.setItem(name, String(value));
+    } catch (error) {
+      // Out of space, or refused. Carry on in memory for this
+      // session rather than falling over.
+      storeUsable = false;
+    }
+  },
+
+  removeItem: function (name) {
+    delete inMemory[name];
+    try {
+      if (storeUsable) localStorage.removeItem(name);
+    } catch (error) {
+      storeUsable = false;
+    }
+  },
+
+  clear: function () {
+    for (const name of Object.keys(inMemory)) delete inMemory[name];
+    try { localStorage.clear(); } catch (error) { /* nothing to do */ }
+  },
+};
+
+// Reads a saved value. A corrupted one gives back the fallback
+// instead of throwing, so a bad write can never brick the next open.
+function readSaved(name, fallback) {
+  const raw = keep.getItem(name);
+  if (raw === null || raw === undefined) return fallback;
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    console.log("discarding a corrupted saved value: " + name);
+    keep.removeItem(name);
+    return fallback;
+  }
+}
+
+// ---------------------------------------------------------------
 // XP AND COINS
 // ---------------------------------------------------------------
 function load(name, fallback) {
-  const value = localStorage.getItem(name);
+  const value = keep.getItem(name);
   return value === null ? fallback : Number(value);
 }
 
 // Declared here rather than beside the sign-in code, because the
 // startup checks below run before that point in the file.
-let authToken = localStorage.getItem("authToken") || "";
-let authRefresh = localStorage.getItem("authRefresh") || "";
+let authToken = keep.getItem("authToken") || "";
+let authRefresh = keep.getItem("authRefresh") || "";
 
 let xp = load("xp", 0);
 let coins = load("coins", 0);
-let alerts = JSON.parse(localStorage.getItem("alerts") || "[]");
+let alerts = readSaved("alerts", []);
 
 // ---------------------------------------------------------------
 // WHERE THE XP CAME FROM
@@ -4359,7 +4668,7 @@ let alerts = JSON.parse(localStorage.getItem("alerts") || "[]");
 // Anything earned before this existed lands in "other" on first
 // run, which keeps the parts adding up to the whole.
 // ---------------------------------------------------------------
-let xpSources = JSON.parse(localStorage.getItem("xpSources") || "null");
+let xpSources = readSaved("xpSources", null);
 if (!xpSources) {
   xpSources = {
     challenges: 0, matches: 0, sixaside: 0,
@@ -4374,7 +4683,7 @@ function creditXp(source, amount) {
 
   xp = xp + given;
   xpSources[source] = (xpSources[source] || 0) + given;
-  localStorage.setItem("xpSources", JSON.stringify(xpSources));
+  keep.setItem("xpSources", JSON.stringify(xpSources));
   return given;
 }
 
@@ -4421,7 +4730,7 @@ let shields = load("shields", 0);
 let boostUntil = load("boostUntil", 0);
 let boostSize = load("boostSize", 1);
 
-let dailyCounts = JSON.parse(localStorage.getItem("dailyCounts") || "null");
+let dailyCounts = readSaved("dailyCounts", null);
 const todayKey = new Date().toDateString();
 
 if (!dailyCounts || dailyCounts.day !== todayKey) {
@@ -4462,32 +4771,32 @@ const thisWeek = weekKeyOf(new Date());
 const thisMonth = monthKeyOf(new Date());
 const thisSeason = seasonKeyOf(new Date());
 
-let weekCounts = JSON.parse(localStorage.getItem("weekCounts") || "null");
+let weekCounts = readSaved("weekCounts", null);
 if (!weekCounts || weekCounts.week !== thisWeek) {
   weekCounts = { week: thisWeek, days: [] };
 }
 
-let monthCounts = JSON.parse(localStorage.getItem("monthCounts") || "null");
+let monthCounts = readSaved("monthCounts", null);
 if (!monthCounts || monthCounts.month !== thisMonth) {
   monthCounts = { month: thisMonth, days: [] };
 }
 
-let seasonCounts = JSON.parse(localStorage.getItem("seasonCounts") || "null");
+let seasonCounts = readSaved("seasonCounts", null);
 if (!seasonCounts || seasonCounts.season !== thisSeason) {
   seasonCounts = { season: thisSeason, days: 0 };
 }
 
 // A record of XP earned each week, kept for the graph.
-let xpHistory = JSON.parse(localStorage.getItem("xpHistory") || "[]");
+let xpHistory = readSaved("xpHistory", []);
 let weekStartXp = load("weekStartXp", null);
 let bestDivision = load("bestDivision", 1);
-let badgeClub = JSON.parse(localStorage.getItem("badgeClub") || "null");
+let badgeClub = readSaved("badgeClub", null);
 
 // First run, or the week just turned over.
 if (weekStartXp === null) {
   weekStartXp = xp;
-} else if (localStorage.getItem("weekStartKey") !== thisWeek) {
-  const lastWeek = localStorage.getItem("weekStartKey");
+} else if (keep.getItem("weekStartKey") !== thisWeek) {
+  const lastWeek = keep.getItem("weekStartKey");
   if (lastWeek) {
     xpHistory.push({ week: lastWeek, xp: Math.max(0, xp - weekStartXp) });
     // Two seasons of weeks is plenty to keep.
@@ -4495,25 +4804,25 @@ if (weekStartXp === null) {
   }
   weekStartXp = xp;
 }
-localStorage.setItem("weekStartKey", thisWeek);
+keep.setItem("weekStartKey", thisWeek);
 
 function saveHistory() {
-  localStorage.setItem("xpHistory", JSON.stringify(xpHistory));
-  localStorage.setItem("weekStartXp", weekStartXp);
-  localStorage.setItem("bestDivision", bestDivision);
-  localStorage.setItem("badgeClub", JSON.stringify(badgeClub));
+  keep.setItem("xpHistory", JSON.stringify(xpHistory));
+  keep.setItem("weekStartXp", weekStartXp);
+  keep.setItem("bestDivision", bestDivision);
+  keep.setItem("badgeClub", JSON.stringify(badgeClub));
 }
 saveHistory();
 
 // Rewards already taken, keyed by challenge and the period it
 // belonged to, so dailies can be claimed again tomorrow.
-let claimed = JSON.parse(localStorage.getItem("claimed") || "{}");
+let claimed = readSaved("claimed", {});
 
 function saveCounters() {
-  localStorage.setItem("weekCounts", JSON.stringify(weekCounts));
-  localStorage.setItem("monthCounts", JSON.stringify(monthCounts));
-  localStorage.setItem("seasonCounts", JSON.stringify(seasonCounts));
-  localStorage.setItem("claimed", JSON.stringify(claimed));
+  keep.setItem("weekCounts", JSON.stringify(weekCounts));
+  keep.setItem("monthCounts", JSON.stringify(monthCounts));
+  keep.setItem("seasonCounts", JSON.stringify(seasonCounts));
+  keep.setItem("claimed", JSON.stringify(claimed));
 }
 
 // Adds one to today, this week, this month and this season at once.
@@ -4527,14 +4836,14 @@ function tally(kind) {
 
 function saveXpState() {
   if (typeof pushProgress === "function") pushProgress();
-  localStorage.setItem("xp", xp);
-  localStorage.setItem("xpSources", JSON.stringify(xpSources));
-  localStorage.setItem("coins", coins);
-  localStorage.setItem("streak", streak);
-  localStorage.setItem("shields", shields);
-  localStorage.setItem("boostUntil", boostUntil);
-  localStorage.setItem("boostSize", boostSize);
-  localStorage.setItem("dailyCounts", JSON.stringify(dailyCounts));
+  keep.setItem("xp", xp);
+  keep.setItem("xpSources", JSON.stringify(xpSources));
+  keep.setItem("coins", coins);
+  keep.setItem("streak", streak);
+  keep.setItem("shields", shields);
+  keep.setItem("boostUntil", boostUntil);
+  keep.setItem("boostSize", boostSize);
+  keep.setItem("dailyCounts", JSON.stringify(dailyCounts));
 }
 
 function boostActive() {
@@ -4587,29 +4896,29 @@ function divisionFor(level) {
 // XP, coins, streaks, challenges and the 6-a-side squad are all
 // untouched: none of them hold a football id.
 // ---------------------------------------------------------------
-if (localStorage.getItem("provider") !== "api-football") {
+if (keep.getItem("provider") !== "api-football") {
   for (const key of ["myLeagues_v2", "leagueNames_v2",
                      "favLeagues", "favTeams", "alerts", "badgeClub"]) {
-    localStorage.removeItem(key);
+    keep.removeItem(key);
   }
-  localStorage.setItem("provider", "api-football");
+  keep.setItem("provider", "api-football");
 }
 
 // The key is versioned, so switching data provider does not leave
 // old league numbers behind that mean nothing any more.
-let myLeagues = JSON.parse(localStorage.getItem("myLeagues_v2") || "null");
+let myLeagues = readSaved("myLeagues_v2", null);
 if (myLeagues === null) {
   myLeagues = LEAGUES.map(function (l) { return l.id; });
 }
 
-let leagueNames = JSON.parse(localStorage.getItem("leagueNames_v2") || "null");
+let leagueNames = readSaved("leagueNames_v2", null);
 if (leagueNames === null) {
   leagueNames = {};
   for (const l of LEAGUES) leagueNames[l.id] = l.name;
 }
 
 // First visit of the day: streak, daily XP and a coin or two.
-const lastOpen = localStorage.getItem("lastOpen");
+const lastOpen = keep.getItem("lastOpen");
 if (lastOpen !== todayKey) {
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
@@ -4632,19 +4941,19 @@ if (lastOpen !== todayKey) {
   if (!monthCounts.days.includes(todayKey)) monthCounts.days.push(todayKey);
   seasonCounts.days = (seasonCounts.days || 0) + 1;
 
-  localStorage.setItem("lastOpen", todayKey);
+  keep.setItem("lastOpen", todayKey);
   saveXpState();
   saveCounters();
 }
 
 function saveProgress() {
-  localStorage.setItem("alerts", JSON.stringify(alerts));
+  keep.setItem("alerts", JSON.stringify(alerts));
   saveXpState();
 }
 
 function saveLeagues() {
-  localStorage.setItem("myLeagues_v2", JSON.stringify(myLeagues));
-  localStorage.setItem("leagueNames_v2", JSON.stringify(leagueNames));
+  keep.setItem("myLeagues_v2", JSON.stringify(myLeagues));
+  keep.setItem("leagueNames_v2", JSON.stringify(leagueNames));
 }
 saveLeagues();
 
@@ -5384,13 +5693,13 @@ function drawLeagues() {
 // Two lists: leagues the person follows, and clubs they follow.
 // Both are saved on the device and feed the Home screen.
 // ---------------------------------------------------------------
-let favLeagues = JSON.parse(localStorage.getItem("favLeagues") || "[]");
-let favTeams = JSON.parse(localStorage.getItem("favTeams") || "[]");
+let favLeagues = readSaved("favLeagues", []);
+let favTeams = readSaved("favTeams", []);
 
 function saveFavourites() {
   if (typeof pushProgress === "function") pushProgress();
-  localStorage.setItem("favLeagues", JSON.stringify(favLeagues));
-  localStorage.setItem("favTeams", JSON.stringify(favTeams));
+  keep.setItem("favLeagues", JSON.stringify(favLeagues));
+  keep.setItem("favTeams", JSON.stringify(favTeams));
 }
 
 function isFavLeague(id) {
@@ -6922,7 +7231,7 @@ function pickPrize() {
 }
 
 function spinUsedToday() {
-  return localStorage.getItem("lastSpin") === todayKey;
+  return keep.getItem("lastSpin") === todayKey;
 }
 
 function takeSpin() {
@@ -6940,7 +7249,7 @@ function takeSpin() {
     shields = Math.min(1, shields + 1);
   }
 
-  localStorage.setItem("lastSpin", todayKey);
+  keep.setItem("lastSpin", todayKey);
   tally("spin");
   saveXpState();
   drawProgress();
@@ -7004,7 +7313,7 @@ function refreshXpIfShowing() {
   if (screen === "xp") drawXpScreen();
 }
 
-let fiveASide = JSON.parse(localStorage.getItem("fiveASide") || "{}");
+let fiveASide = readSaved("fiveASide", {});
 let fivePicking = null;   // which slot is being filled, if any
 let openPlayerId = null;  // whose statistics are being read
 
@@ -7138,14 +7447,14 @@ function dayName(date) {
   });
 }
 
-let squadChanges = JSON.parse(localStorage.getItem("squadChanges") || "null");
+let squadChanges = readSaved("squadChanges", null);
 
 // How many changes are left this week, resetting each Wednesday.
 function changesLeft() {
   const cycle = squadCycleKey(new Date());
   if (!squadChanges || squadChanges.cycle !== cycle) {
     squadChanges = { cycle: cycle, used: 0 };
-    localStorage.setItem("squadChanges", JSON.stringify(squadChanges));
+    keep.setItem("squadChanges", JSON.stringify(squadChanges));
   }
   return Math.max(0, CHANGES_PER_WEEK - (Number(squadChanges.used) || 0));
 }
@@ -7174,7 +7483,7 @@ function fixingOverspend() {
 function useSquadChange() {
   changesLeft();                       // makes sure the week is current
   squadChanges.used = (Number(squadChanges.used) || 0) + 1;
-  localStorage.setItem("squadChanges", JSON.stringify(squadChanges));
+  keep.setItem("squadChanges", JSON.stringify(squadChanges));
   if (typeof pushProgress === "function") pushProgress();
 }
 
@@ -7229,18 +7538,18 @@ function changeRuleText() {
   };
 }
 
-let squadHistory = JSON.parse(localStorage.getItem("squadHistory") || "{}");
-let paidEvents = JSON.parse(localStorage.getItem("paidEvents") || "[]");
-let lastSettlement = JSON.parse(localStorage.getItem("lastSettlement") || "null");
+let squadHistory = readSaved("squadHistory", {});
+let paidEvents = readSaved("paidEvents", []);
+let lastSettlement = readSaved("lastSettlement", null);
 
 function saveSquadLock() {
   // Two months of weeks is more than enough to settle against.
   const cycles = Object.keys(squadHistory).sort();
   while (cycles.length > 8) delete squadHistory[cycles.shift()];
 
-  localStorage.setItem("squadHistory", JSON.stringify(squadHistory));
-  localStorage.setItem("paidEvents", JSON.stringify(paidEvents));
-  localStorage.setItem("lastSettlement", JSON.stringify(lastSettlement));
+  keep.setItem("squadHistory", JSON.stringify(squadHistory));
+  keep.setItem("paidEvents", JSON.stringify(paidEvents));
+  keep.setItem("lastSettlement", JSON.stringify(lastSettlement));
   if (typeof pushProgress === "function") pushProgress();
 }
 
@@ -7316,7 +7625,7 @@ async function settleGameweeks() {
 }
 
 function saveFiveASide() {
-  localStorage.setItem("fiveASide", JSON.stringify(fiveASide));
+  keep.setItem("fiveASide", JSON.stringify(fiveASide));
   if (typeof pushProgress === "function") pushProgress();
 }
 
@@ -8352,8 +8661,8 @@ let sessionError = "";
 function keepSession(result) {
   authToken = result.token || "";
   authRefresh = result.refresh || authRefresh;
-  localStorage.setItem("authToken", authToken);
-  localStorage.setItem("authRefresh", authRefresh);
+  keep.setItem("authToken", authToken);
+  keep.setItem("authRefresh", authRefresh);
 }
 
 async function startSession() {
@@ -8410,8 +8719,8 @@ function gatherProgress() {
     seasonCounts: seasonCounts,
     fiveASide: fiveASide,
     claimed: claimed,
-    lastOpen: localStorage.getItem("lastOpen") || "",
-    lastSpin: localStorage.getItem("lastSpin") || "",
+    lastOpen: keep.getItem("lastOpen") || "",
+    lastSpin: keep.getItem("lastSpin") || "",
     xpHistory: xpHistory,
     xpSources: xpSources,
     squadHistory: squadHistory,
@@ -8458,23 +8767,23 @@ function applyProgress(data) {
     }
     if (data.fiveASide) {
       fiveASide = data.fiveASide;
-      localStorage.setItem("fiveASide", JSON.stringify(fiveASide));
+      keep.setItem("fiveASide", JSON.stringify(fiveASide));
     }
     if (data.squadHistory) squadHistory = data.squadHistory;
     if (Array.isArray(data.paidEvents)) paidEvents = data.paidEvents;
     if (data.squadChanges) {
       squadChanges = data.squadChanges;
-      localStorage.setItem("squadChanges", JSON.stringify(squadChanges));
+      keep.setItem("squadChanges", JSON.stringify(squadChanges));
     }
     if (data.seasonCounts && data.seasonCounts.season === thisSeason) {
       seasonCounts = data.seasonCounts;
     }
-    if (data.lastOpen) localStorage.setItem("lastOpen", data.lastOpen);
-    if (data.lastSpin) localStorage.setItem("lastSpin", data.lastSpin);
+    if (data.lastOpen) keep.setItem("lastOpen", data.lastOpen);
+    if (data.lastSpin) keep.setItem("lastSpin", data.lastSpin);
     if (Array.isArray(data.xpHistory)) xpHistory = data.xpHistory;
     if (data.xpSources) {
       xpSources = data.xpSources;
-      localStorage.setItem("xpSources", JSON.stringify(xpSources));
+      keep.setItem("xpSources", JSON.stringify(xpSources));
     }
     if (typeof data.weekStartXp === "number") weekStartXp = data.weekStartXp;
     if (data.bestDivision) bestDivision = data.bestDivision;
@@ -8549,9 +8858,9 @@ async function pullProgress() {
 function signOut() {
   authToken = "";
   authRefresh = "";
-  localStorage.removeItem("authToken");
-  localStorage.removeItem("authRefresh");
-  localStorage.removeItem("authEmail");
+  keep.removeItem("authToken");
+  keep.removeItem("authRefresh");
+  keep.removeItem("authEmail");
 }
 
 
@@ -8880,7 +9189,7 @@ function drawSettings() {
 
       // Gone from the server, so clear the phone as well.
       signOut();
-      localStorage.clear();
+      keep.clear();
       location.reload();
     });
 
@@ -8942,6 +9251,7 @@ function drawSettings() {
     window.open("/support", "_blank");
   });
   row("Football data", "api-football.com");
+  row("Commentary", "Events plus minute-by-minute stats");
 
   // Kickoff times are converted on the device, so it helps to be
   // able to see what the device believes.
@@ -8951,13 +9261,13 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-06-paged");
+  row("Build", "2026-09-06-safe-start");
 
   // ---- Clearing up ----
   section("Data");
   const clearRow = row("Clear this device", "&rsaquo;", function () {
     if (clearRow.getAttribute("data-armed") === "yes") {
-      localStorage.clear();
+      keep.clear();
       location.reload();
       return;
     }
@@ -9595,20 +9905,22 @@ function drawMatch(match) {
       corner: "&#9971;", attack: "&#8599;", freekick: "&#9678;",
       throw: "&#8646;", offside: "&#9873;", penalty: "&#9899;",
       shot: "&#10162;", danger: "&#10071;", note: "&#8226;",
-      possession: "&#9679;", goalkick: "&#9678;",
+      possession: "&#9679;", goalkick: "&#9678;", save: "&#129508;",
     };
 
     const heading = document.createElement("div");
     heading.className = "drawerHint";
     heading.innerHTML = match.hasLiveCommentary
-      ? 'Live commentary <span class="liveTag2">minute by minute</span>'
+      ? 'Live commentary <span class="liveTag2">updates each minute</span>'
       : "Match events";
     list.appendChild(heading);
 
     // Newest at the top, the way commentary normally reads.
     for (const moment of feed.slice().reverse()) {
       const row = document.createElement("div");
-      row.className = "commRow " + moment.kind;
+      // Lines worked out from the statistics sit a shade quieter
+      // than the goals and cards the provider states outright.
+      row.className = "commRow " + moment.kind + (moment.derived ? " commDerived" : "");
       row.innerHTML =
         '<div class="commMin">' +
           (moment.clock ? moment.clock : (moment.minute > 0 ? moment.minute + "'" : "")) +
@@ -10646,6 +10958,10 @@ startSession()
   });
 
 goTo("home");
+
+// Past this point the app has drawn, so a late rejection is not
+// worth a full-screen warning.
+window.__started = true;
 
 // Nothing on Home needs the competition list, but the drawer and
 // Favourites do, so it is warmed quietly in the background rather
