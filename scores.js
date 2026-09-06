@@ -2708,75 +2708,6 @@ const PAGE = `
 
   .empty { padding: 50px 24px; text-align: center; color: #777; line-height: 1.6; }
 
-  /* First-run setup */
-  .setup {
-    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-    z-index: 60; background: #0B1E3D; color: #fff;
-    display: flex; flex-direction: column;
-    overflow: hidden;
-  }
-  .setupTop {
-    padding: calc(26px + env(safe-area-inset-top, 0px)) 20px 16px;
-    flex-shrink: 0;
-  }
-  .setupBrand {
-    font-size: 19px; font-weight: 700; letter-spacing: -0.3px;
-    margin-bottom: 18px;
-  }
-  .setupBrand span { color: #F5A623; }
-  .setupTitle { font-size: 23px; font-weight: 600; line-height: 1.25; }
-  .setupNote {
-    font-size: 13.5px; color: #8FA6C4;
-    margin-top: 8px; line-height: 1.5;
-  }
-  .setupInner { padding: 80px 24px; text-align: center; }
-  .setupInner .setupTitle { font-size: 18px; }
-
-  .setupList {
-    /* min-height: 0 is the whole fix. A flex child defaults to
-       min-height: auto, which refuses to shrink below its content,
-       so overflow-y never engages and the list simply grows until
-       it pushes the buttons off the bottom of the screen. */
-    flex: 1 1 auto; min-height: 0;
-    overflow-y: auto; overscroll-behavior: contain;
-    padding: 4px 12px 12px;
-    -webkit-overflow-scrolling: touch;
-  }
-  .setupRow {
-    display: flex; align-items: center; gap: 12px;
-    background: #16305A; border: 2px solid transparent;
-    border-radius: 12px; padding: 12px 14px;
-    margin-bottom: 8px; cursor: pointer;
-  }
-  .setupRow.picked { border-color: #F5A623; background: #1B3A6B; }
-  .setupRow img {
-    width: 28px; height: 28px; object-fit: contain; flex-shrink: 0;
-  }
-  .setupBlank { width: 28px; flex-shrink: 0; }
-  .setupWho { flex: 1; min-width: 0; }
-  .setupName {
-    display: block; font-size: 15px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .setupWhere { display: block; font-size: 11.5px; color: #8FA6C4; margin-top: 2px; }
-  .setupTick { color: #F5A623; font-size: 17px; width: 18px; flex-shrink: 0; }
-
-  .setupFoot {
-    display: flex; align-items: center; gap: 12px;
-    padding: 12px 16px calc(16px + env(safe-area-inset-bottom, 0px));
-    border-top: 1px solid #16305A; flex-shrink: 0;
-  }
-  .setupSkip {
-    background: none; border: none; color: #8FA6C4;
-    font-size: 14px; padding: 12px 4px; cursor: pointer;
-  }
-  .setupGo {
-    flex: 1; background: #1E6FD9; color: #fff; border: none;
-    border-radius: 12px; padding: 14px; font-size: 15px;
-    font-weight: 600; cursor: pointer;
-  }
-  .setupGo:disabled { background: #16305A; color: #6F86A6; }
-
   /* Slide-out country drawer */
   .burger {
     font-size: 20px; color: #fff; cursor: pointer;
@@ -4246,7 +4177,6 @@ body {
 </head>
 <body>
 
-<div class="setup" id="setup" style="display:none"></div>
 <div class="shade" id="shade"></div>
 <div class="drawer" id="drawer">
   <div class="drawerTop">
@@ -4779,266 +4709,6 @@ async function checkForGoals() {
 
 setInterval(checkForGoals, 30000);
 checkForGoals();
-
-
-// ---------------------------------------------------------------
-// FIRST RUN
-//
-// Without this the app opens on a Home screen with nothing in it,
-// and the person has to find Favourites and drill through three
-// levels before anything happens. Two taps here and the app has
-// something to show them.
-//
-// Skipping is always allowed. Nobody should be made to fill in a
-// form before they can look at a score.
-// ---------------------------------------------------------------
-let setupStep = "leagues";     // leagues | clubs
-let setupLeagues = [];         // leagues chosen so far
-let setupClubs = [];           // clubs chosen so far
-let setupClubList = [];        // clubs available from those leagues
-let setupBusy = false;
-let setupTried = false;        // whether the clubs have been fetched
-
-function needsSetup() {
-  return localStorage.getItem("setupDone") !== "yes";
-}
-
-function finishSetup() {
-  localStorage.setItem("setupDone", "yes");
-  document.getElementById("setup").style.display = "none";
-  goTo("home");
-}
-
-// The top division of each of the big countries, plus England's
-// second, drawn from the same ranking the country drawer uses.
-function popularLeagues() {
-  if (!allLeagues || allLeagues.length === 0) return [];
-
-  const grouped = countriesInOrder();
-  const out = [];
-
-  for (const country of grouped.order.slice(0, grouped.pinnedCount || 9)) {
-    const leagues = grouped.byCountry[country] || [];
-
-    // One competition per tier. Taking the first two outright let
-    // "Premier League - Summer Series" - a pre-season friendly that
-    // also matches "premier league" - stand in for the Championship.
-    const byTier = {};
-    for (const league of leagues) {
-      const tier = rankOf(league);
-      if (tier < 0) continue;
-      if (byTier[tier] === undefined) byTier[tier] = league;
-    }
-
-    if (byTier[0]) out.push(byTier[0]);
-    if (country === "England" && byTier[1]) out.push(byTier[1]);
-  }
-
-  return out;
-}
-
-async function drawSetup() {
-  const panel = document.getElementById("setup");
-  panel.style.display = "block";
-
-  // Everything else is hidden while this is up.
-  document.getElementById("mainHeader").style.display = "none";
-
-  if (allLeagues === null) {
-    panel.innerHTML =
-      '<div class="setupInner">' +
-        '<div class="setupTitle">Just a moment</div>' +
-        '<div class="setupNote">Fetching the competitions...</div>' +
-      '</div>';
-    try {
-      allLeagues = await (await fetch("/api/leagues")).json();
-    } catch (error) {
-      allLeagues = [];
-    }
-    drawSetup();
-    return;
-  }
-
-  if (setupStep === "clubs") { drawSetupClubs(panel); return; }
-  drawSetupLeagues(panel);
-}
-
-function drawSetupLeagues(panel) {
-  const leagues = popularLeagues();
-
-  const rows = leagues.map(function (league) {
-    const picked = setupLeagues.some(function (l) { return l.id === league.id; });
-    return '<div class="setupRow' + (picked ? " picked" : "") +
-      '" data-league="' + league.id + '">' +
-      (league.logo ? '<img src="' + league.logo + '" alt="">' : '<span class="setupBlank"></span>') +
-      '<span class="setupWho">' +
-        '<span class="setupName">' + league.name + '</span>' +
-        '<span class="setupWhere">' + league.country + '</span>' +
-      '</span>' +
-      '<span class="setupTick">' + (picked ? "&#10003;" : "") + '</span>' +
-    '</div>';
-  }).join("");
-
-  panel.innerHTML =
-    '<div class="setupTop">' +
-      '<div class="setupBrand">Goal<span>Flash</span></div>' +
-      '<div class="setupTitle">Which leagues do you follow?</div>' +
-      '<div class="setupNote">Pick as many as you like. You can change ' +
-        'this later in Favourites.</div>' +
-    '</div>' +
-    '<div class="setupList">' +
-      (rows || '<div class="setupNote">No competitions came back. ' +
-        'You can add them later from Favourites.</div>') +
-    '</div>' +
-    '<div class="setupFoot">' +
-      '<button class="setupSkip" id="setupSkip">Skip</button>' +
-      '<button class="setupGo" id="setupNext"' +
-        (setupLeagues.length === 0 ? " disabled" : "") + '>' +
-        (setupLeagues.length === 0
-          ? "Choose at least one"
-          : "Next &rsaquo;") +
-      '</button>' +
-    '</div>';
-
-  for (const row of panel.querySelectorAll(".setupRow")) {
-    row.onclick = function () {
-      const id = Number(this.getAttribute("data-league"));
-      const league = leagues.find(function (l) { return l.id === id; });
-      const at = setupLeagues.findIndex(function (l) { return l.id === id; });
-
-      if (at === -1) setupLeagues.push(league);
-      else setupLeagues.splice(at, 1);
-
-      drawSetupLeagues(panel);
-    };
-  }
-
-  document.getElementById("setupSkip").onclick = finishSetup;
-
-  const next = document.getElementById("setupNext");
-  if (next) {
-    next.onclick = async function () {
-      if (setupLeagues.length === 0) return;
-
-      // Save the leagues now, so a skip on the next step still
-      // leaves the person better off than they started.
-      for (const league of setupLeagues) {
-        if (!isFavLeague(league.id)) toggleFavLeague(league);
-        if (!myLeagues.includes(league.id)) {
-          myLeagues.push(league.id);
-          leagueNames[league.id] = league.name;
-        }
-      }
-      saveLeagues();
-
-      setupStep = "clubs";
-      drawSetup();
-    };
-  }
-}
-
-async function drawSetupClubs(panel) {
-  // Only ever fetch once. Without the flag, leagues that return no
-  // clubs send this straight into an endless loop of itself.
-  if (!setupTried && !setupBusy) {
-    setupBusy = true;
-    panel.innerHTML =
-      '<div class="setupInner">' +
-        '<div class="setupTitle">Finding the clubs</div>' +
-        '<div class="setupNote">One moment...</div>' +
-      '</div>';
-
-    // Four leagues is enough to fill a screen without a long wait.
-    for (const league of setupLeagues.slice(0, 4)) {
-      try {
-        const teams = await (await fetch("/api/teams?league=" + league.id)).json();
-        for (const team of teams) {
-          team.leagueId = league.id;
-          team.leagueName = league.name;
-          setupClubList.push(team);
-        }
-      } catch (error) {
-        // Skip that league.
-      }
-    }
-
-    setupBusy = false;
-    setupTried = true;
-    drawSetupClubs(panel);
-    return;
-  }
-
-  if (setupBusy) return;
-
-  const sorted = setupClubList.slice().sort(function (a, b) {
-    return a.name.localeCompare(b.name);
-  });
-
-  const rows = sorted.map(function (club) {
-    const picked = setupClubs.some(function (c) { return c.id === club.id; });
-    return '<div class="setupRow' + (picked ? " picked" : "") +
-      '" data-club="' + club.id + '">' +
-      (club.logo ? '<img src="' + club.logo + '" alt="">' : '<span class="setupBlank"></span>') +
-      '<span class="setupWho">' +
-        '<span class="setupName">' + club.name + '</span>' +
-        '<span class="setupWhere">' + (club.leagueName || "") + '</span>' +
-      '</span>' +
-      '<span class="setupTick">' + (picked ? "&#10003;" : "") + '</span>' +
-    '</div>';
-  }).join("");
-
-  panel.innerHTML =
-    '<div class="setupTop">' +
-      '<div class="setupBrand">Goal<span>Flash</span></div>' +
-      '<div class="setupTitle">Now pick your clubs</div>' +
-      '<div class="setupNote">Up to five. Their next games and results ' +
-        'go straight on your home screen.</div>' +
-    '</div>' +
-    '<div class="setupList">' +
-      (rows || '<div class="setupNote">No clubs came back for those ' +
-        'leagues. You can add them later from Favourites.</div>') +
-    '</div>' +
-    '<div class="setupFoot">' +
-      '<button class="setupSkip" id="setupBack">&lsaquo; Back</button>' +
-      '<button class="setupGo" id="setupDone">' +
-        (setupClubs.length === 0 ? "Skip for now" : "Done") +
-      '</button>' +
-    '</div>';
-
-  for (const row of panel.querySelectorAll(".setupRow")) {
-    row.onclick = function () {
-      const id = Number(this.getAttribute("data-club"));
-      const club = setupClubList.find(function (c) { return c.id === id; });
-      const at = setupClubs.findIndex(function (c) { return c.id === id; });
-
-      if (at !== -1) {
-        setupClubs.splice(at, 1);
-      } else {
-        if (setupClubs.length >= 5) return;
-        setupClubs.push(club);
-      }
-
-      drawSetupClubs(panel);
-    };
-  }
-
-  document.getElementById("setupBack").onclick = function () {
-    setupStep = "leagues";
-    // Changing the leagues should change the clubs on offer.
-    setupClubList = [];
-    setupTried = false;
-    drawSetup();
-  };
-
-  document.getElementById("setupDone").onclick = function () {
-    for (const club of setupClubs) {
-      if (!isFavTeam(club.id)) {
-        toggleFavTeam(club, { id: club.leagueId, name: club.leagueName });
-      }
-    }
-    finishSetup();
-  };
-}
 
 
 // ---------------------------------------------------------------
@@ -6320,6 +5990,7 @@ function wireMiniBells() {
 let featureList = [];      // live matches worth featuring, best first
 let featureAt = 0;         // which one is on screen
 let featureDetails = {};   // fixture id -> { at, match }, for scorers
+let featureTouched = false; // true once the person has swiped it
 
 // How much a competition is worth when nothing is being followed.
 // Leans on the same ranking the country drawer uses, so the World
@@ -6361,8 +6032,9 @@ function featureRank(item) {
   return competitionWeight(item);
 }
 
-// Works out what goes in the card and in what order. Their own
-// matches cycle; a stand-in does not.
+// Everything being played, best first. The whole lot goes into the
+// feed now rather than a chosen few, because the person swipes
+// through it themselves - the order is a suggestion, not a limit.
 function buildFeature(live) {
   const playing = (live || []).slice();
 
@@ -6378,17 +6050,12 @@ function buildFeature(live) {
     })
     .sort(function (a, b) { return a.rank - b.rank; });
 
-  const followed = ranked.filter(function (entry) { return entry.rank < 20; });
-
-  // Four is enough to cycle through without it becoming a slideshow.
-  const chosen = followed.length > 0
-    ? followed.slice(0, 4)
-    : ranked.slice(0, 1);
-
   const before = featureList[featureAt] ? featureList[featureAt].id : null;
-  featureList = chosen.map(function (entry) { return entry.item; });
 
-  // Stay on the same match across a refresh where we can.
+  // Twelve is plenty to swipe through. Beyond that it is a list
+  // rather than a feed, and every card costs a lookup for scorers.
+  featureList = ranked.slice(0, 12).map(function (entry) { return entry.item; });
+
   const stillThere = featureList.findIndex(function (item) {
     return item.id === before;
   });
@@ -6439,12 +6106,12 @@ function featureGoalsHtml(match, item) {
   }
 
   // Four lines a side is what the card is built to hold. A fifth
-  // goal turns the last line into a count rather than pushing the
-  // card taller.
-  const trim = function (lines) {
-    if (lines.length <= 4) return lines.join("");
-    const over = lines.length - 3;
-    return lines.slice(0, 3).join("") +
+  // goal turns the last line into a count rather than making the
+  // card taller than its neighbours.
+  const trim = function (list) {
+    if (list.length <= 4) return list.join("");
+    const over = list.length - 3;
+    return list.slice(0, 3).join("") +
       '<div class="featMore">+' + over + ' more</div>';
   };
 
@@ -6454,8 +6121,37 @@ function featureGoalsHtml(match, item) {
   '</div>';
 }
 
-// Draws whichever match is currently up. Score and minute come from
-// the ticker so they are always fresh; the scorers arrive after.
+// One card in the feed.
+function featureCard(item) {
+  const clock = item.minute !== null ? item.minute + "'" : (item.short || "LIVE");
+  const hg = item.hg === null ? "-" : item.hg;
+  const ag = item.ag === null ? "-" : item.ag;
+  const known = featureDetails[item.id];
+
+  return '<div class="feature" data-feature="' + item.id + '">' +
+    '<div class="featTop">' +
+      '<span class="featComp">' + (item.league || "") + '</span>' +
+      '<span class="featClock"><i class="featDot"></i>' + clock + '</span>' +
+    '</div>' +
+    '<div class="featScore">' +
+      '<div class="featSide">' +
+        '<img src="' + item.homeLogo + '" alt="">' +
+        '<div class="featName">' + item.home + '</div>' +
+      '</div>' +
+      '<div class="featNums">' + hg + ' - ' + ag + '</div>' +
+      '<div class="featSide">' +
+        '<img src="' + item.awayLogo + '" alt="">' +
+        '<div class="featName">' + item.away + '</div>' +
+      '</div>' +
+    '</div>' +
+    (known
+      ? featureGoalsHtml(known.match, item)
+      : '<div class="featQuiet">Loading the goals...</div>') +
+  '</div>';
+}
+
+// Draws the whole feed: every live match as a card on one track
+// that scrolls sideways, so it can be swiped rather than waited on.
 async function paintFeature() {
   const box = document.getElementById("featureBox");
   if (!box) return;
@@ -6466,75 +6162,109 @@ async function paintFeature() {
   }
 
   if (featureAt >= featureList.length) featureAt = 0;
-  const item = featureList[featureAt];
-
-  const clock = item.minute !== null ? item.minute + "'" : (item.short || "LIVE");
-  const hg = item.hg === null ? "-" : item.hg;
-  const ag = item.ag === null ? "-" : item.ag;
 
   const dots = featureList.length > 1
     ? '<div class="featDots">' + featureList.map(function (other, index) {
-        return '<i class="' + (index === featureAt ? "on" : "") + '"></i>';
+        return '<i class="' + (index === featureAt ? "on" : "") +
+          '" data-go="' + index + '"></i>';
       }).join("") + '</div>'
     : "";
 
-  // Anything already known about the scorers, drawn straight away.
-  const known = featureDetails[item.id];
+  box.innerHTML =
+    '<div class="featTrack" id="featTrack">' +
+      featureList.map(featureCard).join("") +
+    '</div>' + dots;
 
-  const shell = function (goalsHtml) {
-    return '<div class="feature" data-feature="' + item.id + '">' +
-      '<div class="featTop">' +
-        '<span class="featComp">' + (item.league || "") + '</span>' +
-        '<span class="featClock"><i class="featDot"></i>' + clock + '</span>' +
-      '</div>' +
-      '<div class="featScore">' +
-        '<div class="featSide">' +
-          '<img src="' + item.homeLogo + '" alt="">' +
-          '<div class="featName">' + item.home + '</div>' +
-        '</div>' +
-        '<div class="featNums">' + hg + ' - ' + ag + '</div>' +
-        '<div class="featSide">' +
-          '<img src="' + item.awayLogo + '" alt="">' +
-          '<div class="featName">' + item.away + '</div>' +
-        '</div>' +
-      '</div>' +
-      goalsHtml +
-      dots +
-    '</div>';
+  const track = document.getElementById("featTrack");
+  if (!track) return;
+
+  for (const card of track.querySelectorAll(".feature")) {
+    const id = Number(card.getAttribute("data-feature"));
+    card.onclick = function () { tally("feature"); openMatch(id); };
+  }
+
+  // Tapping a dot jumps to that match.
+  for (const dot of box.querySelectorAll(".featDots i")) {
+    dot.onclick = function () {
+      featureAt = Number(this.getAttribute("data-go")) || 0;
+      scrollFeatureTo(featureAt);
+      markFeatureDots();
+      fillFeatureGoals(featureAt);
+    };
+  }
+
+  // A swipe is the person taking over, so the timer stops rather
+  // than yanking the card back from under their thumb.
+  track.onscroll = function () {
+    featureTouched = true;
+    const width = track.clientWidth || 1;
+    const at = Math.round(track.scrollLeft / width);
+    if (at !== featureAt && at >= 0 && at < featureList.length) {
+      featureAt = at;
+      markFeatureDots();
+      fillFeatureGoals(featureAt);
+    }
   };
 
-  box.innerHTML = shell(known
-    ? featureGoalsHtml(known.match, item)
-    : '<div class="featQuiet">Loading the goals...</div>');
+  scrollFeatureTo(featureAt, true);
+  fillFeatureGoals(featureAt);
+}
 
-  const card = box.querySelector(".feature");
-  if (card) {
-    card.onclick = function () { tally("feature"); openMatch(item.id); };
-  }
+function scrollFeatureTo(index, instant) {
+  const track = document.getElementById("featTrack");
+  if (!track) return;
 
-  // Then fill the scorers in, if they were not already to hand.
-  if (!known) {
-    const match = await featureDetail(item.id);
+  const left = index * (track.clientWidth || 0);
+  if (instant || !track.scrollTo) track.scrollLeft = left;
+  else track.scrollTo({ left: left, behavior: "smooth" });
+}
 
-    // The card may have moved on while that was in the air.
-    const current = box.querySelector("[data-feature]");
-    if (!current || current.getAttribute("data-feature") !== String(item.id)) {
-      return;
-    }
+function markFeatureDots() {
+  const box = document.getElementById("featureBox");
+  if (!box) return;
 
-    box.innerHTML = shell(featureGoalsHtml(match, item));
-    const again = box.querySelector(".feature");
-    if (again) again.onclick = function () { openMatch(item.id); };
+  const dots = box.querySelectorAll(".featDots i");
+  for (let i = 0; i < dots.length; i++) {
+    dots[i].className = i === featureAt ? "on" : "";
   }
 }
+
+// Fetches scorers for the card on screen and the one either side,
+// rather than all twelve at once.
+async function fillFeatureGoals(index) {
+  const wanted = [index - 1, index, index + 1].filter(function (at) {
+    return at >= 0 && at < featureList.length;
+  });
+
+  for (const at of wanted) {
+    const item = featureList[at];
+    if (!item || featureDetails[item.id]) continue;
+
+    const match = await featureDetail(item.id);
+    if (!match) continue;
+
+    const card = document.querySelector('[data-feature="' + item.id + '"]');
+    if (!card) continue;
+
+    const quiet = card.querySelector(".featQuiet");
+    if (quiet) quiet.outerHTML = featureGoalsHtml(match, item);
+  }
+}
+
 
 // Move on to the next one every few seconds. A lone match, or a
 // stand-in when nothing followed is being played, just sits there.
 setInterval(function () {
   if (screen !== "home" || homeTab !== "live") return;
   if (featureList.length < 2) return;
+
+  // Once somebody has swiped, the feed is theirs to move.
+  if (featureTouched) return;
+
   featureAt = (featureAt + 1) % featureList.length;
-  paintFeature();
+  scrollFeatureTo(featureAt);
+  markFeatureDots();
+  fillFeatureGoals(featureAt);
 }, 7000);
 
 
@@ -10689,13 +10419,7 @@ startSession()
     if (screen === "xp") drawXpScreen();
   });
 
-// A first run gets the setup screen; everybody else goes straight
-// to Home as before.
-if (needsSetup()) {
-  drawSetup();
-} else {
-  goTo("home");
-}
+goTo("home");
 
 // The ticker keeps live scores moving on its own, so only the
 // home screen needs periodic refreshing.
