@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-06-no-freeze";
+const BUILD = "2026-09-06-paged";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -3702,6 +3702,33 @@ body {
 /* Stacked down the page it is an ordinary card. */
 .liveStack { padding: 0 12px 4px; }
 .liveStack .feature { margin-bottom: 10px; }
+
+/* The fixtures list: the same card, without the goals. */
+.fixStack { padding: 8px 12px 4px; }
+.fixCard { margin-bottom: 9px; padding: 12px 14px 13px; }
+.fixCard .featTop { margin-bottom: 10px; }
+.fixCard .featSide img { width: 34px; height: 34px; margin-bottom: 6px; }
+.fixCard .featName { font-size: 12px; }
+.fixCard .featNums { font-size: 24px; }
+.fixRight { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
+.fixWhen { font-size: 11.5px; color: #8FA6C4; white-space: nowrap; }
+.fixTime {
+  font-size: 15px; font-weight: 600; color: #C9D6E8;
+  padding: 0 12px; flex-shrink: 0; white-space: nowrap;
+}
+.fixStar {
+  font-size: 15px; color: #3A5B8C;
+  cursor: pointer; user-select: none; line-height: 1;
+}
+.fixStar.on { color: #F5A623; }
+.fixMore { padding: 4px 12px 18px; text-align: center; }
+.fixMoreBtn {
+  width: 100%; background: #fff; color: #1E6FD9;
+  border: 1px solid #D6E0EE; border-radius: 12px;
+  padding: 13px; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.fixMoreBtn:active { background: #EFF6FF; }
+.fixCount { font-size: 11.5px; color: #9CA3AF; margin-top: 8px; }
 .feature:active { opacity: 0.92; }
 .featTop {
   display: flex; align-items: center; justify-content: space-between;
@@ -5013,6 +5040,35 @@ function minuteIsEstimated(match) {
 
 // Live first, earliest minute at the top. Then games to come,
 // then today's results.
+// How far up the page a competition belongs. The pinned countries
+// come first in the order they are listed, and within a country the
+// top division outranks the ones below it. Anything unranked - youth
+// and regional competitions - goes to the back.
+//
+// competitionWeight does the same job for the live card, but it
+// takes the flat ticker shape, so this feeds it what it expects.
+function competitionOrder(match) {
+  return competitionWeight({
+    league: match.league && match.league.name,
+    country: match.league && match.league.country,
+  });
+}
+
+// The fixtures list. Grouped by competition, biggest first, with
+// each competition's games in kick-off order. Being played still
+// wins inside a competition, so a live game does not sit below a
+// result from three hours ago.
+function fixtureSort(a, b) {
+  const byLeague = competitionOrder(a) - competitionOrder(b);
+  if (byLeague !== 0) return byLeague;
+
+  const nameA = (a.league && a.league.name) || "";
+  const nameB = (b.league && b.league.name) || "";
+  if (nameA !== nameB) return nameA.localeCompare(nameB);
+
+  return matchSort(a, b);
+}
+
 function matchSort(a, b) {
   const order = { live: 0, upcoming: 1, finished: 2 };
   const sa = stateOf(a);
@@ -5033,6 +5089,92 @@ function matchSort(a, b) {
 // ---------------------------------------------------------------
 // DRAWING MATCHES
 // ---------------------------------------------------------------
+// One fixture, in the same dark card as the live feed but without
+// the goalscorers - this is a list of games, not a summary of them.
+function fixtureCard(match) {
+  const state = stateOf(match);
+  const kickoff = new Date(match.fixture.date);
+  const starred = alerts.includes(match.fixture.id);
+
+  let status = "";
+  let live = false;
+
+  if (state === "live") {
+    const minute = minuteOf(match);
+    live = true;
+    if (match.fixture.status.short === "HT") status = "HT";
+    else if (minute === null) status = "LIVE";
+    else status = (minuteIsEstimated(match) ? "~" : "") + minute + "'";
+  } else if (state === "finished") {
+    status = match.fixture.status.short === "PST" ? "Off" : "FT";
+  } else {
+    // The time sits in the middle of the card, so the corner only
+    // needs the day - and nothing at all if the game is today.
+    status = dayLabel(kickoff);
+  }
+
+  const hg = match.goals.home === null ? "-" : match.goals.home;
+  const ag = match.goals.away === null ? "-" : match.goals.away;
+
+  // A game still to come shows the kick-off time where the score
+  // would be, rather than a pair of dashes that say nothing.
+  const middle = state === "upcoming"
+    ? '<div class="fixTime">' + localTime(kickoff) + '</div>'
+    : '<div class="featNums">' + hg + ' - ' + ag + '</div>';
+
+  // loading="lazy" keeps the crests off the wire until the card is
+  // near the screen, which matters on a long list.
+  return '<div class="feature fixCard" data-id="' + match.fixture.id + '">' +
+    '<div class="featTop">' +
+      '<span class="featComp">' + (match.league.country || "") +
+        ' &middot; ' + (match.league.name || "") + '</span>' +
+      '<span class="fixRight">' +
+        (status
+          ? '<span class="' + (live ? "featClock" : "fixWhen") + '">' +
+              (live ? '<i class="featDot"></i>' : '') + status + '</span>'
+          : '') +
+        '<span class="fixStar' + (starred ? " on" : "") + '">&#9733;</span>' +
+      '</span>' +
+    '</div>' +
+    '<div class="featScore">' +
+      '<div class="featSide">' +
+        '<img src="' + match.teams.home.logo + '" alt="" loading="lazy">' +
+        '<div class="featName">' + match.teams.home.name + '</div>' +
+      '</div>' +
+      middle +
+      '<div class="featSide">' +
+        '<img src="' + match.teams.away.logo + '" alt="" loading="lazy">' +
+        '<div class="featName">' + match.teams.away.name + '</div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+// A busy Saturday has fifteen hundred games on it. Building a card
+// for every one of them is well over a megabyte of html and three
+// thousand crests in a single go, which is what locks the phone up.
+// So they arrive a page at a time.
+const FIXTURE_PAGE = 40;
+
+function wireFixtureCards(within) {
+  for (const card of within.querySelectorAll(".fixCard")) {
+    const id = Number(card.getAttribute("data-id"));
+
+    card.onclick = function () { openMatch(id); };
+
+    // The star has to swallow the tap, or following a match would
+    // open it instead.
+    const star = card.querySelector(".fixStar");
+    if (star) {
+      star.onclick = function (event) {
+        event.stopPropagation();
+        toggleAlert(id, null);
+        this.className = "fixStar" + (alerts.includes(id) ? " on" : "");
+      };
+    }
+  }
+}
+
 function drawMatches(matches, showKickoffTimes) {
   const list = document.getElementById("list");
   list.innerHTML = "";
@@ -5042,89 +5184,45 @@ function drawMatches(matches, showKickoffTimes) {
     return;
   }
 
-  let lastLeague = null;
+  const stack = document.createElement("div");
+  stack.className = "fixStack";
+  list.appendChild(stack);
 
-  for (const match of matches) {
-    if (match.league.name !== lastLeague) {
-      const heading = document.createElement("div");
-      heading.className = "leagueRow";
-      heading.innerHTML =
-        (match.league.logo ? '<img class="leagueLogo" src="' + match.league.logo + '" alt="">' : '') +
-        match.league.country + ' - ' + match.league.name;
-      list.appendChild(heading);
-      lastLeague = match.league.name;
+  let shown = 0;
+
+  const more = document.createElement("div");
+  more.className = "fixMore";
+  list.appendChild(more);
+
+  const addPage = function () {
+    const next = matches.slice(shown, shown + FIXTURE_PAGE);
+    shown += next.length;
+
+    // Each page is its own block. The cards carry their own spacing,
+    // so a wrapper changes nothing on screen and keeps this simple.
+    const page = document.createElement("div");
+    page.innerHTML = next.map(fixtureCard).join("");
+    wireFixtureCards(page);
+    stack.appendChild(page);
+
+    const left = matches.length - shown;
+    if (left <= 0) {
+      more.innerHTML = matches.length > FIXTURE_PAGE
+        ? '<div class="fixCount">That is all ' + matches.length + '</div>'
+        : "";
+      return;
     }
 
-    // A game being played always shows its minute, whatever screen
-    // we are on. Only games yet to start show a kick-off time.
-    const state = stateOf(match);
-    let when;
-    let whenClass = "when";
+    more.innerHTML =
+      '<button class="fixMoreBtn">Show ' +
+        Math.min(FIXTURE_PAGE, left) + ' more' +
+      '</button>' +
+      '<div class="fixCount">' + shown + ' of ' + matches.length + '</div>';
 
-    if (state === "live") {
-      const minute = minuteOf(match);
-      if (match.fixture.status.short === "HT") {
-        when = "HT";
-      } else if (minute === null) {
-        when = "LIVE";
-      } else {
-        // A tilde marks a minute we worked out ourselves.
-        when = (minuteIsEstimated(match) ? "~" : "") + minute + "'";
-      }
-    } else if (state === "finished") {
-      when = "FT";
-      whenClass = "when grey";
-    } else {
-      when = localTime(new Date(match.fixture.date));
-      whenClass = "when grey";
-    }
+    more.querySelector(".fixMoreBtn").onclick = addPage;
+  };
 
-    // The day sits above the time on anything that is not being
-    // played right now, so a season list reads properly.
-    const kickoff = new Date(match.fixture.date);
-    const dayText = state === "live" ? "" : dayLabel(kickoff);
-
-    const homeGoals = match.goals.home === null ? "-" : match.goals.home;
-    const awayGoals = match.goals.away === null ? "-" : match.goals.away;
-    const isOn = alerts.includes(match.fixture.id);
-
-    const row = document.createElement("div");
-    row.className = "match";
-    row.setAttribute("data-id", match.fixture.id);
-    row.innerHTML =
-      '<div class="' + whenClass + '">' +
-        (dayText ? '<span class="whenDate">' + dayText + '</span>' : '') +
-        '<span class="whenMain">' + when + '</span>' +
-      '</div>' +
-      '<div class="teams">' +
-        '<div class="teamRow">' +
-          '<div class="teamName">' +
-            '<img class="crest" src="' + match.teams.home.logo + '" alt="">' +
-            '<span>' + match.teams.home.name + '</span>' +
-          '</div>' +
-          '<div class="goals">' + homeGoals + '</div>' +
-        '</div>' +
-        '<div class="teamRow">' +
-          '<div class="teamName">' +
-            '<img class="crest" src="' + match.teams.away.logo + '" alt="">' +
-            '<span>' + match.teams.away.name + '</span>' +
-          '</div>' +
-          '<div class="goals">' + awayGoals + '</div>' +
-        '</div>' +
-      '</div>' +
-      '<div class="bell' + (isOn ? ' on' : '') + '">&#9733;</div>';
-
-    const bell = row.querySelector(".bell");
-    bell.onclick = function (event) {
-      event.stopPropagation();
-      toggleAlert(match.fixture.id, bell);
-    };
-
-    row.style.cursor = "pointer";
-    row.onclick = function () { openMatch(match.fixture.id); };
-
-    list.appendChild(row);
-  }
+  addPage();
 }
 
 
@@ -8853,7 +8951,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-06-no-freeze");
+  row("Build", "2026-09-06-paged");
 
   // ---- Clearing up ----
   section("Data");
@@ -10199,6 +10297,14 @@ function drawFilterPicker() {
   const list = document.getElementById("list");
   list.innerHTML = "";
 
+  if (allLeagues === null) {
+    list.innerHTML = '<div class="empty">Loading competitions...</div>';
+    loadLeagues().then(function () {
+      if (screen === "fixtures" && filterStage !== "off") drawFilterPicker();
+    });
+    return;
+  }
+
   const grouped = countriesInOrder();
 
   const back = document.createElement("div");
@@ -10257,7 +10363,10 @@ async function refresh() {
   // followed clubs and the live feed. Waiting on a thousand leagues
   // before drawing anything is what left the app sitting on
   // "Loading..." with an empty bar.
-  if (allLeagues === null && ["favourites", "fixtures"].includes(screen)) {
+  // Only Favourites actually needs the competition list up front.
+  // The fixtures screen needs it when the league filter is opened,
+  // and not a moment before.
+  if (allLeagues === null && screen === "favourites") {
     await loadLeagues();
   }
 
@@ -10336,6 +10445,7 @@ async function refresh() {
         later.setDate(later.getDate() + 14);
         const matches = await (await fetch(
           "/api/league-fixtures?league=" + id + "&from=" + from + "&to=" + isoDate(later))).json();
+        // One competition, so kick-off order is what matters.
         matches.sort(matchSort);
         drawMatches(matches, true);
         updated.textContent = matches.length + " games in the next fortnight";
@@ -10490,7 +10600,9 @@ async function refresh() {
     ? matches
     : matches.filter(function (m) { return stateOf(m) === stateFilter; });
 
-  shown.sort(matchSort);
+  // Biggest competitions first, so the leagues worth caring about
+  // are at the top of a day with fifteen hundred games on it.
+  shown.sort(fixtureSort);
 
   // drawMatches clears the list, so draw first then put the bar on top.
   if (shown.length === 0) {
