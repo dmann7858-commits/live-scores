@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-06-grouped-b";
+const BUILD = "2026-09-07-keeps-b";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -1053,12 +1053,16 @@ async function settleWeek(profile) {
 
   if (!result.ok || !Array.isArray(result.data)) return { moved: null };
 
-  const table = result.data.map(function (row) {
+  // Padded with the same pace setters the person was shown all
+  // week. Settling against the real rows alone would mean beating
+  // ten names on screen and being told the group was too small to
+  // promote anybody.
+  const table = addPaceSetters(result.data.map(function (row) {
     return {
       id: row.id,
       earned: Math.max(0, (Number(row.xp) || 0) - (Number(row.week_start_xp) || 0)),
     };
-  }).sort(function (a, b) { return b.earned - a.earned; });
+  }), profile.division);
 
   const place = table.findIndex(function (row) { return row.id === profile.id; });
   if (place === -1) return { moved: null };
@@ -1140,6 +1144,83 @@ async function deleteAccount(userId) {
   });
 
   return result.ok;
+}
+
+// ---------------------------------------------------------------
+// PACE SETTERS
+//
+// A weekly league with one person in it is worse than no league at
+// all - there is nothing to climb towards and promotion never
+// triggers. So sparse groups are topped up with scores to chase.
+//
+// They are labelled. The app marks them and says what they are,
+// for two reasons: passing them off as real people is a lie the
+// app would have to keep telling, and it is the kind of lie users
+// work out - a "player" who never posts, never changes their name
+// and always finishes mid-table. A target you know is a target
+// still pulls; a fake friend you catch is a reason to leave.
+//
+// Set PACE_SETTERS to 0 to turn the whole thing off.
+// ---------------------------------------------------------------
+const PACE_SETTERS = 10;      // group is topped up to this many
+const PACE_LABEL = true;      // mark them in what the app is sent
+
+const PACE_NAMES = [
+  "Early Doors", "Back Post", "Halfway Line", "Second Ball",
+  "Off The Line", "Near Post", "Extra Time", "Level Pegging",
+  "Top Corner", "Last Ditch", "Blind Side", "First Touch",
+  "Set Piece", "Far Post", "Injury Time", "Golden Goal",
+];
+
+// Same group, same week, same names and same numbers. Without this
+// the table would reshuffle every time somebody opened the screen.
+function steadyNumber(text) {
+  let value = 0;
+  for (let at = 0; at < text.length; at++) {
+    value = ((value << 5) - value + text.charCodeAt(at)) | 0;
+  }
+  return Math.abs(value);
+}
+
+// How far through the week we are, so their scores climb as the
+// week goes on rather than sitting still from Monday.
+function weekProgress() {
+  const now = new Date();
+  const day = (now.getUTCDay() + 6) % 7;          // Monday = 0
+  const minutes = day * 1440 + now.getUTCHours() * 60 + now.getUTCMinutes();
+  return Math.min(1, minutes / (7 * 1440));
+}
+
+// Tops a group up. Higher divisions set a harder pace, which is
+// what makes climbing mean something.
+function addPaceSetters(table, division) {
+  if (PACE_SETTERS <= 0) return table;
+
+  const missing = PACE_SETTERS - table.length;
+  if (missing <= 0) return table;
+
+  const tier = Math.max(1, Number(division) || 1);
+  const target = 400 + tier * 260;      // roughly a week's work at that level
+  const progress = weekProgress();
+  const filled = table.slice();
+
+  for (let at = 0; at < missing; at++) {
+    const seed = steadyNumber("pace|" + tier + "|" + at);
+
+    // Spread them across the target so the group has a top, a
+    // middle and a bottom rather than ten identical scores.
+    const share = 0.35 + ((seed % 100) / 100) * 0.95;
+    const earned = Math.round(target * share * progress);
+
+    filled.push({
+      id: "pace-" + tier + "-" + at,
+      name: PACE_NAMES[seed % PACE_NAMES.length],
+      earned: earned,
+      pace: PACE_LABEL ? true : undefined,
+    });
+  }
+
+  return filled.sort(function (a, b) { return b.earned - a.earned; });
 }
 
 // The table everybody in that group sees.
@@ -1224,8 +1305,11 @@ async function askApi(path, params) {
   // Worth watching in the logs - it is how you find out you are
   // near the daily ceiling before users do.
   const left = response.headers.get("x-ratelimit-requests-remaining");
-  if (left !== null && Number(left) < 500) {
-    console.log("   !! only " + left + " requests left today");
+  if (left !== null) {
+    requestsLeft = Number(left);
+    if (requestsLeft < 500) {
+      console.log("   !! only " + left + " requests left today");
+    }
   }
 
   let data;
@@ -1567,9 +1651,13 @@ function deriveCommentary(fixtureId, raw) {
 
   // Nothing to compare against yet. The first reading only sets the
   // baseline - inventing lines for everything that happened before
-  // the app was opened would put them all at the wrong minute.
+  // would put them all at the wrong minute.
   if (!before) return derivedFeed[fixtureId];
-  if (minute <= before.minute) return derivedFeed[fixtureId];
+
+  // Readings now come every twenty seconds, so most of them land in
+  // the same minute as the last. Only a clock going backwards is
+  // worth refusing; the figures themselves decide what changed.
+  if (minute < before.minute) return derivedFeed[fixtureId];
 
   const homeName = (raw.teams && raw.teams.home && raw.teams.home.name) || "Home";
   const awayName = (raw.teams && raw.teams.away && raw.teams.away.name) || "Away";
@@ -1631,6 +1719,75 @@ function deriveCommentary(fixtureId, raw) {
 function forgetDerived(fixtureId) {
   delete statSnapshots[fixtureId];
   delete derivedFeed[fixtureId];
+}
+
+
+// ---------------------------------------------------------------
+// WATCHING EVERY LIVE MATCH
+//
+// Readings used to happen only when somebody opened a match, which
+// meant opening a game at seventy minutes gave you a feed starting
+// at seventy. Nothing before that was ever recorded, because there
+// was no earlier reading to compare against.
+//
+// So the server watches all of them from kickoff instead. The ids
+// parameter takes twenty fixtures at a time, statistics included,
+// so this is three calls every twenty seconds however many games
+// are on - about 13,000 a day against a 150,000 allowance.
+// ---------------------------------------------------------------
+const POLL_SECONDS = 20;
+const POLL_BATCH = 20;         // fixtures per request, the API's limit
+const POLL_MAX = 40;           // two batches is plenty at once
+
+let pollRunning = false;
+let requestsLeft = null;       // from the API's own header
+
+async function pollLiveMatches() {
+  if (pollRunning) return;
+
+  // Back off rather than spend the last of the day's allowance on
+  // commentary. Scores matter more than colour.
+  if (requestsLeft !== null && requestsLeft < 2000) {
+    console.log("   !! skipping the commentary poll, " +
+      requestsLeft + " requests left today");
+    return;
+  }
+
+  pollRunning = true;
+
+  try {
+    const live = await askApi("fixtures", { live: "all" });
+    if (live === null) return;
+
+    const ids = live
+      .map(function (row) { return row.fixture && row.fixture.id; })
+      .filter(Boolean)
+      .slice(0, POLL_MAX);
+
+    // Anything that has stopped being live can be let go of.
+    const stillLive = {};
+    for (const id of ids) stillLive[id] = true;
+    for (const id of Object.keys(derivedFeed)) {
+      if (!stillLive[id]) forgetDerived(id);
+    }
+
+    if (ids.length === 0) return;
+
+    for (let at = 0; at < ids.length; at += POLL_BATCH) {
+      const batch = ids.slice(at, at + POLL_BATCH);
+      const rows = await askApi("fixtures", { ids: batch.join("-") });
+      if (rows === null) continue;
+
+      for (const row of rows) {
+        const id = row.fixture && row.fixture.id;
+        if (id) deriveCommentary(id, row);
+      }
+    }
+  } catch (error) {
+    console.log("   !! commentary poll failed: " + (error && error.message));
+  } finally {
+    pollRunning = false;
+  }
 }
 
 function translateMatch(raw) {
@@ -1916,10 +2073,8 @@ async function getMatch(fixtureId) {
   const inPlay = state.elapsed !== null || state.short === "HT";
 
   if (inPlay) {
-    // Every visit to an open match is itself a reading, so no
-    // background job is needed - only matches somebody is actually
-    // watching get polled, and the cache keeps that to once a
-    // minute however many people are looking.
+    // The poller has been watching this match since kickoff, so
+    // this is a reading too, but rarely the first one.
     const derived = deriveCommentary(fixtureId, raw);
 
     if (derived.length > 0) {
@@ -3764,6 +3919,21 @@ body {
 }
 .lgYou { background: #EFF6FF; }
 .lgYou .lgName { color: #1E6FD9; }
+
+/* Scores to chase, drawn quieter than real players so the two are
+   never mistaken for one another. */
+.lgPace .lgName, .lgPace .lgXp { color: #6B7280; }
+.lgPace .lgAvatar { background: #F0F1F4; color: #9CA3AF; }
+.lgPaceTag {
+  font-size: 9px; letter-spacing: 0.4px; text-transform: uppercase;
+  color: #6B7280; background: #F0F1F4; border-radius: 8px;
+  padding: 2px 7px; flex-shrink: 0; margin-right: 8px;
+}
+.lgPaceNote {
+  padding: 10px 16px 14px; font-size: 11.5px;
+  color: #6B7280; line-height: 1.5;
+}
+.lgPaceNote b { color: #374151; font-weight: 600; }
 .setRow { border-bottom-color: #ECEEF1; }
 
 .startupError {
@@ -4861,6 +5031,7 @@ function tally(kind) {
 }
 
 function saveXpState() {
+  markSaved();
   if (typeof pushProgress === "function") pushProgress();
   keep.setItem("xp", xp);
   keep.setItem("xpSources", JSON.stringify(xpSources));
@@ -5799,6 +5970,7 @@ let favLeagues = readSaved("favLeagues", []);
 let favTeams = readSaved("favTeams", []);
 
 function saveFavourites() {
+  markSaved();
   if (typeof pushProgress === "function") pushProgress();
   keep.setItem("favLeagues", JSON.stringify(favLeagues));
   keep.setItem("favTeams", JSON.stringify(favTeams));
@@ -8643,12 +8815,14 @@ function drawXpLeagueTab(list) {
              data.table.length >= 8 ? "down" : "");
 
         html +=
-          '<div class="lgRow ' + zone + (row.you ? " lgYou" : "") + '">' +
+          '<div class="lgRow ' + zone + (row.you ? " lgYou" : "") +
+            (row.pace ? " lgPace" : "") + '">' +
             '<span class="lgPos">' + row.position + '</span>' +
             '<span class="lgAvatar">' +
               (row.name ? row.name.slice(0, 1).toUpperCase() : "?") +
             '</span>' +
             '<span class="lgName">' + row.name + (row.you ? " (you)" : "") + '</span>' +
+            (row.pace ? '<span class="lgPaceTag">pace</span>' : '') +
             '<span class="lgXp">' + row.earned.toLocaleString() + '</span>' +
           '</div>';
       }
@@ -8657,6 +8831,14 @@ function drawXpLeagueTab(list) {
         '<span><i class="upDot"></i>Promotion</span>' +
         '<span><i class="downDot"></i>Relegation</span>' +
       '</div>';
+
+      // Say what they are. A target you know is a target still
+      // pulls; one you catch out does not.
+      if (data.table.some(function (row) { return row.pace; })) {
+        html += '<div class="lgPaceNote">Rows marked <b>pace</b> are ' +
+          'scores to chase, not other players. They make way as more ' +
+          'people join your group.</div>';
+      }
 
       // Setting a name is free once. Changing it after that is a
       // paid feature, and the server decides - not this screen.
@@ -8802,8 +8984,20 @@ async function renewSession() {
 }
 
 // Everything worth keeping, in one lump.
+// When this device last changed anything. Without it there is no
+// way to tell a fresh copy from a stale one, and the two get
+// resolved by XP alone - which is equal most of the time.
+function markSaved() {
+  keep.setItem("savedAt", String(Date.now()));
+}
+
+function savedHere() {
+  return Number(keep.getItem("savedAt")) || 0;
+}
+
 function gatherProgress() {
   return {
+    savedAt: Date.now(),
     // Which provider the football ids below belong to. Without
     // this, a saved copy from the old provider would come back
     // down on the next sync and undo the clear-out above.
@@ -8851,11 +9045,26 @@ function applyProgress(data) {
     // Football ids are only worth restoring if they were saved
     // against this provider. Anything older points at other clubs
     // entirely, so it is left behind rather than reinstated.
+    // The server copy is only allowed to win if it is genuinely
+    // newer than what is on this phone. XP is equal most of the
+    // time, so deciding on XP alone let an older, empty copy
+    // overwrite choices that had just been made - which is why
+    // they had to be picked again the next day.
+    const newer = (Number(data.savedAt) || 0) > savedHere();
+
     if (data.provider === "api-football") {
-      if (Array.isArray(data.alerts)) alerts = data.alerts;
-      if (Array.isArray(data.favTeams)) favTeams = data.favTeams;
-      if (Array.isArray(data.favLeagues)) favLeagues = data.favLeagues;
-      if (data.badgeClub) badgeClub = data.badgeClub;
+      const preferTheirs = function (theirs, mine) {
+        if (!Array.isArray(theirs)) return mine;
+        if (newer) return theirs;
+        // Not newer: only worth taking if we have nothing.
+        return mine.length === 0 ? theirs : mine;
+      };
+
+      alerts = preferTheirs(data.alerts, alerts);
+      favTeams = preferTheirs(data.favTeams, favTeams);
+      favLeagues = preferTheirs(data.favLeagues, favLeagues);
+
+      if (data.badgeClub && (newer || !badgeClub)) badgeClub = data.badgeClub;
     }
     if (data.claimed) claimed = data.claimed;
     if (data.dailyCounts && data.dailyCounts.day === todayKey) {
@@ -8867,15 +9076,46 @@ function applyProgress(data) {
     if (data.monthCounts && data.monthCounts.month === thisMonth) {
       monthCounts = data.monthCounts;
     }
+    // The squad needs the same protection as the clubs. Without it
+    // a day-old empty copy from the server would clear a team that
+    // had just been picked.
     if (data.fiveASide) {
-      fiveASide = data.fiveASide;
-      keep.setItem("fiveASide", JSON.stringify(fiveASide));
+      const mineIsEmpty = Object.keys(fiveASide || {}).length === 0;
+      if (newer || mineIsEmpty) {
+        fiveASide = data.fiveASide;
+        keep.setItem("fiveASide", JSON.stringify(fiveASide));
+      }
     }
-    if (data.squadHistory) squadHistory = data.squadHistory;
-    if (Array.isArray(data.paidEvents)) paidEvents = data.paidEvents;
-    if (data.squadChanges) {
-      squadChanges = data.squadChanges;
-      keep.setItem("squadChanges", JSON.stringify(squadChanges));
+
+    // Locked squads are merged rather than replaced. Each week is
+    // its own entry, so nothing is lost either way, and a stale
+    // copy cannot erase a week this phone recorded.
+    if (data.squadHistory) {
+      for (const cycle of Object.keys(data.squadHistory)) {
+        if (newer || !squadHistory[cycle]) {
+          squadHistory[cycle] = data.squadHistory[cycle];
+        }
+      }
+    }
+
+    // Never un-pay a gameweek. Taking a shorter list from the
+    // server would let the same week pay out twice.
+    if (Array.isArray(data.paidEvents)) {
+      for (const event of data.paidEvents) {
+        if (paidEvents.indexOf(event) === -1) paidEvents.push(event);
+      }
+    }
+    // Whichever side has used more of the weekly allowance wins,
+    // so a change made on one phone cannot be undone by opening
+    // the app on another.
+    if (data.squadChanges && data.squadChanges.cycle) {
+      const mineUsed = (squadChanges && squadChanges.cycle === data.squadChanges.cycle)
+        ? (Number(squadChanges.used) || 0) : -1;
+
+      if (Number(data.squadChanges.used) > mineUsed) {
+        squadChanges = data.squadChanges;
+        keep.setItem("squadChanges", JSON.stringify(squadChanges));
+      }
     }
     if (data.seasonCounts && data.seasonCounts.season === thisSeason) {
       seasonCounts = data.seasonCounts;
@@ -8883,7 +9123,7 @@ function applyProgress(data) {
     if (data.lastOpen) keep.setItem("lastOpen", data.lastOpen);
     if (data.lastSpin) keep.setItem("lastSpin", data.lastSpin);
     if (Array.isArray(data.xpHistory)) xpHistory = data.xpHistory;
-    if (data.xpSources) {
+    if (data.xpSources && newer) {
       xpSources = data.xpSources;
       keep.setItem("xpSources", JSON.stringify(xpSources));
     }
@@ -8901,10 +9141,44 @@ function applyProgress(data) {
 
 // Pushes progress up. Quietly does nothing when signed out.
 let savePending = null;
+// Sends whatever is pending right now, without waiting out the
+// delay. Used when the app is about to go away.
+function flushProgress() {
+  if (!signedIn() || !savePending) return;
+
+  clearTimeout(savePending);
+  savePending = null;
+
+  try {
+    // keepalive lets the request outlive the page, which a normal
+    // fetch does not - closing the app mid-flight would otherwise
+    // lose the change.
+    fetch("/api/progress", {
+      method: "POST",
+      keepalive: true,
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + authToken,
+      },
+      body: JSON.stringify({ data: gatherProgress() }),
+    });
+  } catch (error) {
+    // Nothing useful to do at this point.
+  }
+}
+
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState === "hidden") flushProgress();
+});
+window.addEventListener("pagehide", flushProgress);
+
 function pushProgress() {
   if (!signedIn()) return;
 
-  // Wait a moment in case several things change at once.
+  // Wait a moment in case several things change at once. Two
+  // seconds is nothing on screen, but it was long enough to lose a
+  // change if the app was closed straight after making it - hence
+  // the flush above.
   clearTimeout(savePending);
   savePending = setTimeout(async function () {
     const send = async function () {
@@ -8926,6 +9200,8 @@ function pushProgress() {
     } catch (error) {
       // Offline. It will go up next time something changes.
     }
+
+    savePending = null;
   }, 2000);
 }
 
@@ -9363,7 +9639,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-06-grouped-b");
+  row("Build", "2026-09-07-keeps-b");
 
   // ---- Clearing up ----
   section("Data");
@@ -11512,7 +11788,8 @@ async function handleRequest(request, response) {
       return;
     }
 
-    const table = await groupTable(profile.group_key);
+    const table = addPaceSetters(
+      await groupTable(profile.group_key), profile.division);
     const place = table.findIndex(function (row) { return row.id === who.id; });
 
     // Only send back what the screen needs, and no email addresses.
@@ -11529,6 +11806,7 @@ async function handleRequest(request, response) {
           name: row.name,
           earned: row.earned,
           you: row.id === who.id,
+          pace: Boolean(row.pace),
         };
       }),
       promoteAt: PROMOTE,
@@ -11978,6 +12256,26 @@ async function handleRequest(request, response) {
     return;
   }
 
+  // What the commentary watcher has gathered, and what it costs.
+  if (address.pathname === "/api/commentary-status") {
+    const watching = Object.keys(derivedFeed);
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      matches_being_watched: watching.length,
+      lines_gathered: watching.reduce(function (sum, id) {
+        return sum + derivedFeed[id].length;
+      }, 0),
+      reading_every: POLL_SECONDS + " seconds",
+      requests_left_today: requestsLeft,
+      per_day_estimate: Math.round((86400 / POLL_SECONDS) * 3),
+      sample: watching.length > 0
+        ? derivedFeed[watching[0]].slice(-8)
+        : [],
+    }, null, 2));
+    return;
+  }
+
   if (address.pathname === "/api/quota") {
     const raw = await askApi("status", {});
 
@@ -12033,11 +12331,16 @@ async function handleRequest(request, response) {
   response.end(PAGE.replace("__LEAGUES__", JSON.stringify(MY_LEAGUES)));
 }
 
+// Kept out of the way until the server is actually up.
+setInterval(pollLiveMatches, POLL_SECONDS * 1000);
+
 server.listen(PORT, function () {
   console.log("");
   console.log("  App running on port " + PORT);
   console.log("  Build: " + BUILD);
   console.log("  Football data from " + API_HOST);
+  console.log("  Watching live matches every " + POLL_SECONDS +
+    "s for commentary");
   if (!API_KEY) {
     console.log("  !! APIFOOTBALL_KEY is not set - no match data will load");
   }
