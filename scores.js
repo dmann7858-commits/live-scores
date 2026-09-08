@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-08-europe-a";
+const BUILD = "2026-09-08-europe-following-dark-a";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -7244,8 +7244,8 @@ async function drawHomeFollowing(list) {
   loading.textContent = "Loading your matches...";
   list.appendChild(loading);
 
-  // Live scores first, so anything being played shows a real score
-  // rather than whatever was cached an hour ago.
+  // Live scores first, so anything being played shows the newest
+  // score and minute even if the club-season response is older.
   let live = [];
   try {
     live = await (await fetch("/api/ticker")).json();
@@ -7302,13 +7302,72 @@ async function drawHomeFollowing(list) {
     return;
   }
 
-  // Under way or already played on one side, still to come on the
-  // other. This is the whole trick: nothing needs moving by hand.
-  const started = everything.filter(function (entry) {
-    return stateOf(entry.match) !== "upcoming";
+  // Make a display copy with the live ticker's newest score/minute.
+  // This keeps the dark fixture card accurate without mutating the
+  // season data kept elsewhere in the app.
+  const liveVersion = function (match) {
+    const feed = liveById[match.fixture.id];
+    if (!feed) return match;
+
+    return Object.assign({}, match, {
+      goals: Object.assign({}, match.goals, {
+        home: feed.hg,
+        away: feed.ag,
+      }),
+      fixture: Object.assign({}, match.fixture, {
+        status: Object.assign({}, match.fixture.status, {
+          elapsed: feed.minute,
+          short: feed.short || match.fixture.status.short,
+        }),
+      }),
+    });
+  };
+
+  // fixtureCard deliberately leaves its competition label blank on
+  // the Fixtures page because a group heading already names it. The
+  // Following page has no competition group, so put it back on each
+  // card here.
+  const followingCard = function (match) {
+    const country = displayCountryForLeague(match.league);
+    const competition = (country ? country + " - " : "") +
+      ((match.league && match.league.name) || "");
+
+    return fixtureCard(match).replace(
+      '<span class="featComp"></span>',
+      '<span class="featComp">' + competition + '</span>'
+    );
+  };
+
+  // Same card behaviour as Fixtures, except an unstar redraws the
+  // Following page immediately so a match that was only here because
+  // it was starred disappears straight away.
+  const wireFollowingCards = function (within) {
+    for (const card of within.querySelectorAll(".fixCard")) {
+      const id = Number(card.getAttribute("data-id"));
+      card.onclick = function () { openMatch(id); };
+
+      const star = card.querySelector(".fixStar");
+      if (star) {
+        star.onclick = function (event) {
+          event.stopPropagation();
+          toggleAlert(id, null);
+          drawHome();
+        };
+      }
+    }
+  };
+
+  const shown = everything.map(function (entry) {
+    return { entry: entry, match: liveVersion(entry.match) };
   });
-  const later = everything.filter(function (entry) {
-    return stateOf(entry.match) === "upcoming";
+
+  // Under way or already played on one side, still to come on the
+  // other. A match moves section automatically as its status changes.
+  const started = shown.filter(function (item) {
+    return stateOf(item.match) !== "upcoming";
+  });
+  const later = shown.filter(function (item) {
+    return stateOf(item.match) === "upcoming";
   });
 
   started.sort(function (a, b) { return matchSort(a.match, b.match); });
@@ -7316,106 +7375,30 @@ async function drawHomeFollowing(list) {
     return new Date(a.match.fixture.date) - new Date(b.match.fixture.date);
   });
 
-  // The star behaves the same wherever it appears: gold when the
-  // match is starred, grey when it is not, and it toggles.
-  const wireStar = function (star, id) {
-    star.onclick = function (event) {
-      event.stopPropagation();
-      toggleAlert(id, null);
-      drawHome();
-    };
+  const drawSection = function (title, items, countLive) {
+    if (items.length === 0) return;
+
+    const heading = document.createElement("div");
+    heading.className = "boardHead";
+    heading.innerHTML = title + (countLive
+      ? ' <span class="liveCount">' + items.length + '</span>'
+      : '');
+    list.appendChild(heading);
+
+    const stack = document.createElement("div");
+    stack.className = "fixStack followingFixStack";
+    stack.innerHTML = items.map(function (item) {
+      return followingCard(item.match);
+    }).join("");
+
+    list.appendChild(stack);
+    wireFollowingCards(stack);
   };
 
-  // ---- Under way, or done ----
-  if (started.length > 0) {
-    const heading = document.createElement("div");
-    heading.className = "boardHead";
-    heading.innerHTML =
-      'Following <span class="liveCount">' + started.length + '</span>';
-    list.appendChild(heading);
-
-    for (const entry of started) {
-      const match = entry.match;
-      const id = match.fixture.id;
-      const feed = liveById[id];
-      const state = stateOf(match);
-
-      // Prefer the live feed's score and minute where there is one.
-      const hg = feed ? feed.hg : match.goals.home;
-      const ag = feed ? feed.ag : match.goals.away;
-
-      let when;
-      if (state === "live") {
-        const minute = feed && feed.minute !== null
-          ? feed.minute : minuteOf(match);
-        when = match.fixture.status.short === "HT" ? "HT"
-          : (minute === null ? "LIVE" : minute + "'");
-      } else {
-        when = "FT";
-      }
-
-      const starred = alerts.includes(id);
-
-      const row = document.createElement("div");
-      row.className = "followRow";
-      row.innerHTML =
-        '<span class="fWhen' + (state === "live" ? " liveNow" : "") + '">' +
-          when + '</span>' +
-        '<span class="fTeams">' +
-          '<span class="fLine">' +
-            '<img src="' + match.teams.home.logo + '" alt="">' +
-            '<span class="fName">' + match.teams.home.name + '</span>' +
-            '<span class="fScore">' + (hg === null ? "-" : hg) + '</span>' +
-          '</span>' +
-          '<span class="fLine">' +
-            '<img src="' + match.teams.away.logo + '" alt="">' +
-            '<span class="fName">' + match.teams.away.name + '</span>' +
-            '<span class="fScore">' + (ag === null ? "-" : ag) + '</span>' +
-          '</span>' +
-        '</span>' +
-        '<span class="bell' + (starred ? " on" : "") + '">&#9733;</span>';
-
-      row.onclick = function () { openMatch(id); };
-      wireStar(row.querySelector(".bell"), id);
-      list.appendChild(row);
-    }
-  }
-
-  // ---- Still to come ----
-  if (later.length > 0) {
-    const heading = document.createElement("div");
-    heading.className = "boardHead";
-    heading.textContent = "Coming up";
-    list.appendChild(heading);
-
-    for (const entry of later) {
-      const match = entry.match;
-      const id = match.fixture.id;
-      const kickoff = new Date(match.fixture.date);
-
-      const when = isNaN(kickoff) ? "" :
-        kickoff.toLocaleDateString([], {
-          weekday: "short", day: "numeric", month: "short",
-        }) + " " + localTime(kickoff);
-
-      const crest = entry.club ? entry.club.logo : match.teams.home.logo;
-      const starred = alerts.includes(id);
-
-      const row = document.createElement("div");
-      row.className = "upRow";
-      row.innerHTML =
-        '<img class="upCrest" src="' + crest + '" alt="">' +
-        '<span class="upTeams">' +
-          match.teams.home.name + ' v ' + match.teams.away.name +
-        '</span>' +
-        '<span class="upWhen">' + when + '</span>' +
-        '<span class="upStar' + (starred ? "" : " off") + '">&#9733;</span>';
-
-      row.onclick = function () { openMatch(id); };
-      wireStar(row.querySelector(".upStar"), id);
-      list.appendChild(row);
-    }
-  }
+  // These are now exactly the same navy match cards used by the
+  // Fixtures screen and the main live-match presentation.
+  drawSection("Following", started, true);
+  drawSection("Coming up", later, false);
 }
 
 // ---- News: headlines, linking out to whoever wrote them ----
