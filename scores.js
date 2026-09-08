@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-07-keeps-b";
+const BUILD = "2026-09-08-europe-a";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -5694,7 +5694,8 @@ function leagueHeading(league, count) {
       ? '<img src="' + league.logo + '" alt="" loading="lazy">'
       : '<span class="fixHeadBlank"></span>') +
     '<span class="fixHeadName">' +
-      (league.country ? league.country + " - " : "") + (league.name || "") +
+      (displayCountryForLeague(league) ? displayCountryForLeague(league) + " - " : "") +
+      (league.name || "") +
     '</span>' +
     '<span class="fixHeadCount">' + count + '</span>' +
     '<span class="fixHeadChevron' + (folded ? " folded" : "") + '">&#9650;</span>' +
@@ -5918,7 +5919,7 @@ function drawLeagues() {
   } else {
     shown = allLeagues.filter(function (l) {
       return l.name.toLowerCase().includes(searchText) ||
-             l.country.toLowerCase().includes(searchText);
+             displayCountryForLeague(l).toLowerCase().includes(searchText);
     }).slice(0, 60);
   }
 
@@ -5928,19 +5929,22 @@ function drawLeagues() {
   }
 
   shown.sort(function (a, b) {
-    if (a.country !== b.country) return a.country.localeCompare(b.country);
+    const countryA = displayCountryForLeague(a);
+    const countryB = displayCountryForLeague(b);
+    if (countryA !== countryB) return countryA.localeCompare(countryB);
     return a.name.localeCompare(b.name);
   });
 
   let lastCountry = null;
 
   for (const league of shown) {
-    if (league.country !== lastCountry) {
+    const displayCountry = displayCountryForLeague(league);
+    if (displayCountry !== lastCountry) {
       const heading = document.createElement("div");
       heading.className = "countryRow";
-      heading.textContent = league.country;
+      heading.textContent = displayCountry;
       list.appendChild(heading);
-      lastCountry = league.country;
+      lastCountry = displayCountry;
     }
 
     const following = myLeagues.includes(league.id);
@@ -6093,11 +6097,11 @@ setInterval(loadTicker, 60000);     // refresh the list every minute
 // ---------------------------------------------------------------
 // THE COUNTRY DRAWER
 //
-// These nine sit at the top in this order. Everything else falls
+// These sit at the top in this order. Everything else falls
 // in alphabetically underneath.
 // ---------------------------------------------------------------
 const PINNED = [
-  "England", "Germany", "Scotland", "France",
+  "Europe", "England", "Germany", "Scotland", "France",
   "Italy", "Spain", "Portugal", "Netherlands", "USA"
 ];
 
@@ -6124,6 +6128,19 @@ let openCountry = null;   // which country is expanded in the drawer
 // Each line is one tier. The words inside are alternative
 // spellings the API might use for that same tier.
 const LEAGUE_ORDER = {
+  // Continental UEFA competitions are grouped under a synthetic
+  // "Europe" entry in the country drawer. API-Football commonly
+  // reports these as World, so the display helper below moves only
+  // the major UEFA competitions into Europe.
+  "Europe": [
+    ["uefa champions league"],
+    ["uefa europa league"],
+    ["uefa europa conference league", "uefa conference league"],
+    ["uefa super cup"],
+    ["euro championship"],
+    ["uefa nations league"],
+    ["euro championship - qualification"],
+  ],
   "England": [
     ["premier league"], ["championship"], ["league one"],
     ["league two"], ["national league"],
@@ -6188,6 +6205,26 @@ const GENERIC_TIERS = [
   ["serie d", "league two", "division 4"],
 ];
 
+// Returns a display region for competitions that span countries.
+// This keeps UEFA competitions together instead of burying them under
+// the API's generic "World" country label.
+function displayCountryForLeague(league) {
+  const name = ((league && league.name) || "").toLowerCase();
+  const europeTiers = LEAGUE_ORDER["Europe"] || [];
+
+  // Keep women's competitions out of the men's Europe shortcut for now;
+  // they continue to use the normal women's-league handling below.
+  if (WOMENS_WORDS.some(function (word) { return name.includes(word); })) {
+    return (league && league.country) || "Other";
+  }
+
+  for (const tier of europeTiers) {
+    if (tier.some(function (word) { return name.includes(word); })) return "Europe";
+  }
+
+  return (league && league.country) || "Other";
+}
+
 function isWomens(name) {
   const lower = name.toLowerCase();
   return WOMENS_WORDS.some(function (word) { return lower.includes(word); });
@@ -6202,7 +6239,7 @@ function isUnwanted(name) {
 // Returns -1 when it should not be shown at all.
 function rankOf(league) {
   const name = (league.name || "").toLowerCase();
-  const country = league.country || "";
+  const country = displayCountryForLeague(league);
 
   if (isUnwanted(name)) return -1;
 
@@ -6287,7 +6324,7 @@ function countriesInOrder() {
   const byCountry = {};
 
   for (const league of allLeagues || []) {
-    const country = league.country || "Other";
+    const country = displayCountryForLeague(league);
     if (!byCountry[country]) byCountry[country] = [];
     byCountry[country].push(league);
   }
@@ -6342,7 +6379,7 @@ function buildDrawer() {
     if (index === 0) {
       const hint = document.createElement("div");
       hint.className = "drawerHint";
-      hint.textContent = "Top countries";
+      hint.textContent = "Top competitions & countries";
       body.appendChild(hint);
     }
     if (index === grouped.pinnedCount && grouped.pinnedCount > 0) {
@@ -6435,7 +6472,7 @@ function drawLeagueHead() {
         (league.logo ? '<img src="' + league.logo + '" alt="">' : '') +
         '<div class="txt">' +
           '<div class="ln">' + league.name + '</div>' +
-          '<div class="cn">' + league.country + '</div>' +
+          '<div class="cn">' + displayCountryForLeague(league) + '</div>' +
         '</div>' +
       '</div>' +
       '<div class="leagueTabs">' + tabHtml + '</div>' +
@@ -6728,8 +6765,9 @@ let featureTouched = false; // true once the person has swiped it
 // Leans on the same ranking the country drawer uses, so the World
 // Cup outranks a Latvian cup tie without a second list to keep.
 function competitionWeight(item) {
-  const country = item.country || "";
-  const tier = rankOf({ name: item.league || "", country: country });
+  const leagueForRank = { name: item.league || "", country: item.country || "" };
+  const country = displayCountryForLeague(leagueForRank);
+  const tier = rankOf({ name: leagueForRank.name, country: country });
 
   const pinnedAt = PINNED.findIndex(function (name) {
     return matchesPinned(name, country);
@@ -10617,7 +10655,7 @@ function drawFactsTab(match, extra, list) {
   details.className = "factBox";
   details.innerHTML =
     factRow("Competition", match.league.name) +
-    factRow("Country", match.league.country) +
+    factRow("Country", displayCountryForLeague(match.league)) +
     factRow("Round", extras.round) +
     factRow("Kick off", isNaN(kickoff) ? "" :
       kickoff.toLocaleString([], {
@@ -10935,7 +10973,7 @@ function drawFilterBar(counts) {
     ? '<span class="filterNote">' + fixtureFilter.country +
       ' &rsaquo; ' + fixtureFilter.league.name + '</span>' +
       '<span class="filterClear" id="clearFilter">Clear</span>'
-    : '<button class="filterBtn" id="openFilter">Filter by league</button>' +
+    : '<button class="filterBtn" id="openFilter">Filter by competition</button>' +
       '<span class="filterNote">Showing everywhere</span>';
 
   const chip = function (key, icon, label, count) {
