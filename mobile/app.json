@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "GoalFlash",
+    "slug": "goalflash",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#0B1E3D",
+    "ios": {
+      "bundleIdentifier": "com.goalflash.livescores",
+      "buildNumber": "1",
+      "supportsTablet": false,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.goalflash.livescores"
+    }
+  }
+}
