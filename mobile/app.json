@@ -26,6 +26,20 @@
         "foregroundImage": "./icon.png",
         "backgroundColor": "#040F21"
       }
-    }
+    },
+    "plugins": [
+      [
+        "react-native-google-mobile-ads",
+        {
+          "iosAppId": "ca-app-pub-9305446787515470~4542770805"
+        }
+      ],
+      [
+        "expo-tracking-transparency",
+        {
+          "userTrackingPermission": "GoalFlash is free because of adverts. Allowing this lets them be more relevant to you. You'll see the same number of adverts either way."
+        }
+      ]
+    ]
   }
 }
