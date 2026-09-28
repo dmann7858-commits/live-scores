@@ -1,0 +1,54 @@
+workflows:
+  ios-release:
+    name: GoalFlash iOS Release
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    working_directory: mobile
+    integrations:
+      app_store_connect: GoalFlash ASC Key
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.goalflash.livescores
+      node: latest
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Install Expo and the app's packages
+        script: |
+          npm install
+          npx expo install react react-native react-native-webview expo-status-bar
+
+      - name: Set the build number
+        script: |
+          node -e "
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            cfg.expo.ios.buildNumber = String(process.env.BUILD_NUMBER || 1);
+            fs.writeFileSync('app.json', JSON.stringify(cfg, null, 2));
+            console.log('Build number set to ' + cfg.expo.ios.buildNumber);
+          "
+
+      - name: Generate the iOS project
+        script: npx expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        script: cd ios && pod install
+
+      - name: Apply code signing
+        script: xcode-project use-profiles
+
+      - name: Build the app
+        script: |
+          xcode-project build-ipa \
+            --workspace "ios/GoalFlash.xcworkspace" \
+            --scheme "GoalFlash"
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: false
