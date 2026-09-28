@@ -18,6 +18,7 @@ workflows:
         script: |
           npm install
           npx expo install react react-native react-native-webview expo-status-bar
+          npx expo install react-native-google-mobile-ads expo-tracking-transparency
 
       - name: Set the build number
         script: |
