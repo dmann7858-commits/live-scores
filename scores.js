@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-08-europe-following-dark-a";
+const BUILD = "2026-09-28-adsense-a";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -42,7 +42,37 @@ const OPERATOR_PLACE = process.env.OPERATOR_PLACE || "";
 // Fixed on purpose. This was generated from the clock, so the policy
 // claimed to have been updated today no matter when it was read.
 // Change it by hand whenever the policy actually changes.
-const POLICY_UPDATED = "2026-09-04";
+const POLICY_UPDATED = "2026-09-28";
+
+// ---------------------------------------------------------------
+// ADVERTISING
+//
+// Google AdSense, shown inside the page as the person scrolls -
+// roughly one advert per screen of content.
+//
+// ADSENSE_CLIENT is your publisher ID. It is not a secret: it sits
+// in the page source of every site that shows AdSense ads.
+//
+// ADSENSE_SLOT is the ad unit ID for the in-feed adverts. You get it
+// from AdSense once the site is approved (Ads, By ad unit, Display
+// ads). Until it is set in Render's Environment settings, no advert
+// slots are drawn at all - so nothing looks empty while you wait.
+// Only the AdSense script loads, which Google needs to review the
+// site.
+//
+// AD_EVERY is how many cards sit between adverts. Six match cards is
+// about one phone screen. Set ADS_OFF to "1" in Render to switch
+// every advert off without touching this file.
+// ---------------------------------------------------------------
+const ADSENSE_CLIENT = "ca-pub-9305446787515470";
+const ADSENSE_SLOT = process.env.ADSENSE_SLOT || "";
+const ADS_OFF = process.env.ADS_OFF === "1";
+const AD_EVERY = Number(process.env.AD_EVERY) || 6;
+
+// What ads.txt has to say, word for word. Google checks this file
+// at the root of the site before it will pay out.
+const ADS_TXT = "google.com, " + ADSENSE_CLIENT.replace("ca-", "") +
+  ", DIRECT, f08c47fec0942fa0\n";
 // This provider sends kickoff times as full ISO 8601 with the
 // offset already on them, so there is nothing to convert. The
 // Europe/Berlin workaround the old provider needed has been
@@ -2755,6 +2785,7 @@ const PAGE = `
 <link rel="icon" href="/logo.png">
 <link rel="apple-touch-icon" href="/logo.png">
 <title>GoalFlash</title>
+__ADHEAD__
 <style>
   * { box-sizing: border-box; }
   body {
@@ -4603,6 +4634,24 @@ body {
 .upStar.off { color: #D8DBE0; }
 .followRow .bell { font-size: 17px; }
 
+/* =============================================================
+   ADVERTS
+   Clearly labelled, set apart from the match cards, and folded
+   away completely if Google has nothing to show.
+   ============================================================= */
+.adBox {
+  margin: 6px 12px 14px; padding: 8px 0 10px;
+  background: #fff; border: 1px solid #ECEEF1; border-radius: 12px;
+  overflow: hidden; min-height: 60px;
+}
+.adLabel {
+  font-size: 9.5px; color: #9CA3AF; letter-spacing: 0.6px;
+  text-transform: uppercase; text-align: center; margin-bottom: 6px;
+}
+.adBox ins.adsbygoogle { display: block; width: 100%; }
+.adBox:has(ins[data-ad-status="unfilled"]) { display: none; }
+.liveStack .adBox, .fixStack .adBox { margin-left: 0; margin-right: 0; }
+
 .newsNote {
   padding: 4px 16px 16px; font-size: 11px;
   color: #9CA3AF; line-height: 1.5; text-align: center;
@@ -4761,6 +4810,88 @@ body {
 
 <script>
 const LEAGUES = __LEAGUES__;
+
+// ---------------------------------------------------------------
+// ADVERTS
+//
+// One advert after every few cards on the long lists. Each one only
+// asks Google for an ad as it comes near the screen, so a long
+// fixtures list does not fire off dozens of requests at once.
+// ---------------------------------------------------------------
+const ADS = __ADS__;
+
+function adsOn() {
+  return Boolean(ADS && ADS.on && ADS.client && ADS.slot);
+}
+
+function adHtml() {
+  if (!adsOn()) return "";
+  return '<div class="adBox">' +
+    '<div class="adLabel">Advertisement</div>' +
+    '<ins class="adsbygoogle" style="display:block"' +
+      ' data-ad-client="' + ADS.client + '"' +
+      ' data-ad-slot="' + ADS.slot + '"' +
+      ' data-ad-format="auto" data-full-width-responsive="true"></ins>' +
+  '</div>';
+}
+
+// Joins a list of card html, dropping an advert in after every
+// ADS.every cards - but never as the very last thing in the list.
+function withAds(cards, counter) {
+  if (!adsOn()) return cards.join("");
+  const tally = counter || { n: 0 };
+  let out = "";
+  for (let i = 0; i < cards.length; i++) {
+    out += cards[i];
+    tally.n++;
+    if (tally.n >= ADS.every && i < cards.length - 1) {
+      out += adHtml();
+      tally.n = 0;
+    }
+  }
+  return out;
+}
+
+let adWatcher = null;
+
+function fillAd(slot) {
+  if (slot.getAttribute("data-gf") === "asked") return;
+  slot.setAttribute("data-gf", "asked");
+  try {
+    (window.adsbygoogle = window.adsbygoogle || []).push({});
+  } catch (error) {
+    // Blocked or not approved yet. The box folds itself away.
+  }
+}
+
+// Called after any list is drawn. Finds new advert slots and asks
+// for an ad as each one scrolls near the screen.
+function activateAds(within) {
+  if (!adsOn()) return;
+  const slots = (within || document).querySelectorAll(
+    "ins.adsbygoogle:not([data-gf])");
+  if (slots.length === 0) return;
+
+  if (!("IntersectionObserver" in window)) {
+    for (const slot of slots) fillAd(slot);
+    return;
+  }
+
+  if (!adWatcher) {
+    adWatcher = new IntersectionObserver(function (entries) {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        adWatcher.unobserve(entry.target);
+        fillAd(entry.target);
+      }
+    }, { rootMargin: "300px 0px" });
+  }
+
+  for (const slot of slots) {
+    slot.setAttribute("data-gf", "waiting");
+    adWatcher.observe(slot);
+  }
+}
 
 // ---------------------------------------------------------------
 // STORAGE
@@ -5744,6 +5875,7 @@ function drawMatches(matches, showKickoffTimes) {
 
   let at = 0;        // which group we have reached
   let shown = 0;     // matches drawn so far
+  const adCount = { n: 0 };   // cards since the last advert
 
   const redraw = function () {
     // Folding a competition changes what is on screen, so the
@@ -5763,7 +5895,7 @@ function drawMatches(matches, showKickoffTimes) {
       block.className = "fixGroup";
       block.innerHTML =
         leagueHeading(group.league, group.matches.length) +
-        (folded ? "" : group.matches.map(fixtureCard).join(""));
+        (folded ? "" : withAds(group.matches.map(fixtureCard), adCount));
 
       page.appendChild(block);
       wireFixtureCards(block);
@@ -5778,6 +5910,7 @@ function drawMatches(matches, showKickoffTimes) {
     }
 
     stack.appendChild(page);
+    activateAds(page);
 
     for (const head of page.querySelectorAll(".fixHead")) {
       const id = Number(head.getAttribute("data-league"));
@@ -7040,13 +7173,17 @@ function drawLiveList(list, live) {
 
   const stack = document.createElement("div");
   stack.className = "liveStack";
-  stack.innerHTML = rest.map(featureCard).join("");
+  stack.innerHTML = withAds(rest.map(featureCard),
+    // Live cards are taller, so the first advert comes a bit sooner.
+    { n: 2 });
   list.appendChild(stack);
 
   for (const card of stack.querySelectorAll(".feature")) {
     const id = Number(card.getAttribute("data-feature"));
     card.onclick = function () { tally("feature"); openMatch(id); };
   }
+
+  activateAds(stack);
 
   // Scorers come in one at a time behind the list, so fifteen
   // cards do not fire fifteen requests at once.
@@ -7387,12 +7524,13 @@ async function drawHomeFollowing(list) {
 
     const stack = document.createElement("div");
     stack.className = "fixStack followingFixStack";
-    stack.innerHTML = items.map(function (item) {
+    stack.innerHTML = withAds(items.map(function (item) {
       return followingCard(item.match);
-    }).join("");
+    }));
 
     list.appendChild(stack);
     wireFollowingCards(stack);
+    activateAds(stack);
   };
 
   // These are now exactly the same navy match cards used by the
@@ -7447,7 +7585,18 @@ async function drawHomeNews(list) {
     });
   };
 
+  let newsSinceAd = 0;
+
   for (const item of items) {
+    // An advert after every few headlines, never at the very top.
+    if (adsOn() && newsSinceAd >= ADS.every) {
+      const ad = document.createElement("div");
+      ad.innerHTML = adHtml();
+      list.appendChild(ad.firstChild);
+      newsSinceAd = 0;
+    }
+    newsSinceAd++;
+
     const row = document.createElement("a");
     row.className = "newsRow";
     row.href = item.link;
@@ -7472,6 +7621,7 @@ async function drawHomeNews(list) {
     "Headlines from their own feeds. Tapping one opens the full " +
     "story on the site that wrote it.";
   list.appendChild(note);
+  activateAds(list);
 }
 
 
@@ -9595,8 +9745,8 @@ function drawSettings() {
     const deleteNote = document.createElement("div");
     deleteNote.className = "setNote";
     deleteNote.textContent =
-      "Deleting your account removes your email address and all saved " +
-      "progress from our servers straight away. It cannot be undone.";
+      "Deleting your account removes all saved progress from our " +
+      "servers straight away. It cannot be undone.";
     list.appendChild(deleteNote);
   } else {
     row("Setting up", "&rsaquo;", function () { startSession(); });
@@ -9660,7 +9810,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-07-keeps-b");
+  row("Build", "2026-09-28-adsense-a");
 
   // ---- Clearing up ----
   section("Data");
@@ -9679,7 +9829,9 @@ function drawSettings() {
   const clearNote = document.createElement("div");
   clearNote.className = "setNote";
   clearNote.textContent = signedIn()
-    ? "This wipes the app on this phone. Your account keeps everything, so signing back in restores it."
+    ? "This wipes the app on this phone, including the anonymous " +
+      "account that links it to your saved progress. There is no " +
+      "sign-in to get it back, so only do this if you mean to start again."
     : "This wipes everything. Without an account there is no way to get it back.";
   list.appendChild(clearNote);
 }
@@ -11396,6 +11548,18 @@ setInterval(function () {
 // submit, and update them whenever the app starts collecting
 // something new.
 // ---------------------------------------------------------------
+// The AdSense script and ownership tag. Google needs these on the
+// page to review the site, and to serve anything afterwards. Left
+// out entirely when adverts are switched off.
+function adHead() {
+  if (ADS_OFF) return "";
+  return '<meta name="google-adsense-account" content="' +
+      ADSENSE_CLIENT + '">\n' +
+    '<script async src="https://pagead2.googlesyndication.com/pagead/js/' +
+      'adsbygoogle.js?client=' + ADSENSE_CLIENT + '" ' +
+      'crossorigin="anonymous"></script>';
+}
+
 function pageShell(title, body) {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -11460,7 +11624,11 @@ stores about you, why, and how to get rid of it.</p>
 <h2>The short version</h2>
 <p>We do not ask who you are, and we have no way of finding out.
 There is no sign-in, no email address, no password and no name unless
-you choose to type one. We collect no personal information at all.</p>
+you choose to type one. We do not collect personal information
+ourselves.</p>
+<p>${APP_NAME} is free because it shows adverts. Those adverts come
+from Google, and Google collects some information to show them - the
+section on advertising below explains exactly what.</p>
 
 <h2>How your progress is saved</h2>
 <p>The first time you open ${APP_NAME} it quietly creates an anonymous
@@ -11509,19 +11677,42 @@ deleted accounts.</p>
 clubs and your squad. There is nothing held back that you could ask
 us for.</p>
 
+<h2>Advertising</h2>
+<p>Adverts in ${APP_NAME} are provided by Google AdSense. To choose and
+measure them, Google and its advertising partners may use cookies,
+similar technologies and device identifiers, and may receive
+information such as your IP address, the type of device and browser
+you use, and which pages of ${APP_NAME} you view. They may use this to
+show adverts based on your interests, including interests worked out
+from other sites and apps you use.</p>
+<p>We do not pass Google your name, email address or anything else
+that identifies you - we do not hold any of that to pass on. The
+adverts are always labelled "Advertisement" and are kept separate from
+the scores.</p>
+<p>How Google uses this information is set out at
+<a href="https://policies.google.com/technologies/partner-sites">policies.google.com/technologies/partner-sites</a>.
+You can turn off personalised adverts at
+<a href="https://adssettings.google.com">adssettings.google.com</a>,
+and on an iPhone you can refuse tracking under Settings, Privacy &amp;
+Security, Tracking. If you do, you will still see adverts, but they
+will be less tailored to you.</p>
+<p>Where the law requires it - for example in the UK and European
+Union - you will be asked for your consent before personalised adverts
+are shown, and you can change your choice at any time.</p>
+
 <h2>Keeping it safe</h2>
-<p>Traffic between the app and our servers is encrypted. Passwords are
-hashed by our authentication provider and are never visible to us. No
-system is perfect, and we will not pretend otherwise - but we hold as
-little as we can, which is the best protection there is.</p>
+<p>Traffic between the app and our servers is encrypted. No system is
+perfect, and we will not pretend otherwise - but we hold as little as
+we can, which is the best protection there is.</p>
 
 <h2>What we do not do</h2>
 <ul>
   <li>No email addresses, ever.</li>
-  <li>No advertising, and no advertising identifiers.</li>
-  <li>No analytics or tracking software.</li>
-  <li>No location data.</li>
-  <li>We do not sell or share anything with anyone.</li>
+  <li>No analytics software of our own.</li>
+  <li>We do not ask for your location.</li>
+  <li>We do not sell your information. The only outside company that
+  receives anything from the app for its own purposes is Google, for
+  the adverts described above.</li>
 </ul>
 
 <h2>Other services the app touches</h2>
@@ -11548,7 +11739,8 @@ your phone only.</p>
 
 <h2>Children</h2>
 <p>${APP_NAME} is not directed at children under 13 and we do not
-knowingly collect their information.</p>
+knowingly collect their information. Adverts are not intended for
+children.</p>
 
 <h2>Changes</h2>
 <p>If this policy changes we will update this page and the date at the
@@ -11600,6 +11792,11 @@ holding nothing that identifies you.</p>
 
 <p><strong>Why can I not change my league name?</strong> Setting it is
 free once. Changing it after that is a subscription feature.</p>
+
+<p><strong>Why are there adverts?</strong> They pay for the live data
+that keeps ${APP_NAME} free. They are provided by Google, always marked
+"Advertisement", and kept apart from the scores. The privacy policy
+explains what Google collects to show them.</p>
 
 <p><strong>I want my data gone.</strong> Settings, Account, Delete
 account. It is immediate and cannot be undone.</p>
@@ -12093,6 +12290,16 @@ async function handleRequest(request, response) {
     return;
   }
 
+  // Google reads this before it pays for any advert on the site.
+  if (address.pathname === "/ads.txt") {
+    response.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "public, max-age=3600",
+    });
+    response.end(ADS_TXT);
+    return;
+  }
+
   if (address.pathname === "/privacy" || address.pathname === "/support") {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     response.end(address.pathname === "/privacy" ? privacyPage() : supportPage());
@@ -12349,7 +12556,15 @@ async function handleRequest(request, response) {
 
 
   response.writeHead(200, { "Content-Type": "text/html" });
-  response.end(PAGE.replace("__LEAGUES__", JSON.stringify(MY_LEAGUES)));
+  response.end(PAGE
+    .replace("__LEAGUES__", JSON.stringify(MY_LEAGUES))
+    .replace("__ADHEAD__", adHead())
+    .replace("__ADS__", JSON.stringify({
+      on: !ADS_OFF,
+      client: ADSENSE_CLIENT,
+      slot: ADSENSE_SLOT,
+      every: AD_EVERY,
+    })));
 }
 
 // Kept out of the way until the server is actually up.
