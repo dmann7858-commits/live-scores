@@ -4,8 +4,14 @@
     "slug": "goalflash",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./icon.png",
     "userInterfaceStyle": "light",
     "backgroundColor": "#0B1E3D",
+    "splash": {
+      "image": "./icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#040F21"
+    },
     "ios": {
       "bundleIdentifier": "com.goalflash.livescores",
       "buildNumber": "1",
@@ -15,7 +21,11 @@
       }
     },
     "android": {
-      "package": "com.goalflash.livescores"
+      "package": "com.goalflash.livescores",
+      "adaptiveIcon": {
+        "foregroundImage": "./icon.png",
+        "backgroundColor": "#040F21"
+      }
     }
   }
 }
