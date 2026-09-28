@@ -4,22 +4,59 @@ import { WebView } from "react-native-webview";
 import { StatusBar } from "expo-status-bar";
 
 // Where GoalFlash lives. Everything the app shows comes from here.
-const APP_URL = "https://live-scores-1.onrender.com";
-const APP_HOST = "live-scores-1.onrender.com";
+const APP_URL = "https://www.goalflash.app";
+
+// Addresses that belong to GoalFlash and open inside the app.
+// The old Render address stays on the list so nothing breaks while
+// anyone still has it cached.
+const OUR_HOSTS = [
+  "goalflash.app",
+  "www.goalflash.app",
+  "live-scores-1.onrender.com",
+];
+
+function hostOf(url) {
+  const match = String(url || "").match(/^https?:\/\/([^\/?#:]+)/i);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function isOurs(url) {
+  return OUR_HOSTS.indexOf(hostOf(url)) !== -1;
+}
 
 export default function App() {
   const web = useRef(null);
 
-  // Your own pages open inside the app. Anything else (the news
-  // stories, for example) opens in Safari, so the reader can come
-  // straight back to GoalFlash.
+  // Decides where each page load goes.
   function handleLink(request) {
     const url = request.url || "";
-    if (url.startsWith("about:") || url.startsWith("data:")) return true;
-    if (url.indexOf(APP_HOST) !== -1) return true;
 
+    // Blank frames and inline content are part of the page itself.
+    if (url.startsWith("about:") || url.startsWith("data:") ||
+        url.startsWith("blob:")) {
+      return true;
+    }
+
+    // Advert frames load from Google inside the page. They must be
+    // allowed to load where they are - pushing them out to Safari
+    // would break every ad and open Safari on its own.
+    if (request.isTopFrame === false) return true;
+
+    // GoalFlash's own pages stay in the app.
+    if (isOurs(url)) return true;
+
+    // Anything else the whole screen tries to go to (a news story,
+    // an advert someone tapped) opens in Safari instead, so the
+    // person can come straight back to GoalFlash.
     Linking.openURL(url);
     return false;
+  }
+
+  // Links that ask for a new window - news headlines and tapped
+  // adverts both do this - open in Safari.
+  function handleNewWindow(event) {
+    const url = event.nativeEvent && event.nativeEvent.targetUrl;
+    if (url) Linking.openURL(url);
   }
 
   function offlineScreen() {
@@ -42,12 +79,15 @@ export default function App() {
         style={styles.page}
         originWhitelist={["*"]}
         onShouldStartLoadWithRequest={handleLink}
-        setSupportMultipleWindows={false}
+        onOpenWindow={handleNewWindow}
+        setSupportMultipleWindows={true}
+        applicationNameForUserAgent="GoalFlashApp/1.0"
         allowsBackForwardNavigationGestures={true}
         pullToRefreshEnabled={true}
         contentInsetAdjustmentBehavior="never"
         domStorageEnabled={true}
         javaScriptEnabled={true}
+        sharedCookiesEnabled={true}
         startInLoadingState={true}
         renderError={offlineScreen}
       />
