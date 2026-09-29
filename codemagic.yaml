@@ -19,6 +19,7 @@ workflows:
           npm install
           npx expo install react react-native react-native-webview expo-status-bar
           npx expo install react-native-google-mobile-ads expo-tracking-transparency
+          npx expo install @react-native-async-storage/async-storage
 
       - name: Set the build number
         script: |
