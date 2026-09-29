@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-29-header-a";
+const BUILD = "2026-09-29-privacy-a";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -9848,17 +9848,21 @@ function drawSettings() {
     return item;
   };
 
+  const note = function (text) {
+    const item = document.createElement("div");
+    item.className = "setNote";
+    item.textContent = text;
+    list.appendChild(item);
+    return item;
+  };
+
   // ---- Account ----
   section("Account");
   if (signedIn()) {
-    row("Your progress", "Saved");
-
-    const accountNote = document.createElement("div");
-    accountNote.className = "setNote";
-    accountNote.textContent =
-      "There is no sign-in and no email address. Your progress is " +
-      "kept against an anonymous account tied to this device.";
-    list.appendChild(accountNote);
+    row("Your progress", inNativeApp ? "Saved and backed up" : "Saved");
+    note("There is no sign-in and no email address. Your progress is " +
+      "kept against an anonymous account tied to this device, and " +
+      "nothing in it identifies you.");
 
     // Both app stores require this to be reachable in the app, not
     // by emailing someone. Two taps, because it cannot be undone.
@@ -9897,43 +9901,67 @@ function drawSettings() {
       location.reload();
     });
 
-    const deleteNote = document.createElement("div");
-    deleteNote.className = "setNote";
-    deleteNote.textContent =
-      "Deleting your account removes all saved progress from our " +
-      "servers straight away. It cannot be undone.";
-    list.appendChild(deleteNote);
+    note("Deleting your account removes all saved progress from our " +
+      "servers straight away. It cannot be undone.");
   } else {
     row("Setting up", "&rsaquo;", function () { startSession(); });
-    const note = document.createElement("div");
-    note.className = "setNote";
-    note.textContent =
-      "No session yet, so progress is only on this device. It will " +
-      "sort itself out next time you are online.";
-    list.appendChild(note);
+    note("No session yet, so progress is only on this device. It will " +
+      "sort itself out next time you are online.");
   }
 
-  // ---- Alerts ----
-  section("Alerts");
-  const permission = (typeof Notification === "undefined")
-    ? "Not supported"
-    : (Notification.permission === "granted" ? "On"
-       : Notification.permission === "denied" ? "Blocked" : "Off");
-
-  row("Goal notifications", permission, async function () {
-    if (typeof Notification === "undefined") return;
-    if (Notification.permission === "default") {
-      await askForNotifications();
-      drawSettings();
-    }
+  // ---- Privacy ----
+  section("Privacy");
+  row("Privacy policy", "&rsaquo;", function () {
+    window.open("/privacy", "_blank");
   });
-  row("Matches followed", String(alerts.length));
 
-  const alertNote = document.createElement("div");
-  alertNote.className = "setNote";
-  alertNote.textContent =
-    "Alerts arrive while the app is open. Background alerts come with the phone app.";
-  list.appendChild(alertNote);
+  // Personalised adverts. On the website, Google's own consent
+  // message can be brought back up where it applies (UK, EU and
+  // Switzerland); everywhere else, Google's ad settings page is the
+  // place to turn personalisation off.
+  row("Ad personalisation", "&rsaquo;", function () {
+    const fc = window.googlefc;
+    if (!inNativeApp && fc && typeof fc.showRevocationMessage === "function") {
+      fc.showRevocationMessage();
+      return;
+    }
+    window.open("https://adssettings.google.com", "_blank");
+  });
+
+  if (inNativeApp) {
+    row("Tracking", "iPhone Settings");
+    note("To change whether GoalFlash may track you for adverts, open " +
+      "the iPhone Settings app, then Privacy & Security, then Tracking.");
+  }
+
+  note("GoalFlash does not ask for your name, email address or " +
+    "location. Adverts are provided by Google, which may use device " +
+    "identifiers to choose them - the privacy policy explains exactly " +
+    "what, and how to turn it off.");
+
+  // ---- Alerts ----
+  // The phone app's web view has no notification support, so the
+  // permission row is only shown where it can actually do something.
+  const canNotify = typeof Notification !== "undefined";
+
+  section("Alerts");
+  if (canNotify) {
+    const permission = Notification.permission === "granted" ? "On"
+      : Notification.permission === "denied" ? "Blocked" : "Off";
+
+    row("Goal notifications", permission, async function () {
+      if (Notification.permission === "default") {
+        await askForNotifications();
+        drawSettings();
+      }
+    });
+  }
+  row("Matches followed", String(alerts.length));
+  note(canNotify
+    ? "Goal notifications arrive while GoalFlash is open. Starred " +
+      "matches also sit at the top of the Following tab."
+    : "Starred matches sit at the top of the Following tab, with " +
+      "their scores kept up to date.");
 
   // ---- What you follow ----
   section("Following");
@@ -9946,12 +9974,9 @@ function drawSettings() {
     goTo("favourites");
   });
 
-  // ---- Legal ----
+  // ---- Help and about ----
   section("About");
-  row("Privacy policy", "&rsaquo;", function () {
-    window.open("/privacy", "_blank");
-  });
-  row("Support", "&rsaquo;", function () {
+  row("Support and contact", "&rsaquo;", function () {
     window.open("/support", "_blank");
   });
   row("Football data", "api-football.com");
@@ -9965,7 +9990,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-29-header-a");
+  row("Build", "2026-09-29-privacy-a");
 
   // ---- Clearing up ----
   section("Data");
@@ -9981,14 +10006,11 @@ function drawSettings() {
     clearRow.classList.add("setDanger");
   });
 
-  const clearNote = document.createElement("div");
-  clearNote.className = "setNote";
-  clearNote.textContent = signedIn()
-    ? "This wipes the app on this phone, including the anonymous " +
+  note(signedIn()
+    ? "This wipes GoalFlash on this phone, including the anonymous " +
       "account that links it to your saved progress. There is no " +
       "sign-in to get it back, so only do this if you mean to start again."
-    : "This wipes everything. Without an account there is no way to get it back.";
-  list.appendChild(clearNote);
+    : "This wipes everything. Without an account there is no way to get it back.");
 }
 
 
