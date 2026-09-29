@@ -22,13 +22,12 @@ const OUR_HOSTS = [
 // ---------------------------------------------------------------
 // ADVERTS
 //
-// Test adverts until the app is live on the App Store and linked in
-// AdMob. Showing real ads before then - and tapping them - can get
-// the AdMob account flagged.
-//
-// After launch: create a Banner ad unit in AdMob, paste its ID into
-// BANNER_UNIT_ID, change USE_TEST_ADS to false, and build again.
+// The adverts now sit inside the page, between the matches, and are
+// controlled from scores.js. The fixed strip at the bottom of the
+// screen is switched off. Set SHOW_BOTTOM_BANNER to true to bring it
+// back.
 // ---------------------------------------------------------------
+const SHOW_BOTTOM_BANNER = false;
 const USE_TEST_ADS = true;
 const BANNER_UNIT_ID = "";   // ca-app-pub-9305446787515470/xxxxxxxxxx
 
@@ -47,8 +46,6 @@ function isOurs(url) {
 
 // Consent first (Google's message, only shown in the UK, EU and
 // Switzerland), then Apple's tracking question, then the ads SDK.
-// Anything that fails along the way still ends with ads switched on
-// - just non-personalised ones.
 async function prepareAds() {
   let personalised = false;
 
@@ -71,7 +68,7 @@ async function prepareAds() {
   try {
     await mobileAds().initialize();
   } catch (error) {
-    // The banner simply will not load. The app itself carries on.
+    // Adverts simply will not load. The app itself carries on.
   }
 
   return personalised;
@@ -102,7 +99,7 @@ export default function App() {
       return true;
     }
 
-    // Frames inside the page load where they are.
+    // Frames inside the page - adverts included - load where they are.
     if (request.isTopFrame === false) return true;
 
     // GoalFlash's own pages stay in the app.
@@ -113,7 +110,8 @@ export default function App() {
     return false;
   }
 
-  // News headlines ask for a new window. Those open in Safari.
+  // News headlines and tapped adverts ask for a new window. Those
+  // open in Safari.
   function handleNewWindow(event) {
     const url = event.nativeEvent && event.nativeEvent.targetUrl;
     if (url) Linking.openURL(url);
@@ -153,10 +151,7 @@ export default function App() {
         renderError={offlineScreen}
       />
 
-      {/* The banner sits under the app's own menu, clear of the
-          home bar. If no ad comes back, the strip disappears rather
-          than leaving an empty gap. */}
-      {adsReady && !bannerFailed ? (
+      {SHOW_BOTTOM_BANNER && adsReady && !bannerFailed ? (
         <SafeAreaView style={styles.bannerArea}>
           <View style={styles.bannerInner}>
             <BannerAd
