@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-29-backup-a";
+const BUILD = "2026-09-29-header-a";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -3918,6 +3918,12 @@ body {
 
 /* ---- Match centre ---- */
 .matchHead, .leagueHead { background: #0B1E3D; }
+/* The league, club and match pages replace the main bar, so they
+   have to keep clear of the phone's clock and battery themselves.
+   Without this the league name sat underneath the time. */
+.matchHead, .leagueHead {
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+}
 .bigScore .clock { color: #4ADE80; }
 .tabs { background: #fff; }
 .tab.on { color: #1E6FD9; border-bottom-color: #1E6FD9; }
@@ -9959,7 +9965,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-29-backup-a");
+  row("Build", "2026-09-29-header-a");
 
   // ---- Clearing up ----
   section("Data");
