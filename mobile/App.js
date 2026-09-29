@@ -4,6 +4,7 @@ import {
 } from "react-native";
 import { WebView } from "react-native-webview";
 import { StatusBar } from "expo-status-bar";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import mobileAds, {
   BannerAd, BannerAdSize, TestIds, AdsConsent,
 } from "react-native-google-mobile-ads";
@@ -22,10 +23,10 @@ const OUR_HOSTS = [
 // ---------------------------------------------------------------
 // ADVERTS
 //
-// The adverts now sit inside the page, between the matches, and are
+// The adverts sit inside the page, between the matches, and are
 // controlled from scores.js. The fixed strip at the bottom of the
-// screen is switched off. Set SHOW_BOTTOM_BANNER to true to bring it
-// back.
+// screen is switched off. Set SHOW_BOTTOM_BANNER to true to bring
+// it back.
 // ---------------------------------------------------------------
 const SHOW_BOTTOM_BANNER = false;
 const USE_TEST_ADS = true;
@@ -34,6 +35,46 @@ const BANNER_UNIT_ID = "";   // ca-app-pub-9305446787515470/xxxxxxxxxx
 const BANNER_ID = USE_TEST_ADS || !BANNER_UNIT_ID
   ? TestIds.ADAPTIVE_BANNER
   : BANNER_UNIT_ID;
+
+// ---------------------------------------------------------------
+// THE BACKUP
+//
+// iOS can throw away the web page's saved data on its own, taking
+// XP, clubs, the squad and the anonymous account key with it. So the
+// page sends the app a copy of everything it saves, and the app keeps
+// that copy in its own storage, which iOS does not clear.
+//
+// When the app opens, the copy is handed back to the page before
+// anything on it runs - but only if the page has lost its own data.
+// If the page still has its data, it is left alone. If somebody chose
+// "Clear this device" or deleted their account, the page leaves a
+// marker and the backup is not restored over their fresh start.
+// ---------------------------------------------------------------
+const BACKUP_KEY = "goalflash-backup-v1";
+
+function restoreScript(saved) {
+  // Turned into a safe JavaScript string, so nothing in the saved
+  // data can break out of it.
+  const payload = JSON.stringify(saved || "");
+
+  return "(function () {" +
+    "try {" +
+      "var raw = " + payload + ";" +
+      "if (!raw) return;" +
+      "var snap = JSON.parse(raw);" +
+      "var store = window.localStorage;" +
+      "if (store.getItem('authRefresh') || store.getItem('xp') !== null ||" +
+      "    store.getItem('gfCleared')) return;" +
+      "for (var name in snap) {" +
+        "if (Object.prototype.hasOwnProperty.call(snap, name) && snap[name] !== null) {" +
+          "store.setItem(name, String(snap[name]));" +
+        "}" +
+      "}" +
+      "store.setItem('gfRestored', String(Date.now()));" +
+    "} catch (error) {}" +
+  "})();" +
+  "true;";
+}
 
 function hostOf(url) {
   const match = String(url || "").match(/^https?:\/\/([^\/?#:]+)/i);
@@ -76,9 +117,20 @@ async function prepareAds() {
 
 export default function App() {
   const web = useRef(null);
+  const [saved, setSaved] = useState(undefined);   // undefined = still reading
   const [adsReady, setAdsReady] = useState(false);
   const [personalised, setPersonalised] = useState(false);
   const [bannerFailed, setBannerFailed] = useState(false);
+
+  // Read the backup before the page is shown, so it can be handed
+  // over before anything on the page runs.
+  useEffect(function () {
+    let cancelled = false;
+    AsyncStorage.getItem(BACKUP_KEY)
+      .then(function (value) { if (!cancelled) setSaved(value || ""); })
+      .catch(function () { if (!cancelled) setSaved(""); });
+    return function () { cancelled = true; };
+  }, []);
 
   useEffect(function () {
     let cancelled = false;
@@ -89,6 +141,25 @@ export default function App() {
     });
     return function () { cancelled = true; };
   }, []);
+
+  // Messages from the page: a fresh copy to keep, or a deliberate
+  // wipe to follow.
+  function handleMessage(event) {
+    let message;
+    try {
+      message = JSON.parse(event.nativeEvent.data);
+    } catch (error) {
+      return;
+    }
+    if (!message) return;
+
+    if (message.type === "gfBackup" && message.data) {
+      AsyncStorage.setItem(BACKUP_KEY, JSON.stringify(message.data))
+        .catch(function () {});
+    } else if (message.type === "gfClear") {
+      AsyncStorage.removeItem(BACKUP_KEY).catch(function () {});
+    }
+  }
 
   // Decides where each page load goes.
   function handleLink(request) {
@@ -132,24 +203,37 @@ export default function App() {
     <View style={styles.page}>
       <StatusBar style="light" />
 
-      <WebView
-        ref={web}
-        source={{ uri: APP_URL }}
-        style={styles.page}
-        originWhitelist={["*"]}
-        onShouldStartLoadWithRequest={handleLink}
-        onOpenWindow={handleNewWindow}
-        setSupportMultipleWindows={true}
-        applicationNameForUserAgent="GoalFlashApp/1.0"
-        allowsBackForwardNavigationGestures={true}
-        pullToRefreshEnabled={true}
-        contentInsetAdjustmentBehavior="never"
-        domStorageEnabled={true}
-        javaScriptEnabled={true}
-        sharedCookiesEnabled={true}
-        startInLoadingState={true}
-        renderError={offlineScreen}
-      />
+      {saved === undefined ? (
+        // A split second while the backup is read.
+        <View style={styles.page} />
+      ) : (
+        <WebView
+          ref={web}
+          source={{ uri: APP_URL }}
+          style={styles.page}
+          originWhitelist={["*"]}
+          injectedJavaScriptBeforeContentLoaded={restoreScript(saved)}
+          onMessage={handleMessage}
+          onShouldStartLoadWithRequest={handleLink}
+          onOpenWindow={handleNewWindow}
+          setSupportMultipleWindows={true}
+          applicationNameForUserAgent="GoalFlashApp/1.0"
+          allowsBackForwardNavigationGestures={true}
+          pullToRefreshEnabled={true}
+          contentInsetAdjustmentBehavior="never"
+          domStorageEnabled={true}
+          javaScriptEnabled={true}
+          sharedCookiesEnabled={true}
+          cacheEnabled={true}
+          startInLoadingState={true}
+          renderError={offlineScreen}
+          // iOS sometimes shuts the page down in the background to
+          // save memory, which leaves a blank white screen. Reload it.
+          onContentProcessDidTerminate={function () {
+            if (web.current) web.current.reload();
+          }}
+        />
+      )}
 
       {SHOW_BOTTOM_BANNER && adsReady && !bannerFailed ? (
         <SafeAreaView style={styles.bannerArea}>
