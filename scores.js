@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-28-adsense-a";
+const BUILD = "2026-09-29-infeed-a";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -60,14 +60,25 @@ const POLICY_UPDATED = "2026-09-28";
 // Only the AdSense script loads, which Google needs to review the
 // site.
 //
-// AD_EVERY is how many cards sit between adverts. Six match cards is
-// about one phone screen. Set ADS_OFF to "1" in Render to switch
-// every advert off without touching this file.
+// Placement: one advert above the first match on a list, then one
+// after every AD_EVERY matches. Set ADS_OFF to "1" in Render to
+// switch every advert off without touching this file.
+//
+// ADS_PREVIEW set to "1" draws a plain "advert space" box in every
+// slot instead of a real advert - on the website and in the app -
+// so the layout can be checked before AdSense has approved anything.
+// Take it off again before launch.
+//
+// ADS_IN_APP set to "1" lets real AdSense adverts show inside the
+// iPhone app. Leave it off until the app build that registers its
+// web view with Google is live.
 // ---------------------------------------------------------------
 const ADSENSE_CLIENT = "ca-pub-9305446787515470";
 const ADSENSE_SLOT = process.env.ADSENSE_SLOT || "";
 const ADS_OFF = process.env.ADS_OFF === "1";
-const AD_EVERY = Number(process.env.AD_EVERY) || 6;
+const AD_EVERY = Number(process.env.AD_EVERY) || 4;
+const ADS_PREVIEW = process.env.ADS_PREVIEW === "1";
+const ADS_IN_APP = process.env.ADS_IN_APP === "1";
 
 // What ads.txt has to say, word for word. Google checks this file
 // at the root of the site before it will pay out.
@@ -4651,6 +4662,12 @@ body {
 .adBox ins.adsbygoogle { display: block; width: 100%; }
 .adBox:has(ins[data-ad-status="unfilled"]) { display: none; }
 .liveStack .adBox, .fixStack .adBox { margin-left: 0; margin-right: 0; }
+.adPreviewSpace {
+  height: 100px; margin: 0 10px; border-radius: 8px;
+  border: 1.5px dashed #D1D5DB; background: #F5F6F8;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: #9CA3AF;
+}
 
 .newsNote {
   padding: 4px 16px 16px; font-size: 11px;
@@ -4821,11 +4838,19 @@ const LEAGUES = __LEAGUES__;
 const ADS = __ADS__;
 
 function adsOn() {
-  return Boolean(ADS && ADS.on && ADS.client && ADS.slot);
+  if (!ADS || !ADS.on) return false;
+  if (ADS.preview) return true;
+  return Boolean(ADS.client && ADS.slot);
 }
 
 function adHtml() {
   if (!adsOn()) return "";
+  if (ADS.preview) {
+    return '<div class="adBox adPreview">' +
+      '<div class="adLabel">Advertisement</div>' +
+      '<div class="adPreviewSpace">Advert space</div>' +
+    '</div>';
+  }
   return '<div class="adBox">' +
     '<div class="adLabel">Advertisement</div>' +
     '<ins class="adsbygoogle" style="display:block"' +
@@ -4835,12 +4860,25 @@ function adHtml() {
   '</div>';
 }
 
-// Joins a list of card html, dropping an advert in after every
-// ADS.every cards - but never as the very last thing in the list.
+// Joins a list of card html with adverts in it: one above the first
+// card, then one after every ADS.every cards - but never as the
+// very last thing in the list.
+//
+// A counter can be shared across several calls, so a list drawn in
+// pieces (competitions on the fixtures screen) keeps the spacing
+// even from one piece to the next. "started" says the top advert
+// has already been placed.
 function withAds(cards, counter) {
   if (!adsOn()) return cards.join("");
-  const tally = counter || { n: 0 };
+  const tally = counter || { n: 0, started: false };
   let out = "";
+
+  if (!tally.started && cards.length > 0) {
+    out += adHtml();
+    tally.started = true;
+    tally.n = 0;
+  }
+
   for (let i = 0; i < cards.length; i++) {
     out += cards[i];
     tally.n++;
@@ -5875,7 +5913,7 @@ function drawMatches(matches, showKickoffTimes) {
 
   let at = 0;        // which group we have reached
   let shown = 0;     // matches drawn so far
-  const adCount = { n: 0 };   // cards since the last advert
+  const adCount = { n: 0, started: false };   // advert spacing
 
   const redraw = function () {
     // Folding a competition changes what is on screen, so the
@@ -7173,9 +7211,11 @@ function drawLiveList(list, live) {
 
   const stack = document.createElement("div");
   stack.className = "liveStack";
+  // The advert above the featured match counts as the top one, and
+  // the featured cards count towards the spacing, so the rhythm of
+  // one advert every few matches carries on down the page.
   stack.innerHTML = withAds(rest.map(featureCard),
-    // Live cards are taller, so the first advert comes a bit sooner.
-    { n: 2 });
+    { n: featureList.length, started: true });
   list.appendChild(stack);
 
   for (const card of stack.querySelectorAll(".feature")) {
@@ -7183,7 +7223,7 @@ function drawLiveList(list, live) {
     card.onclick = function () { tally("feature"); openMatch(id); };
   }
 
-  activateAds(stack);
+  activateAds(list);
 
   // Scorers come in one at a time behind the list, so fifteen
   // cards do not fire fifteen requests at once.
@@ -7278,6 +7318,13 @@ async function drawHomeLive(list) {
   const featureBox = document.createElement("div");
   featureBox.id = "featureBox";
   featureBox.className = "featureBoxPad";
+
+  // The first advert sits above the first match on the screen.
+  if (adsOn()) {
+    const topAd = document.createElement("div");
+    topAd.innerHTML = adHtml();
+    list.appendChild(topAd.firstChild);
+  }
   list.appendChild(featureBox);
 
   // Five slots each. Badges only, no names, so nothing collides.
@@ -7526,7 +7573,7 @@ async function drawHomeFollowing(list) {
     stack.className = "fixStack followingFixStack";
     stack.innerHTML = withAds(items.map(function (item) {
       return followingCard(item.match);
-    }));
+    }), followingAds);
 
     list.appendChild(stack);
     wireFollowingCards(stack);
@@ -7535,6 +7582,8 @@ async function drawHomeFollowing(list) {
 
   // These are now exactly the same navy match cards used by the
   // Fixtures screen and the main live-match presentation.
+  const followingAds = { n: 0, started: false };
+
   drawSection("Following", started, true);
   drawSection("Coming up", later, false);
 }
@@ -7585,10 +7634,11 @@ async function drawHomeNews(list) {
     });
   };
 
-  let newsSinceAd = 0;
+  // Counting from the full gap means the first advert goes above
+  // the first headline, then one after every few.
+  let newsSinceAd = ADS.every;
 
   for (const item of items) {
-    // An advert after every few headlines, never at the very top.
     if (adsOn() && newsSinceAd >= ADS.every) {
       const ad = document.createElement("div");
       ad.innerHTML = adHtml();
@@ -9810,7 +9860,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-28-adsense-a");
+  row("Build", "2026-09-29-infeed-a");
 
   // ---- Clearing up ----
   section("Data");
@@ -12555,12 +12605,21 @@ async function handleRequest(request, response) {
   }
 
 
+  // Inside the iPhone app, adverts come from AdMob as a native banner
+  // instead, so the website's AdSense code and in-feed slots are left
+  // out entirely. The app adds "GoalFlashApp" to its user agent,
+  // which is how the server tells the two apart.
+  const inApp = /GoalFlashApp/i.test(String(request.headers["user-agent"] || ""));
+
   response.writeHead(200, { "Content-Type": "text/html" });
   response.end(PAGE
     .replace("__LEAGUES__", JSON.stringify(MY_LEAGUES))
-    .replace("__ADHEAD__", adHead())
+    // The website always keeps the AdSense code, because Google checks
+    // for it while reviewing the site - preview mode included.
+    .replace("__ADHEAD__", inApp && !ADS_IN_APP ? "" : adHead())
     .replace("__ADS__", JSON.stringify({
-      on: !ADS_OFF,
+      on: !ADS_OFF && (ADS_PREVIEW || !inApp || ADS_IN_APP),
+      preview: ADS_PREVIEW,
       client: ADSENSE_CLIENT,
       slot: ADSENSE_SLOT,
       every: AD_EVERY,
