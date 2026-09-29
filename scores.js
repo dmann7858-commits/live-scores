@@ -1,266 +1,12772 @@
-import React, { useEffect, useRef, useState } from "react";
-import {
-  View, Text, Linking, StyleSheet, SafeAreaView, Platform,
-} from "react-native";
-import { WebView } from "react-native-webview";
-import { StatusBar } from "expo-status-bar";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import mobileAds, {
-  BannerAd, BannerAdSize, TestIds, AdsConsent,
-} from "react-native-google-mobile-ads";
-import { requestTrackingPermissionsAsync } from "expo-tracking-transparency";
+// scores.js
+// Live football scores app, using api-football.com
+//
+// Sign up:  https://www.api-football.com/
+// Your key: on the dashboard after you log in
 
-// Where GoalFlash lives. Everything the app shows comes from here.
-const APP_URL = "https://www.goalflash.app";
+const http = require("http");
+const fs = require("fs");
+const pathlib = require("path");
 
-// Addresses that belong to GoalFlash and open inside the app.
-const OUR_HOSTS = [
-  "goalflash.app",
-  "www.goalflash.app",
-  "live-scores-1.onrender.com",
+// API-Football (api-sports.io). Put the key in APIFOOTBALL_KEY on
+// the server. If you signed up through RapidAPI instead, also set
+// APIFOOTBALL_HOST to api-football-v1.p.rapidapi.com and the
+// headers switch themselves.
+const API_KEY = process.env.APIFOOTBALL_KEY || "";
+const API_HOST = process.env.APIFOOTBALL_HOST || "v3.football.api-sports.io";
+
+// Where accounts and saved progress live. Both come from settings
+// on the server, never from the code.
+const DB_URL = process.env.SUPABASE_URL || "";
+const DB_KEY = process.env.SUPABASE_SERVICE_KEY || "";
+const DB_ON = Boolean(DB_URL && DB_KEY);
+const PORT = process.env.PORT || 3000;
+
+// Shown on the privacy and support pages, and required by both app
+// stores. Set SUPPORT_EMAIL in the server settings before you
+// submit anything - the pages say so plainly if you have not.
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || "";
+const APP_NAME = "GoalFlash";
+
+// Which build this is. Bumped by hand whenever the file changes,
+// so there is a way to tell at a glance whether what is running is
+// what was last sent. Chasing a bug in code that was never
+// deployed wastes more time than anything else.
+const BUILD = "2026-09-29-backup-a";
+
+// Who is answerable for the data. Both stores and Australian privacy
+// law expect a named, contactable entity - not just an app name.
+const OPERATOR_NAME = process.env.OPERATOR_NAME || "";
+const OPERATOR_PLACE = process.env.OPERATOR_PLACE || "";
+
+// Fixed on purpose. This was generated from the clock, so the policy
+// claimed to have been updated today no matter when it was read.
+// Change it by hand whenever the policy actually changes.
+const POLICY_UPDATED = "2026-09-28";
+
+// ---------------------------------------------------------------
+// ADVERTISING
+//
+// Google AdSense, shown inside the page as the person scrolls -
+// roughly one advert per screen of content.
+//
+// ADSENSE_CLIENT is your publisher ID. It is not a secret: it sits
+// in the page source of every site that shows AdSense ads.
+//
+// ADSENSE_SLOT is the ad unit ID for the in-feed adverts. You get it
+// from AdSense once the site is approved (Ads, By ad unit, Display
+// ads). Until it is set in Render's Environment settings, no advert
+// slots are drawn at all - so nothing looks empty while you wait.
+// Only the AdSense script loads, which Google needs to review the
+// site.
+//
+// Placement: one advert above the first match on a list, then one
+// after every AD_EVERY matches. Set ADS_OFF to "1" in Render to
+// switch every advert off without touching this file.
+//
+// ADS_PREVIEW set to "1" draws a plain "advert space" box in every
+// slot instead of a real advert - on the website and in the app -
+// so the layout can be checked before AdSense has approved anything.
+// Take it off again before launch.
+//
+// ADS_IN_APP set to "1" lets real AdSense adverts show inside the
+// iPhone app. Leave it off until the app build that registers its
+// web view with Google is live.
+// ---------------------------------------------------------------
+const ADSENSE_CLIENT = "ca-pub-9305446787515470";
+const ADSENSE_SLOT = process.env.ADSENSE_SLOT || "";
+const ADS_OFF = process.env.ADS_OFF === "1";
+const AD_EVERY = Number(process.env.AD_EVERY) || 4;
+const ADS_PREVIEW = process.env.ADS_PREVIEW === "1";
+const ADS_IN_APP = process.env.ADS_IN_APP === "1";
+
+// What ads.txt has to say, word for word. Google checks this file
+// at the root of the site before it will pay out.
+const ADS_TXT = "google.com, " + ADSENSE_CLIENT.replace("ca-", "") +
+  ", DIRECT, f08c47fec0942fa0\n";
+// This provider sends kickoff times as full ISO 8601 with the
+// offset already on them, so there is nothing to convert. The
+// Europe/Berlin workaround the old provider needed has been
+// removed - leaving it in would shift every kickoff again.
+
+// ---------------------------------------------------------------
+// THE BADGE
+//
+// The GoalFlash mark, carried inside this file as base64 so there
+// is nothing separate to upload and nothing to go missing on a
+// deploy. A logo.png sitting next to this file wins if there is
+// one, which is how you swap it without touching the code.
+// ---------------------------------------------------------------
+const LOGO_BASE64 =
+  "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" +
+  "vIbMokC8hgAAAABJRU5ErkJggg==";
+
+const LOGO_BYTES = Buffer.from(LOGO_BASE64, "base64");
+
+// Leagues to start with. The free plan only carries two, so these
+// are them. Once you upgrade, add more from the Leagues screen.
+// API-Football's own league numbers, which bear no relation to the
+// old provider's. Browsable at dashboard.api-football.com if you
+// want to add more.
+const MY_LEAGUES = [
+  { id: 39,  name: "Premier League", table: true },
+  { id: 40,  name: "Championship",   table: true },
+  { id: 140, name: "La Liga",        table: true },
+  { id: 135, name: "Serie A",        table: true },
+  { id: 78,  name: "Bundesliga",     table: true },
+  { id: 61,  name: "Ligue 1",        table: true },
 ];
+
+const MY_LEAGUE_IDS = MY_LEAGUES.map(function (l) { return l.id; });
+
+
+// ---------------------------------------------------------------
+// ACCOUNTS AND SAVED PROGRESS
+//
+// The browser never talks to the database directly. It sends an
+// no credentials here, gets an anonymous token back, and hands that
+// token over on every save.
+// ---------------------------------------------------------------
+async function dbCall(path, options) {
+  const settings = options || {};
+  const headers = Object.assign({
+    "apikey": DB_KEY,
+    "Content-Type": "application/json",
+  }, settings.headers || {});
+
+  if (!headers.Authorization) {
+    headers.Authorization = "Bearer " + DB_KEY;
+  }
+
+  // A database that is down or unreachable has to come back as a
+  // failed call, not an exception. Without this the whole request
+  // dies and the app is left hanging on a blank screen.
+  let response;
+  try {
+    response = await fetch(DB_URL + path, {
+      method: settings.method || "GET",
+      headers: headers,
+      body: settings.body ? JSON.stringify(settings.body) : undefined,
+    });
+  } catch (error) {
+    console.log("   !! could not reach the database: " + error.message);
+    return { ok: false, status: 0, data: null };
+  }
+
+  let data = null;
+  try { data = await response.json(); } catch (error) { data = null; }
+
+  return { ok: response.ok, status: response.status, data: data };
+}
+
+// ---------------------------------------------------------------
+// ANONYMOUS ACCOUNTS
+//
+// Nobody signs in. The app quietly asks for an anonymous user the
+// first time it runs, and that user owns the saved progress from
+// then on. No email address is ever collected or stored.
+//
+// This needs "Anonymous sign-ins" switching on in the Supabase
+// dashboard, under Authentication, Sign In / Providers.
+//
+// The refresh token matters more than usual here. An access token
+// lasts about an hour; without a refresh there is no way back into
+// an anonymous account, and the person loses everything. So both
+// tokens are handed to the app and the refresh path below is the
+// only thing standing between a user and a wiped account.
+// ---------------------------------------------------------------
+async function signInAnonymously() {
+  const result = await dbCall("/auth/v1/signup", {
+    method: "POST",
+    body: {},
+  });
+
+  if (!result.ok || !result.data || !result.data.access_token) {
+    const message = (result.data && (result.data.msg || result.data.message ||
+      result.data.error_description)) || "";
+
+    console.log("   !! anonymous sign-in failed" + (message ? ": " + message : ""));
+    console.log("      Is 'Anonymous sign-ins' turned on in Supabase?");
+
+    return { error: "Could not start a session. Please try again." };
+  }
+
+  return {
+    token: result.data.access_token,
+    refresh: result.data.refresh_token || "",
+    userId: result.data.user && result.data.user.id,
+  };
+}
+
+// Trades a refresh token for a fresh access token.
+async function refreshSession(refreshToken) {
+  const result = await dbCall("/auth/v1/token?grant_type=refresh_token", {
+    method: "POST",
+    body: { refresh_token: refreshToken },
+  });
+
+  if (!result.ok || !result.data || !result.data.access_token) {
+    return { error: "Session expired" };
+  }
+
+  return {
+    token: result.data.access_token,
+    refresh: result.data.refresh_token || refreshToken,
+    userId: result.data.user && result.data.user.id,
+  };
+}
+
+// Checks a token is real and tells us whose it is.
+async function whoIs(token) {
+  const result = await dbCall("/auth/v1/user", {
+    headers: { Authorization: "Bearer " + token },
+  });
+
+  if (!result.ok || !result.data || !result.data.id) return null;
+  // The email is deliberately not returned - nothing stores one.
+  return { id: result.data.id };
+}
+
+async function loadProgress(userId) {
+  const result = await dbCall(
+    "/rest/v1/profiles?id=eq." + userId + "&select=data");
+
+  if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) {
+    return null;
+  }
+  return result.data[0].data || null;
+}
+
+async function saveProgressFor(userId, data) {
+  // xp is kept in its own column as well, because the league has
+  // to sort by it and you cannot sort inside a lump of JSON.
+  const result = await dbCall("/rest/v1/profiles", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates" },
+    body: [{
+      id: userId,
+      data: data,
+      xp: Number(data && data.xp) || 0,
+      updated_at: new Date().toISOString(),
+    }],
+  });
+
+  return result.ok;
+}
+
+
+// ---------------------------------------------------------------
+// THE WEEKLY LEAGUE
+//
+// Everyone sits in a small group inside a division. XP earned
+// during the week decides who goes up and who goes down. There is
+// no scheduled job - the week is settled the first time somebody
+// looks, which keeps it simple and costs nothing.
+// ---------------------------------------------------------------
+const GROUP_SIZE = 20;
+const PROMOTE = 5;      // top five go up
+const RELEGATE = 5;     // bottom five go down
+const TOP_DIVISION = 10;
+
+// Monday of the week a date falls in, as a plain key.
+function weekKeyServer(date) {
+  const d = new Date(date);
+  const day = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - day);
+  return d.toISOString().slice(0, 10);
+}
+
+// Reads one profile row.
+async function getProfile(userId) {
+  const result = await dbCall(
+    "/rest/v1/profiles?id=eq." + userId +
+    "&select=id,name,division,group_key,week_key,week_start_xp,xp," +
+    "last_result,name_changes,pro_until");
+
+  if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) {
+    return null;
+  }
+  return result.data[0];
+}
+
+// ---------------------------------------------------------------
+// NAMES AND SUBSCRIPTIONS
+//
+// Everyone gets to set their league name once for nothing. Changing
+// it afterwards is a paid feature.
+//
+// Two columns are needed for this. Run these once in the Supabase
+// SQL editor:
+//
+//   alter table profiles
+//     add column if not exists name_changes integer not null default 0;
+//   alter table profiles
+//     add column if not exists pro_until timestamptz;
+//
+// pro_until is set by the server and nothing else. When in-app
+// purchases exist, the receipt gets validated and this column is
+// written - never trust the app to say it has paid.
+// ---------------------------------------------------------------
+const FREE_NAME_CHANGES = 1;
+
+function isPro(profile) {
+  if (!profile || !profile.pro_until) return false;
+  const until = new Date(profile.pro_until);
+  return !isNaN(until) && until.getTime() > Date.now();
+}
+
+function mayChangeName(profile) {
+  if (isPro(profile)) return true;
+  return (Number(profile && profile.name_changes) || 0) < FREE_NAME_CHANGES;
+}
+
+async function updateProfile(userId, fields) {
+  const result = await dbCall("/rest/v1/profiles?id=eq." + userId, {
+    method: "PATCH",
+    body: fields,
+  });
+  return result.ok;
+}
+
+// A brand new anonymous account has no profile row until progress
+// is first pushed up. The league should not sit there refusing to
+// work while it waits for that, so it makes the row itself.
+async function ensureProfile(userId) {
+  const existing = await getProfile(userId);
+  if (existing) return existing;
+
+  await dbCall("/rest/v1/profiles", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates" },
+    body: [{
+      id: userId,
+      data: {},
+      xp: 0,
+      updated_at: new Date().toISOString(),
+    }],
+  });
+
+  return await getProfile(userId);
+}
+
+// Finds a group in this division with room in it, or starts a new
+// one. Groups are named like "2026-08-31|4|2".
+async function findGroup(division, week) {
+  for (let number = 1; number <= 200; number++) {
+    const key = week + "|" + division + "|" + number;
+    const result = await dbCall(
+      "/rest/v1/profiles?group_key=eq." + encodeURIComponent(key) + "&select=id");
+
+    const count = result.ok && Array.isArray(result.data) ? result.data.length : 0;
+    if (count < GROUP_SIZE) return key;
+  }
+  return week + "|" + division + "|overflow";
+}
+
+// Works out last week's finishing order and moves people up or down.
+async function settleWeek(profile) {
+  const finishedKey = profile.group_key;
+  if (!finishedKey) return { moved: null };
+
+  const result = await dbCall(
+    "/rest/v1/profiles?group_key=eq." + encodeURIComponent(finishedKey) +
+    "&select=id,xp,week_start_xp");
+
+  if (!result.ok || !Array.isArray(result.data)) return { moved: null };
+
+  // Padded with the same pace setters the person was shown all
+  // week. Settling against the real rows alone would mean beating
+  // ten names on screen and being told the group was too small to
+  // promote anybody.
+  const table = addPaceSetters(result.data.map(function (row) {
+    return {
+      id: row.id,
+      earned: Math.max(0, (Number(row.xp) || 0) - (Number(row.week_start_xp) || 0)),
+    };
+  }), profile.division);
+
+  const place = table.findIndex(function (row) { return row.id === profile.id; });
+  if (place === -1) return { moved: null };
+
+  const position = place + 1;
+  let division = Number(profile.division) || 1;
+  let moved = "stayed";
+
+  // Too few people to run promotion fairly.
+  if (table.length >= 8) {
+    if (position <= PROMOTE && division < TOP_DIVISION) {
+      division = division + 1;
+      moved = "promoted";
+    } else if (position > table.length - RELEGATE && division > 1) {
+      division = division - 1;
+      moved = "relegated";
+    }
+  }
+
+  return {
+    moved: moved,
+    position: position,
+    outOf: table.length,
+    earned: table[place].earned,
+    division: division,
+  };
+}
+
+// Makes sure a profile is in the right week, settling the old one
+// on the way through. Returns the profile as it now stands.
+async function rollWeek(userId) {
+  const profile = await getProfile(userId);
+  if (!profile) return null;
+
+  const week = weekKeyServer(new Date());
+
+  // Already up to date.
+  if (profile.week_key === week && profile.group_key) return profile;
+
+  let division = Number(profile.division) || 1;
+  let lastResult = null;
+
+  if (profile.week_key && profile.group_key) {
+    const outcome = await settleWeek(profile);
+    if (outcome.moved) {
+      division = outcome.division;
+      lastResult = {
+        week: profile.week_key,
+        moved: outcome.moved,
+        position: outcome.position,
+        outOf: outcome.outOf,
+        earned: outcome.earned,
+      };
+    }
+  }
+
+  const group = await findGroup(division, week);
+
+  await updateProfile(userId, {
+    division: division,
+    group_key: group,
+    week_key: week,
+    week_start_xp: Number(profile.xp) || 0,
+    last_result: lastResult,
+  });
+
+  return await getProfile(userId);
+}
+
+// Removes the person's profile row and then the login itself.
+// Irreversible, and deliberately so - the app stores need it to be.
+async function deleteAccount(userId) {
+  // The saved progress goes first, so nothing is orphaned if the
+  // second call fails.
+  await dbCall("/rest/v1/profiles?id=eq." + userId, { method: "DELETE" });
+
+  const result = await dbCall("/auth/v1/admin/users/" + userId, {
+    method: "DELETE",
+  });
+
+  return result.ok;
+}
+
+// ---------------------------------------------------------------
+// PACE SETTERS
+//
+// A weekly league with one person in it is worse than no league at
+// all - there is nothing to climb towards and promotion never
+// triggers. So sparse groups are topped up with scores to chase.
+//
+// They are labelled. The app marks them and says what they are,
+// for two reasons: passing them off as real people is a lie the
+// app would have to keep telling, and it is the kind of lie users
+// work out - a "player" who never posts, never changes their name
+// and always finishes mid-table. A target you know is a target
+// still pulls; a fake friend you catch is a reason to leave.
+//
+// Set PACE_SETTERS to 0 to turn the whole thing off.
+// ---------------------------------------------------------------
+const PACE_SETTERS = 10;      // group is topped up to this many
+const PACE_LABEL = true;      // mark them in what the app is sent
+
+const PACE_NAMES = [
+  "Early Doors", "Back Post", "Halfway Line", "Second Ball",
+  "Off The Line", "Near Post", "Extra Time", "Level Pegging",
+  "Top Corner", "Last Ditch", "Blind Side", "First Touch",
+  "Set Piece", "Far Post", "Injury Time", "Golden Goal",
+];
+
+// Same group, same week, same names and same numbers. Without this
+// the table would reshuffle every time somebody opened the screen.
+function steadyNumber(text) {
+  let value = 0;
+  for (let at = 0; at < text.length; at++) {
+    value = ((value << 5) - value + text.charCodeAt(at)) | 0;
+  }
+  return Math.abs(value);
+}
+
+// How far through the week we are, so their scores climb as the
+// week goes on rather than sitting still from Monday.
+function weekProgress() {
+  const now = new Date();
+  const day = (now.getUTCDay() + 6) % 7;          // Monday = 0
+  const minutes = day * 1440 + now.getUTCHours() * 60 + now.getUTCMinutes();
+  return Math.min(1, minutes / (7 * 1440));
+}
+
+// Tops a group up. Higher divisions set a harder pace, which is
+// what makes climbing mean something.
+function addPaceSetters(table, division) {
+  if (PACE_SETTERS <= 0) return table;
+
+  const missing = PACE_SETTERS - table.length;
+  if (missing <= 0) return table;
+
+  const tier = Math.max(1, Number(division) || 1);
+  const target = 400 + tier * 260;      // roughly a week's work at that level
+  const progress = weekProgress();
+  const filled = table.slice();
+
+  for (let at = 0; at < missing; at++) {
+    const seed = steadyNumber("pace|" + tier + "|" + at);
+
+    // Spread them across the target so the group has a top, a
+    // middle and a bottom rather than ten identical scores.
+    const share = 0.35 + ((seed % 100) / 100) * 0.95;
+    const earned = Math.round(target * share * progress);
+
+    filled.push({
+      id: "pace-" + tier + "-" + at,
+      name: PACE_NAMES[seed % PACE_NAMES.length],
+      earned: earned,
+      pace: PACE_LABEL ? true : undefined,
+    });
+  }
+
+  return filled.sort(function (a, b) { return b.earned - a.earned; });
+}
+
+// The table everybody in that group sees.
+async function groupTable(groupKey) {
+  const result = await dbCall(
+    "/rest/v1/profiles?group_key=eq." + encodeURIComponent(groupKey) +
+    "&select=id,name,xp,week_start_xp");
+
+  if (!result.ok || !Array.isArray(result.data)) return [];
+
+  return result.data.map(function (row) {
+    return {
+      id: row.id,
+      name: row.name || "Player",
+      earned: Math.max(0, (Number(row.xp) || 0) - (Number(row.week_start_xp) || 0)),
+    };
+  }).sort(function (a, b) { return b.earned - a.earned; });
+}
+
+
+// ---------------------------------------------------------------
+// TALKING TO THE API
+//
+// API-Football (api-sports.io). Two things differ from most APIs
+// and both will bite if forgotten:
+//
+//   1. The key goes in a header, never the query string, and the
+//      service rejects any header it does not recognise.
+//   2. Every answer is wrapped in an envelope. A bare list never
+//      comes back, and trouble arrives in "errors" rather than as
+//      an HTTP status - a 200 can still be a failure.
+//
+// Signing up through RapidAPI instead changes the host and the
+// header names, so set APIFOOTBALL_HOST and this handles the rest.
+// ---------------------------------------------------------------
+const ON_RAPIDAPI = API_HOST.indexOf("rapidapi") !== -1;
+const BASE = "https://" + API_HOST + (ON_RAPIDAPI ? "/v3/" : "/");
+
+function apiHeaders() {
+  return ON_RAPIDAPI
+    ? { "x-rapidapi-key": API_KEY, "x-rapidapi-host": API_HOST }
+    : { "x-apisports-key": API_KEY };
+}
+
+// Seasons are named by the year they start in, so 2026 means
+// 2026/27. Everything before July belongs to the previous one.
+function currentSeason() {
+  const now = new Date();
+  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+}
+
+// The last thing that went wrong on each endpoint, kept so the
+// diagnostic pages can show it. Errors that only reach the server
+// log are errors nobody sees.
+const apiTrouble = {};
+
+// Returns the "response" list, or null if anything went wrong.
+async function askApi(path, params) {
+  if (!API_KEY) {
+    console.log("!! NO API KEY SET. Check the APIFOOTBALL_KEY setting.");
+    return null;
+  }
+
+  const query = [];
+  for (const key of Object.keys(params || {})) {
+    const value = params[key];
+    if (value === undefined || value === null || value === "") continue;
+    query.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
+  }
+
+  const url = BASE + path + (query.length ? "?" + query.join("&") : "");
+  console.log("fetching: " + path + (query.length ? "?" + query.join("&") : ""));
+
+  let response;
+  try {
+    response = await fetch(url, { headers: apiHeaders() });
+  } catch (error) {
+    console.log("   !! could not reach the API: " + error.message);
+    return null;
+  }
+
+  // Worth watching in the logs - it is how you find out you are
+  // near the daily ceiling before users do.
+  const left = response.headers.get("x-ratelimit-requests-remaining");
+  if (left !== null) {
+    requestsLeft = Number(left);
+    if (requestsLeft < 500) {
+      console.log("   !! only " + left + " requests left today");
+    }
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch (error) {
+    console.log("   !! answer was not readable (HTTP " + response.status + ")");
+    return null;
+  }
+
+  // errors is [] when all is well, and an object describing the
+  // problem when it is not.
+  const errors = data && data.errors;
+  const hasErrors = errors &&
+    (Array.isArray(errors) ? errors.length > 0 : Object.keys(errors).length > 0);
+
+  if (hasErrors) {
+    console.log("   !! API SAYS: " + JSON.stringify(errors).slice(0, 300));
+    apiTrouble[path] = { at: new Date().toISOString(), url: url, errors: errors };
+    return null;
+  }
+
+  if (!data || !Array.isArray(data.response)) {
+    console.log("   !! unexpected answer shape");
+    apiTrouble[path] = {
+      at: new Date().toISOString(), url: url,
+      errors: "answer had no response list",
+    };
+    return null;
+  }
+
+  console.log("   " + data.response.length + " rows back");
+  delete apiTrouble[path];
+  return data.response;
+}
+
+
+// ---------------------------------------------------------------
+// TRANSLATION
+//
+// The screens already expect this shape, so most of what used to
+// be here has gone - the API hands back nearly the right thing.
+// ---------------------------------------------------------------
+function numberOrNull(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const n = Number(value);
+  return Number.isNaN(n) ? null : n;
+}
+
+// Which short codes mean a game is actually being played. Needed
+// because a finished match still reports an elapsed minute, and
+// left alone that would make every result look live.
+const IN_PLAY = ["1H", "2H", "ET", "BT", "P", "LIVE", "INT", "SUSP"];
+const FINISHED = ["FT", "AET", "PEN"];
+const CALLED_OFF = ["PST", "CANC", "ABD", "AWD", "WO"];
+
+function readStatus(raw) {
+  const status = (raw.fixture && raw.fixture.status) || {};
+  const short = String(status.short || "NS");
+  const long = String(status.long || short);
+  const minute = numberOrNull(status.elapsed);
+
+  if (short === "HT") return { short: "HT", long: long, elapsed: null };
+  if (IN_PLAY.indexOf(short) !== -1) {
+    return { short: short, long: long, elapsed: minute };
+  }
+  if (FINISHED.indexOf(short) !== -1) {
+    return { short: short, long: long, elapsed: null };
+  }
+  if (CALLED_OFF.indexOf(short) !== -1) {
+    return { short: "PST", long: long, elapsed: null };
+  }
+  return { short: short, long: long, elapsed: null };
+}
+
+// Turns the event list into readable commentary. Richer than
+// before, because assists and VAR decisions come through now.
+function buildCommentary(raw) {
+  const home = raw.teams && raw.teams.home && raw.teams.home.name;
+  const away = raw.teams && raw.teams.away && raw.teams.away.name;
+  const feed = [];
+
+  for (const event of (raw.events || [])) {
+    const minute = Number(event.time && event.time.elapsed) || 0;
+    const extra = Number(event.time && event.time.extra) || 0;
+    const side = event.team && event.team.name === home ? "home" : "away";
+    const who = (event.player && event.player.name) || "";
+    const helper = (event.assist && event.assist.name) || "";
+    const detail = String(event.detail || "");
+    const type = String(event.type || "").toLowerCase();
+
+    let kind = "note";
+    let text = "";
+
+    if (type === "goal") {
+      if (detail === "Own Goal") {
+        kind = "goal";
+        text = "OWN GOAL. " + who + ", against " + (side === "home" ? home : away) + ".";
+      } else if (detail === "Penalty") {
+        kind = "goal";
+        text = "PENALTY SCORED. " + who + " for " + (side === "home" ? home : away) + ".";
+      } else if (detail === "Missed Penalty") {
+        kind = "penalty";
+        text = "Penalty missed by " + who + ".";
+      } else {
+        kind = "goal";
+        text = "GOAL! " + who + " for " + (side === "home" ? home : away) + ".";
+        if (helper) text += " Assisted by " + helper + ".";
+      }
+    } else if (type === "card") {
+      const red = detail.toLowerCase().indexOf("red") !== -1;
+      kind = red ? "red" : "yellow";
+      text = (red ? "RED CARD. " : "Yellow card. ") + who +
+        " of " + (side === "home" ? home : away) + ".";
+    } else if (type === "subst") {
+      kind = "sub";
+      text = "Substitution for " + (side === "home" ? home : away) + ": " +
+        (helper || "?") + " on, " + (who || "?") + " off.";
+    } else if (type === "var") {
+      kind = "danger";
+      text = "VAR: " + detail + (who ? " - " + who : "") + ".";
+    } else {
+      text = detail + (who ? " - " + who : "");
+    }
+
+    if (!text.trim()) continue;
+
+    feed.push({
+      minute: minute + extra,
+      kind: kind,
+      text: text,
+      side: side,
+    });
+  }
+
+  feed.sort(function (a, b) { return a.minute - b.minute; });
+
+  const status = readStatus(raw);
+  feed.unshift({
+    minute: 0, kind: "start",
+    text: "Kick off. " + home + " against " + away + ".",
+  });
+
+  if (FINISHED.indexOf(status.short) !== -1) {
+    const score = (raw.goals && raw.goals.home) + "-" + (raw.goals && raw.goals.away);
+    feed.push({
+      minute: 91, kind: "end",
+      text: "Full time. " + home + " " + score + " " + away + ".",
+    });
+  } else if (status.short === "HT") {
+    feed.push({ minute: 46, kind: "end", text: "Half time." });
+  }
+
+  return feed;
+}
+
+// Player photographs sit at a predictable address.
+function playerPhoto(id) {
+  return id
+    ? "https://media.api-sports.io/football/players/" + id + ".png"
+    : "";
+}
+
+// Lays a side out from its grid references - "2:3" being the
+// third player in the second row. Far better than guessing from
+// the formation string, which is what the old provider forced.
+function layOutSide(side, scorers) {
+  const starters = (side && side.startXI) || [];
+  if (starters.length === 0) {
+    return { keeper: null, rows: [], bench: [], coach: "", missing: [] };
+  }
+
+  const asPlayer = function (entry) {
+    const p = entry.player || entry;
+    return {
+      name: p.name || "",
+      number: p.number || "",
+      key: String(p.id || ""),
+      image: playerPhoto(p.id),
+      grid: p.grid || "",
+    };
+  };
+
+  const all = starters.map(asPlayer);
+  const byRow = {};
+  let keeper = null;
+
+  for (const player of all) {
+    const bits = String(player.grid || "").split(":");
+    const row = Number(bits[0]);
+
+    if (!row || Number.isNaN(row)) continue;
+    if (row === 1 && !keeper) { keeper = player; continue; }
+
+    if (!byRow[row]) byRow[row] = [];
+    byRow[row].push({ player: player, at: Number(bits[1]) || 0 });
+  }
+
+  // No grid at all: fall back to the order given.
+  if (!keeper && all.length > 0) keeper = all[0];
+
+  const rows = Object.keys(byRow)
+    .map(Number)
+    .sort(function (a, b) { return a - b; })
+    .map(function (row) {
+      return byRow[row]
+        .sort(function (a, b) { return a.at - b.at; })
+        .map(function (entry) { return entry.player; });
+    });
+
+  const bench = ((side && side.substitutes) || []).map(asPlayer);
+  const coach = (side && side.coach && side.coach.name) || "";
+
+  return { keeper: keeper, rows: rows, bench: bench, coach: coach, missing: [] };
+}
+
+// Match statistics arrive as one block per team; the screen wants
+// one row per measure with both figures on it.
+function mergeStatistics(raw) {
+  const blocks = raw.statistics || [];
+  if (blocks.length < 2) return [];
+
+  const homeId = raw.teams && raw.teams.home && raw.teams.home.id;
+  const homeBlock = blocks.find(function (b) {
+    return b.team && b.team.id === homeId;
+  }) || blocks[0];
+  const awayBlock = blocks.find(function (b) { return b !== homeBlock; }) || blocks[1];
+
+  const awayByType = {};
+  for (const item of (awayBlock.statistics || [])) {
+    awayByType[item.type] = item.value;
+  }
+
+  return (homeBlock.statistics || []).map(function (item) {
+    const away = awayByType[item.type];
+    return {
+      type: item.type,
+      home: item.value === null ? "0" : String(item.value),
+      away: away === null || away === undefined ? "0" : String(away),
+    };
+  });
+}
+
+// ---------------------------------------------------------------
+// COMMENTARY FROM THE STATISTICS
+//
+// The events feed carries four things only: goals, cards,
+// substitutions and VAR. No corners, no shots, no free kicks, and
+// no position on the pitch for any of it.
+//
+// The statistics block does carry running totals though. Read them
+// a minute apart and the differences are events with a time on
+// them: corners taken, shots on and off target, fouls given,
+// offsides, saves, and possession swinging one way or the other.
+//
+// Two honest limits, and neither is worked around:
+//   - the minute is accurate to the gap between readings, so a
+//     corner at 57 may be logged at 58;
+//   - nothing here knows where the ball was, so nothing here
+//     claims to. No "dangerous attack", no pitch positions.
+//
+// A restart loses what has been gathered so far, because it is all
+// held in memory. The match's own goals and cards survive that,
+// since those come from the provider each time.
+// ---------------------------------------------------------------
+const statSnapshots = {};    // fixture id -> { at, minute, values }
+const derivedFeed = {};      // fixture id -> the lines worked out so far
+const DERIVED_MAX = 150;
+
+// The measures worth watching, and what an increase means.
+const WATCHED = [
+  { type: "Corner Kicks", kind: "corner",
+    line: function (team, n) {
+      return n === 1 ? "Corner to " + team + "."
+                     : n + " corners in quick succession for " + team + ".";
+    } },
+  { type: "Shots on Goal", kind: "shot",
+    line: function (team, n) {
+      return n === 1 ? "Shot on target from " + team + "."
+                     : n + " shots on target from " + team + ".";
+    } },
+  { type: "Shots off Goal", kind: "shot",
+    line: function (team, n) {
+      return n === 1 ? team + " shoot wide."
+                     : n + " off target from " + team + ".";
+    } },
+  { type: "Blocked Shots", kind: "shot",
+    line: function (team, n) {
+      return n === 1 ? "Shot from " + team + " blocked."
+                     : n + " shots from " + team + " blocked.";
+    } },
+  { type: "Goalkeeper Saves", kind: "save",
+    line: function (team, n) {
+      return n === 1 ? "Save by the " + team + " keeper."
+                     : n + " saves by the " + team + " keeper.";
+    } },
+  { type: "Offsides", kind: "offside",
+    line: function (team, n) {
+      return n === 1 ? "Offside against " + team + "."
+                     : n + " offsides against " + team + ".";
+    } },
+];
+
+function readStatValues(raw) {
+  const blocks = raw.statistics || [];
+  if (blocks.length < 2) return null;
+
+  const homeId = raw.teams && raw.teams.home && raw.teams.home.id;
+  const homeBlock = blocks.find(function (b) {
+    return b.team && b.team.id === homeId;
+  }) || blocks[0];
+  const awayBlock = blocks.find(function (b) { return b !== homeBlock; }) || blocks[1];
+
+  const readSide = function (block) {
+    const out = {};
+    for (const item of (block.statistics || [])) {
+      const value = item.value;
+      if (value === null || value === undefined) { out[item.type] = 0; continue; }
+      out[item.type] = Number(String(value).replace("%", "")) || 0;
+    }
+    return out;
+  };
+
+  return { home: readSide(homeBlock), away: readSide(awayBlock) };
+}
+
+// Compares this reading with the last one and turns the differences
+// into lines. Returns everything worked out for this match so far.
+function deriveCommentary(fixtureId, raw) {
+  const status = (raw.fixture && raw.fixture.status) || {};
+  const minute = Number(status.elapsed) || 0;
+  const values = readStatValues(raw);
+
+  if (!derivedFeed[fixtureId]) derivedFeed[fixtureId] = [];
+  if (!values) return derivedFeed[fixtureId];
+
+  const before = statSnapshots[fixtureId];
+  statSnapshots[fixtureId] = { at: Date.now(), minute: minute, values: values };
+
+  // Nothing to compare against yet. The first reading only sets the
+  // baseline - inventing lines for everything that happened before
+  // would put them all at the wrong minute.
+  if (!before) return derivedFeed[fixtureId];
+
+  // Readings now come every twenty seconds, so most of them land in
+  // the same minute as the last. Only a clock going backwards is
+  // worth refusing; the figures themselves decide what changed.
+  if (minute < before.minute) return derivedFeed[fixtureId];
+
+  const homeName = (raw.teams && raw.teams.home && raw.teams.home.name) || "Home";
+  const awayName = (raw.teams && raw.teams.away && raw.teams.away.name) || "Away";
+  const feed = derivedFeed[fixtureId];
+
+  const note = function (kind, text, side) {
+    feed.push({
+      minute: minute, kind: kind, text: text, side: side, derived: true,
+    });
+  };
+
+  for (const watch of WATCHED) {
+    for (const side of ["home", "away"]) {
+      const now = values[side][watch.type] || 0;
+      const was = before.values[side][watch.type] || 0;
+      const gained = now - was;
+      if (gained > 0) {
+        note(watch.kind, watch.line(side === "home" ? homeName : awayName, gained), side);
+      }
+    }
+  }
+
+  // A foul conceded is a free kick for the other side, which is the
+  // way round that matters to somebody reading it.
+  for (const side of ["home", "away"]) {
+    const gained = (values[side]["Fouls"] || 0) - (before.values[side]["Fouls"] || 0);
+    if (gained > 0) {
+      const against = side === "home" ? awayName : homeName;
+      note("freekick",
+        gained === 1
+          ? "Free kick to " + against + "."
+          : gained + " free kicks to " + against + ".",
+        side === "home" ? "away" : "home");
+    }
+  }
+
+  // Possession, but only when it has genuinely moved. Small wobbles
+  // every minute would drown everything else out.
+  const nowHome = values.home["Ball Possession"] || 0;
+  const wasHome = before.values.home["Ball Possession"] || 0;
+
+  if (nowHome && wasHome && Math.abs(nowHome - wasHome) >= 4) {
+    const rising = nowHome > wasHome;
+    note("possession",
+      (rising ? homeName : awayName) + " are seeing more of the ball - " +
+      (rising ? nowHome : (values.away["Ball Possession"] || 0)) + "% now.",
+      rising ? "home" : "away");
+  }
+
+  // Keep the newest, so a long match cannot grow without limit.
+  if (feed.length > DERIVED_MAX) {
+    derivedFeed[fixtureId] = feed.slice(-DERIVED_MAX);
+  }
+
+  return derivedFeed[fixtureId];
+}
+
+// Once a match is over there is no reason to hold on to any of it.
+function forgetDerived(fixtureId) {
+  delete statSnapshots[fixtureId];
+  delete derivedFeed[fixtureId];
+}
+
+
+// ---------------------------------------------------------------
+// WATCHING EVERY LIVE MATCH
+//
+// Readings used to happen only when somebody opened a match, which
+// meant opening a game at seventy minutes gave you a feed starting
+// at seventy. Nothing before that was ever recorded, because there
+// was no earlier reading to compare against.
+//
+// So the server watches all of them from kickoff instead. The ids
+// parameter takes twenty fixtures at a time, statistics included,
+// so this is three calls every twenty seconds however many games
+// are on - about 13,000 a day against a 150,000 allowance.
+// ---------------------------------------------------------------
+const POLL_SECONDS = 20;
+const POLL_BATCH = 20;         // fixtures per request, the API's limit
+const POLL_MAX = 40;           // two batches is plenty at once
+
+let pollRunning = false;
+let requestsLeft = null;       // from the API's own header
+
+async function pollLiveMatches() {
+  if (pollRunning) return;
+
+  // Back off rather than spend the last of the day's allowance on
+  // commentary. Scores matter more than colour.
+  if (requestsLeft !== null && requestsLeft < 2000) {
+    console.log("   !! skipping the commentary poll, " +
+      requestsLeft + " requests left today");
+    return;
+  }
+
+  pollRunning = true;
+
+  try {
+    const live = await askApi("fixtures", { live: "all" });
+    if (live === null) return;
+
+    const ids = live
+      .map(function (row) { return row.fixture && row.fixture.id; })
+      .filter(Boolean)
+      .slice(0, POLL_MAX);
+
+    // Anything that has stopped being live can be let go of.
+    const stillLive = {};
+    for (const id of ids) stillLive[id] = true;
+    for (const id of Object.keys(derivedFeed)) {
+      if (!stillLive[id]) forgetDerived(id);
+    }
+
+    if (ids.length === 0) return;
+
+    for (let at = 0; at < ids.length; at += POLL_BATCH) {
+      const batch = ids.slice(at, at + POLL_BATCH);
+      const rows = await askApi("fixtures", { ids: batch.join("-") });
+      if (rows === null) continue;
+
+      for (const row of rows) {
+        const id = row.fixture && row.fixture.id;
+        if (id) deriveCommentary(id, row);
+      }
+    }
+  } catch (error) {
+    console.log("   !! commentary poll failed: " + (error && error.message));
+  } finally {
+    pollRunning = false;
+  }
+}
+
+function translateMatch(raw) {
+  const fixture = raw.fixture || {};
+  const league = raw.league || {};
+  const teams = raw.teams || {};
+  const goals = raw.goals || {};
+
+  const lineups = raw.lineups || [];
+  const homeLine = lineups[0] || null;
+  const awayLine = lineups[1] || null;
+
+  const scorers = {};
+  for (const event of (raw.events || [])) {
+    if (String(event.type || "").toLowerCase() === "goal" &&
+        event.player && event.player.name) {
+      scorers[event.player.name.trim()] = true;
+    }
+  }
+
+  const match = {
+    fixture: {
+      id: Number(fixture.id),
+      // Already a real instant with its offset attached, so no
+      // conversion is needed or wanted here.
+      date: fixture.date,
+      status: readStatus(raw),
+    },
+    league: {
+      id: Number(league.id),
+      name: league.name,
+      country: league.country,
+      logo: league.logo || league.flag || "",
+    },
+    teams: {
+      home: {
+        id: (teams.home && Number(teams.home.id)) || null,
+        name: teams.home && teams.home.name,
+        logo: (teams.home && teams.home.logo) || "",
+      },
+      away: {
+        id: (teams.away && Number(teams.away.id)) || null,
+        name: teams.away && teams.away.name,
+        logo: (teams.away && teams.away.logo) || "",
+      },
+    },
+    goals: {
+      home: numberOrNull(goals.home),
+      away: numberOrNull(goals.away),
+    },
+    events: (raw.events || [])
+      .filter(function (e) {
+        return String(e.type || "").toLowerCase() === "goal" &&
+               e.detail !== "Missed Penalty";
+      })
+      .map(function (e) {
+        return {
+          type: "Goal",
+          time: { elapsed: Number(e.time && e.time.elapsed) || 0 },
+          player: { name: (e.player && e.player.name) || "Unknown" },
+          team: { name: (e.team && e.team.name) || "" },
+        };
+      }),
+    statistics: mergeStatistics(raw),
+    commentary: buildCommentary(raw),
+    formations: {
+      home: (homeLine && homeLine.formation) || "",
+      away: (awayLine && awayLine.formation) || "",
+    },
+    pitch: null,
+    extras: {
+      stadium: (fixture.venue && fixture.venue.name) || "",
+      referee: fixture.referee || "",
+      round: league.round || "",
+    },
+  };
+
+  if (homeLine || awayLine) {
+    const home = layOutSide(homeLine, scorers);
+    const away = layOutSide(awayLine, scorers);
+    if (home.keeper || away.keeper) {
+      match.pitch = { home: home, away: away };
+    }
+  }
+
+  return match;
+}
+
+function translateTableRow(raw) {
+  const all = raw.all || {};
+  const scored = Number(all.goals && all.goals.for) || 0;
+  const conceded = Number(all.goals && all.goals.against) || 0;
+
+  return {
+    rank: Number(raw.rank),
+    team: {
+      name: raw.team && raw.team.name,
+      logo: (raw.team && raw.team.logo) || "",
+    },
+    all: { played: Number(all.played) || 0 },
+    goalsDiff: numberOrNull(raw.goalsDiff) === null
+      ? scored - conceded
+      : Number(raw.goalsDiff),
+    points: Number(raw.points) || 0,
+    // This provider does say what each position means, so the
+    // promotion and relegation colours are finally possible.
+    description: raw.description || "",
+  };
+}
+
+
+
+
+// ---------------------------------------------------------------
+// THE CACHE
+// ---------------------------------------------------------------
+const cache = {};
+
+function fromCache(name, maxAgeSeconds) {
+  const saved = cache[name];
+  if (!saved) return null;
+  const age = (Date.now() - saved.time) / 1000;
+  if (age >= maxAgeSeconds) return null;
+  console.log("cache hit: " + name + " (" + Math.round(age) + "s old)");
+  return saved.data;
+}
+
+function intoCache(name, data) {
+  cache[name] = { data: data, time: Date.now() };
+  return data;
+}
+
+// A standing check on the clock. The API tells us how many minutes
+// a live game has been going; our kickoff time implies a figure of
+// its own. If the two disagree by more than about twenty minutes
+// across several matches at once, something is wrong with the
+// timestamps and every screen will be showing the wrong time.
+function checkClockDrift(matches) {
+  const gaps = [];
+
+  for (const match of matches) {
+    const elapsed = match.fixture.status.elapsed;
+    if (elapsed === null || elapsed < 5 || elapsed > 85) continue;
+
+    const kickoff = new Date(match.fixture.date);
+    if (isNaN(kickoff)) continue;
+
+    gaps.push(((Date.now() - kickoff.getTime()) / 60000) - elapsed);
+  }
+
+  if (gaps.length < 3) return;
+
+  gaps.sort(function (a, b) { return a - b; });
+  const middle = gaps[Math.floor(gaps.length / 2)];
+
+  if (Math.abs(middle) > 20) {
+    console.log("   !! CLOCK DRIFT: kickoff times look " +
+      (Math.round(middle / 6) / 10) + " hours out across " +
+      gaps.length + " live matches.");
+  }
+}
+
+async function getLiveScores() {
+  const hit = fromCache("live", 60);
+  if (hit) return hit;
+
+  const raw = await askApi("fixtures", { live: "all" });
+  if (raw === null) return cache["live"] ? cache["live"].data : [];
+
+  const matches = raw.map(translateMatch);
+  checkClockDrift(matches);
+  return intoCache("live", matches);
+}
+
+async function getFixturesFor(date) {
+  const name = "fixtures-" + date;
+  const hit = fromCache(name, 600);
+  if (hit) return hit;
+
+  const raw = await askApi("fixtures", { date: date });
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  return intoCache(name, raw.map(translateMatch));
+}
+
+// A span of days in one request. The fixtures screen asks for the
+// day either side of the one being shown, so it can pick out its
+// own local day whatever timezone the phone is in.
+async function getFixturesRange(from, to) {
+  const name = "fixtures-" + from + "-" + to;
+  const hit = fromCache(name, 600);
+  if (hit) return hit;
+
+  // One call per day. Asking by date needs no season, which the
+  // from/to form does - and a season cannot be given without a
+  // league or team, so the range form is not usable here.
+  const days = [];
+  const day = new Date(from + "T12:00:00Z");
+  const last = new Date(to + "T12:00:00Z");
+
+  while (day <= last && days.length < 5) {
+    days.push(day.toISOString().slice(0, 10));
+    day.setUTCDate(day.getUTCDate() + 1);
+  }
+
+  const seen = {};
+  let anyWorked = false;
+
+  for (const date of days) {
+    const raw = await askApi("fixtures", { date: date });
+    if (raw === null) continue;
+    anyWorked = true;
+    for (const row of raw) seen[row.fixture && row.fixture.id] = row;
+  }
+
+  if (!anyWorked) return cache[name] ? cache[name].data : [];
+
+  const matches = Object.keys(seen).map(function (id) {
+    return translateMatch(seen[id]);
+  });
+
+  return intoCache(name, matches);
+}
+
+async function getTableFor(leagueId) {
+  const name = "table-" + leagueId;
+  const hit = fromCache(name, 1800);
+  if (hit) return hit;
+
+  const raw = await askApi("standings", {
+    league: leagueId, season: currentSeason(),
+  });
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  // standings comes back as one entry per league, each holding
+  // groups of rows - a single table is the usual case, but cups
+  // arrive as several.
+  const groups = (raw[0] && raw[0].league && raw[0].league.standings) || [];
+  const flat = [];
+  for (const group of groups) for (const row of group) flat.push(row);
+
+  const rows = flat
+    .map(translateTableRow)
+    .sort(function (a, b) { return a.rank - b.rank; });
+
+  return intoCache(name, rows);
+}
+
+// Just the score and the teams, for the followed-matches list.
+async function getMatchLight(fixtureId) {
+  const name = "light-" + fixtureId;
+  const hit = fromCache(name, 60);
+  if (hit) return hit;
+
+  const full = cache["match-" + fixtureId];
+  if (full && (Date.now() - full.time) / 1000 < 60) return full.data;
+
+  const result = await askApi("fixtures", { id: fixtureId });
+  if (result === null || result.length === 0) {
+    return cache[name] ? cache[name].data : null;
+  }
+
+  return intoCache(name, translateMatch(result[0]));
+}
+
+// The full match: events, line-ups and statistics all arrive in
+// the one answer, so this costs a single request rather than the
+// three the old provider needed.
+async function getMatch(fixtureId) {
+  const name = "match-" + fixtureId;
+  const hit = fromCache(name, 60);
+  if (hit) return hit;
+
+  const result = await askApi("fixtures", { id: fixtureId });
+  if (result === null || result.length === 0) {
+    return cache[name] ? cache[name].data : null;
+  }
+
+  const raw = result[0];
+  const match = translateMatch(raw);
+
+  const state = match.fixture.status;
+  const inPlay = state.elapsed !== null || state.short === "HT";
+
+  if (inPlay) {
+    // The poller has been watching this match since kickoff, so
+    // this is a reading too, but rarely the first one.
+    const derived = deriveCommentary(fixtureId, raw);
+
+    if (derived.length > 0) {
+      match.commentary = match.commentary
+        .concat(derived)
+        .sort(function (a, b) { return a.minute - b.minute; });
+      match.hasLiveCommentary = true;
+    }
+  } else if (FINISHED.indexOf(state.short) !== -1) {
+    forgetDerived(fixtureId);
+  }
+
+  return intoCache(name, match);
+}
+
+// ---------------------------------------------------------------
+// EVERYTHING AROUND A MATCH
+//
+// The match centre's Facts and News tabs. Four calls, gathered
+// once and kept for a quarter of an hour, because none of it
+// changes minute to minute.
+//
+// One thing this provider does NOT give: where the ball is. There
+// are no corner, free kick or throw-in events, and no pitch
+// coordinates on anything. Aggregate counts are all there is, so
+// that is all these tabs claim.
+// ---------------------------------------------------------------
+async function getH2H(homeId, awayId) {
+  const name = "h2h-" + homeId + "-" + awayId;
+  const hit = fromCache(name, 86400);
+  if (hit) return hit;
+
+  const raw = await askApi("fixtures/headtohead", {
+    h2h: homeId + "-" + awayId, last: 10,
+  });
+  if (raw === null) return cache[name] ? cache[name].data : null;
+
+  let homeWins = 0, awayWins = 0, draws = 0;
+  const recent = [];
+
+  for (const row of raw) {
+    const goals = row.goals || {};
+    const teams = row.teams || {};
+    const wasHome = teams.home && teams.home.id === homeId;
+
+    if (goals.home === goals.away) {
+      draws++;
+    } else {
+      const homeScored = Number(goals.home) > Number(goals.away);
+      if (homeScored === Boolean(wasHome)) homeWins++;
+      else awayWins++;
+    }
+
+    recent.push({
+      date: row.fixture && row.fixture.date,
+      league: row.league && row.league.name,
+      home: teams.home && teams.home.name,
+      away: teams.away && teams.away.name,
+      score: goals.home + "-" + goals.away,
+    });
+  }
+
+  recent.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+
+  return intoCache(name, {
+    played: raw.length,
+    homeWins: homeWins,
+    awayWins: awayWins,
+    draws: draws,
+    recent: recent.slice(0, 6),
+  });
+}
+
+// Form, season records and a like-for-like comparison. This is
+// what the preview is written from - every figure in it is theirs,
+// not ours.
+async function getPrediction(fixtureId) {
+  const name = "pred-" + fixtureId;
+  const hit = fromCache(name, 3600);
+  if (hit) return hit;
+
+  const raw = await askApi("predictions", { fixture: fixtureId });
+  if (raw === null || raw.length === 0) {
+    return cache[name] ? cache[name].data : null;
+  }
+
+  const entry = raw[0] || {};
+  const guess = entry.predictions || {};
+  const teams = entry.teams || {};
+
+  const sideOf = function (side) {
+    const team = teams[side] || {};
+    const last5 = team.last_5 || {};
+    const league = team.league || {};
+    const fixtures = league.fixtures || {};
+    const goals = league.goals || {};
+
+    return {
+      name: team.name || "",
+      logo: team.logo || "",
+      form: league.form || "",
+      last5Form: last5.form || "",
+      last5Attack: last5.att || "",
+      last5Defence: last5.def || "",
+      played: (fixtures.played && fixtures.played.total) || 0,
+      won: (fixtures.wins && fixtures.wins.total) || 0,
+      drawn: (fixtures.draws && fixtures.draws.total) || 0,
+      lost: (fixtures.loses && fixtures.loses.total) || 0,
+      scored: (goals.for && goals.for.total && goals.for.total.total) || 0,
+      conceded: (goals.against && goals.against.total && goals.against.total.total) || 0,
+      cleanSheets: (league.clean_sheet && league.clean_sheet.total) || 0,
+      blanks: (league.failed_to_score && league.failed_to_score.total) || 0,
+    };
+  };
+
+  return intoCache(name, {
+    advice: guess.advice || "",
+    winnerName: (guess.winner && guess.winner.name) || "",
+    winnerComment: (guess.winner && guess.winner.comment) || "",
+    percent: guess.percent || {},
+    comparison: entry.comparison || {},
+    home: sideOf("home"),
+    away: sideOf("away"),
+  });
+}
+
+// Who is unavailable, and why.
+async function getInjuries(fixtureId, homeId) {
+  const name = "inj-" + fixtureId;
+  const hit = fromCache(name, 3600);
+  if (hit) return hit;
+
+  const raw = await askApi("injuries", { fixture: fixtureId });
+  if (raw === null) return cache[name] ? cache[name].data : { home: [], away: [] };
+
+  const out = { home: [], away: [] };
+
+  for (const row of raw) {
+    const player = row.player || {};
+    const side = (row.team && row.team.id === homeId) ? "home" : "away";
+
+    out[side].push({
+      name: player.name || "",
+      photo: player.photo || "",
+      // "Missing Fixture" or "Questionable", with the cause in reason.
+      type: player.type || "",
+      reason: player.reason || "",
+    });
+  }
+
+  return intoCache(name, out);
+}
+
+// All of it together, for one fixture.
+async function getMatchExtra(fixtureId) {
+  const name = "extra-" + fixtureId;
+  const hit = fromCache(name, 900);
+  if (hit) return hit;
+
+  const match = await getMatchLight(fixtureId);
+  if (!match) return null;
+
+  const homeId = match.teams.home.id;
+  const awayId = match.teams.away.id;
+
+  const h2h = homeId && awayId ? await getH2H(homeId, awayId) : null;
+  const prediction = await getPrediction(fixtureId);
+  const injuries = await getInjuries(fixtureId, homeId);
+
+  return intoCache(name, {
+    h2h: h2h,
+    prediction: prediction,
+    injuries: injuries,
+  });
+}
+
+// Fixtures for one league across a date range.
+async function getLeagueFixtures(leagueId, from, to) {
+  const name = "lf-" + leagueId + "-" + from;
+  const hit = fromCache(name, 900);
+  if (hit) return hit;
+
+  const raw = await askApi("fixtures", {
+    league: leagueId, season: currentSeason(), from: from, to: to,
+  });
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  return intoCache(name, raw.map(translateMatch));
+}
+
+// A club's players with their season figures, for the Stats tab.
+// Paginated, so a couple of pages are pulled and then it stops.
+async function getSquad(teamId) {
+  const name = "squad-" + teamId;
+  const hit = fromCache(name, 86400);
+  if (hit) return hit;
+
+  const byId = {};
+  let page = 1;
+
+  while (page <= 3) {
+    const raw = await askApi("players", {
+      team: teamId, season: currentSeason(), page: page,
+    });
+    if (raw === null || raw.length === 0) break;
+
+    for (const entry of raw) {
+      const player = entry.player || {};
+      const stats = (entry.statistics || [])[0] || {};
+      const games = stats.games || {};
+      const goals = stats.goals || {};
+      const cards = stats.cards || {};
+
+      byId[String(player.id)] = {
+        name: player.name || "",
+        image: player.photo || playerPhoto(player.id),
+        number: games.number || "",
+        position: games.position || "",
+        goals: Number(goals.total) || 0,
+        assists: Number(goals.assists) || 0,
+        yellow: Number(cards.yellow) || 0,
+        red: Number(cards.red) || 0,
+        played: Number(games.appearences) || 0,
+        rating: games.rating || "",
+      };
+    }
+
+    if (raw.length < 20) break;
+    page++;
+  }
+
+  if (Object.keys(byId).length === 0) {
+    return cache[name] ? cache[name].data : {};
+  }
+
+  return intoCache(name, byId);
+}
+
+// Fixtures for one club across a date range.
+async function getTeamFixtures(teamId, from, to) {
+  const name = "tf-" + teamId + "-" + from;
+  const hit = fromCache(name, 900);
+  if (hit) return hit;
+
+  const raw = await askApi("fixtures", {
+    team: teamId, season: currentSeason(), from: from, to: to,
+  });
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  return intoCache(name, raw.map(translateMatch));
+}
+
+// A club's whole season, kept for an hour.
+async function getSeason(teamId) {
+  const name = "season-" + teamId;
+  const hit = fromCache(name, 3600);
+  if (hit) return hit;
+
+  const raw = await askApi("fixtures", {
+    team: teamId, season: currentSeason(),
+  });
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  return intoCache(name, raw.map(translateMatch));
+}
+
+// Every club in a league.
+async function getTeams(leagueId) {
+  const name = "teams-" + leagueId;
+  const hit = fromCache(name, 86400);
+  if (hit) return hit;
+
+  const raw = await askApi("teams", {
+    league: leagueId, season: currentSeason(),
+  });
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  const teams = raw.map(function (entry) {
+    const team = entry.team || {};
+    return {
+      id: Number(team.id),
+      name: team.name,
+      logo: team.logo || "",
+      squad: 0,
+    };
+  });
+
+  return intoCache(name, teams);
+}
+
+// Leading scorers, used for the Statistics tab.
+async function getTopScorers(leagueId) {
+  const name = "scorers-" + leagueId;
+  const hit = fromCache(name, 3600);
+  if (hit) return hit;
+
+  const raw = await askApi("players/topscorers", {
+    league: leagueId, season: currentSeason(),
+  });
+  if (raw === null) return cache[name] ? cache[name].data : [];
+
+  const scorers = raw.map(function (entry, index) {
+    const player = entry.player || {};
+    const stats = (entry.statistics || [])[0] || {};
+    const goals = stats.goals || {};
+    const penalty = stats.penalty || {};
+
+    return {
+      place: index + 1,
+      name: player.name || "",
+      team: (stats.team && stats.team.name) || "",
+      goals: Number(goals.total) || 0,
+      assists: Number(goals.assists) || 0,
+      penalties: Number(penalty.scored) || 0,
+    };
+  });
+
+  return intoCache(name, scorers);
+}
+
+
+
+// ---------------------------------------------------------------
+// NEWS
+//
+// There is no news endpoint on this provider, so headlines come from
+// public RSS feeds. Only the headline, the source and a link out are
+// kept - the article itself stays with whoever wrote it.
+// ---------------------------------------------------------------
+// Sky's 12040 feed is every sport they cover, which is how darts,
+// snooker and the NBA ended up on a football app. 11095 is their
+// football-only feed. The check below backs it up either way.
+const NEWS_FEEDS = [
+  { name: "BBC Sport", url: "https://feeds.bbci.co.uk/sport/football/rss.xml" },
+  { name: "Sky Sports", url: "https://www.skysports.com/rss/11095" },
+];
+
+// Headlines older than this are dropped. Feeds sometimes keep an
+// old story pinned for months.
+const NEWS_MAX_AGE_DAYS = 7;
+
+// Both papers put the sport in the story's address, so a football
+// story always has "/football/" in its link. That is far more
+// reliable than guessing from the headline.
+function isFootballStory(item) {
+  const link = String(item.link || "").toLowerCase();
+  if (link.indexOf("bbc.co") !== -1 || link.indexOf("bbc.com") !== -1) {
+    return link.indexOf("/sport/football") !== -1;
+  }
+  if (link.indexOf("skysports.com") !== -1) {
+    return link.indexOf("/football/") !== -1;
+  }
+  return true;
+}
+
+function isRecentStory(item) {
+  if (!item.at) return true;
+  const age = Date.now() - new Date(item.at).getTime();
+  return age < NEWS_MAX_AGE_DAYS * 86400000;
+}
+
+function tidyXml(text) {
+  return String(text || "")
+    .replace(/<!\[CDATA\[/g, "")
+    .replace(/\]\]>/g, "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function readFeed(xml, sourceName) {
+  const items = [];
+  const blocks = String(xml).split(/<item[\s>]/).slice(1);
+
+  for (const block of blocks) {
+    const title = tidyXml((block.match(/<title[^>]*>([\s\S]*?)<\/title>/) || [])[1]);
+    const link = tidyXml((block.match(/<link[^>]*>([\s\S]*?)<\/link>/) || [])[1]);
+    const when = tidyXml((block.match(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/) || [])[1]);
+    const image = (block.match(/<media:thumbnail[^>]*url="([^"]+)"/) || [])[1] || "";
+
+    if (!title || !link) continue;
+
+    const stamp = when ? new Date(when) : null;
+    items.push({
+      title: title,
+      link: link,
+      source: sourceName,
+      image: image,
+      at: stamp && !isNaN(stamp) ? stamp.toISOString() : null,
+    });
+  }
+  return items;
+}
+
+async function getNews() {
+  const hit = fromCache("news", 900);
+  if (hit) return hit;
+
+  const gathered = [];
+
+  for (const feed of NEWS_FEEDS) {
+    try {
+      const response = await fetch(feed.url, {
+        headers: { "User-Agent": "GoalFlash/1.0" },
+      });
+      if (!response.ok) continue;
+      const xml = await response.text();
+      const stories = readFeed(xml, feed.name)
+        .filter(isFootballStory)
+        .filter(isRecentStory);
+      for (const item of stories.slice(0, 25)) {
+        gathered.push(item);
+      }
+    } catch (error) {
+      console.log("   !! news feed failed: " + feed.name);
+    }
+  }
+
+  // Newest first, whichever paper it came from.
+  gathered.sort(function (a, b) {
+    return new Date(b.at || 0) - new Date(a.at || 0);
+  });
+
+  if (gathered.length === 0) {
+    return cache["news"] ? cache["news"].data : [];
+  }
+
+  return intoCache("news", gathered.slice(0, 40));
+}
+
+// ---------------------------------------------------------------
+// FANTASY PREMIER LEAGUE
+//
+// The 6-a-side game runs on the official FPL data. It is free and
+// needs no key, but two things about it matter:
+//
+//   1. It returns 403 to anything that does not look like a
+//      browser, hence the User-Agent below.
+//   2. It is undocumented and carries no promises. Everything here
+//      is written to survive a missing or renamed field rather
+//      than throw, and /api/fpl-raw shows what actually came back.
+// ---------------------------------------------------------------
+const FPL_BASE = "https://fantasy.premierleague.com/api/";
+
+const FPL_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+  "Accept": "application/json",
+};
+
+// FPL calls forwards "FWD"; the squad calls them strikers.
+const FPL_POSITION = { 1: "GK", 2: "DEF", 3: "MID", 4: "ST" };
+
+async function fplGet(part) {
+  const url = FPL_BASE + part;
+  console.log("fetching FPL: " + part);
+
+  let response;
+  try {
+    response = await fetch(url, { headers: FPL_HEADERS });
+  } catch (error) {
+    console.log("   !! could not reach FPL: " + error.message);
+    return null;
+  }
+
+  if (!response.ok) {
+    console.log("   !! FPL said " + response.status +
+      (response.status === 403 ? " - it is refusing this request" : ""));
+    return null;
+  }
+
+  try {
+    return await response.json();
+  } catch (error) {
+    console.log("   !! FPL answer was not readable");
+    return null;
+  }
+}
+
+// Roughly a megabyte, so it is kept for six hours.
+async function getFplBootstrap() {
+  const hit = fromCache("fpl-bootstrap", 21600);
+  if (hit) return hit;
+
+  const data = await fplGet("bootstrap-static/");
+  if (!data || !Array.isArray(data.elements)) {
+    return cache["fpl-bootstrap"] ? cache["fpl-bootstrap"].data : null;
+  }
+  return intoCache("fpl-bootstrap", data);
+}
+
+// One gameweek's per-player points. Cached briefly while it is
+// still being played, and for a day once it has been signed off.
+async function getFplEvent(eventId) {
+  const name = "fpl-event-" + eventId;
+  const settled = cache[name] && cache[name].data && cache[name].data.dataChecked;
+  const hit = fromCache(name, settled ? 86400 : 300);
+  if (hit) return hit;
+
+  const data = await fplGet("event/" + eventId + "/live/");
+  if (!data || !Array.isArray(data.elements)) {
+    return cache[name] ? cache[name].data : null;
+  }
+
+  const points = {};
+  for (const entry of data.elements) {
+    points[String(entry.id)] = Number(entry.stats && entry.stats.total_points) || 0;
+  }
+
+  // Whether it is finished comes from the gameweek list, not here.
+  const boot = await getFplBootstrap();
+  const event = boot && (boot.events || []).find(function (e) {
+    return Number(e.id) === Number(eventId);
+  });
+
+  return intoCache(name, {
+    id: Number(eventId),
+    finished: Boolean(event && event.finished),
+    dataChecked: Boolean(event && event.data_checked),
+    deadline: (event && event.deadline_time) || null,
+    points: points,
+  });
+}
+
+function fplPhoto(player) {
+  const code = player.code || String(player.photo || "").replace(/\.[a-z]+$/i, "");
+  if (!code) return "";
+  return "https://resources.premierleague.com/premierleague/photos/players/" +
+    "110x140/p" + code + ".png";
+}
+
+function fplBadge(team) {
+  if (!team || !team.code) return "";
+  return "https://resources.premierleague.com/premierleague/badges/70/t" +
+    team.code + ".png";
+}
+
+// Everything the squad picker and the statistics table need, in
+// one shape, with last week's points folded in.
+async function getFplPlayers() {
+  const hit = fromCache("fpl-players", 3600);
+  if (hit) return hit;
+
+  const boot = await getFplBootstrap();
+  if (!boot) {
+    return cache["fpl-players"]
+      ? cache["fpl-players"].data
+      : { players: [], currentEvent: null, previousEvent: null,
+          error: "Could not reach the Fantasy Premier League API" };
+  }
+
+  const events = boot.events || [];
+  const find = function (flag) {
+    const found = events.find(function (e) { return e[flag]; });
+    return found ? Number(found.id) : null;
+  };
+
+  const currentEvent = find("is_current");
+  const previousEvent = find("is_previous");
+  const nextEvent = find("is_next");
+
+  // Last week's points, if there was a last week.
+  let lastWeek = {};
+  if (previousEvent) {
+    const past = await getFplEvent(previousEvent);
+    if (past) lastWeek = past.points || {};
+  }
+
+  const teams = {};
+  for (const team of (boot.teams || [])) teams[String(team.id)] = team;
+
+  const number = function (value) { return Number(value) || 0; };
+
+  const players = (boot.elements || []).map(function (p) {
+    const team = teams[String(p.team)] || {};
+    return {
+      id: p.id,
+      name: p.web_name,
+      fullName: ((p.first_name || "") + " " + (p.second_name || "")).trim(),
+      team: team.name || "",
+      teamShort: team.short_name || "",
+      teamBadge: fplBadge(team),
+      position: FPL_POSITION[p.element_type] || "",
+      photo: fplPhoto(p),
+
+      // The two numbers the list shows.
+      points: number(p.total_points),
+      lastWeek: number(lastWeek[String(p.id)]),
+
+      form: p.form || "0.0",
+      ppg: p.points_per_game || "0.0",
+      minutes: number(p.minutes),
+      starts: number(p.starts),
+      goals: number(p.goals_scored),
+      assists: number(p.assists),
+      cleanSheets: number(p.clean_sheets),
+      conceded: number(p.goals_conceded),
+      ownGoals: number(p.own_goals),
+      penSaved: number(p.penalties_saved),
+      penMissed: number(p.penalties_missed),
+      yellow: number(p.yellow_cards),
+      red: number(p.red_cards),
+      saves: number(p.saves),
+      bonus: number(p.bonus),
+      bps: number(p.bps),
+      xG: p.expected_goals || "0.00",
+      xA: p.expected_assists || "0.00",
+      ict: p.ict_index || "0.0",
+      price: number(p.now_cost) / 10,
+      selectedBy: p.selected_by_percent || "0.0",
+      status: p.status || "a",
+      news: p.news || "",
+    };
+  });
+
+  players.sort(function (a, b) { return b.points - a.points; });
+
+  return intoCache("fpl-players", {
+    players: players,
+    currentEvent: currentEvent,
+    previousEvent: previousEvent,
+    nextEvent: nextEvent,
+    updated: new Date().toISOString(),
+    error: "",
+  });
+}
+
+async function getAllLeagues() {
+  const hit = fromCache("allLeagues", 86400);
+  if (hit) return hit;
+
+  // current=true keeps the list to competitions actually running.
+  // If that comes back empty for any reason, the unfiltered list is
+  // far better than an empty drawer.
+  let raw = await askApi("leagues", { current: "true" });
+  if (raw === null || raw.length === 0) {
+    raw = await askApi("leagues", {});
+  }
+  if (raw === null) return cache["allLeagues"] ? cache["allLeagues"].data : [];
+
+  const list = raw.map(function (item) {
+    const league = item.league || {};
+    const country = item.country || {};
+    return {
+      id: Number(league.id),
+      name: league.name,
+      country: country.name || "World",
+      logo: league.logo || country.flag || "",
+      type: league.type || "League",
+    };
+  });
+
+  return intoCache("allLeagues", list);
+}
+
+function onlyTheirLeagues(matches, leagueIds) {
+  return matches.filter(function (match) {
+    return leagueIds.includes(match.league.id);
+  });
+}
+
+// Seasons run roughly July to June, so work out which one we are in.
+function seasonRange() {
+  const now = new Date();
+  const startYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  return {
+    from: startYear + "-07-01",
+    to: (startYear + 1) + "-06-30",
+  };
+}
+
+function isoToday() {
+  const now = new Date();
+  return now.getFullYear() + "-" +
+    String(now.getMonth() + 1).padStart(2, "0") + "-" +
+    String(now.getDate()).padStart(2, "0");
+}
+
+function leagueIdsFrom(address) {
+  const raw = address.searchParams.get("leagues");
+  if (!raw) return MY_LEAGUE_IDS;
+
+  const ids = raw.split(",")
+    .map(Number)
+    .filter(function (n) { return Number.isInteger(n) && n > 0; })
+    .slice(0, 200);
+
+  return ids.length > 0 ? ids : MY_LEAGUE_IDS;
+}
+
+
+// ---------------------------------------------------------------
+// THE PAGE
+// ---------------------------------------------------------------
+const PAGE = `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0B1E3D">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="/logo.png">
+<link rel="apple-touch-icon" href="/logo.png">
+<title>GoalFlash</title>
+__ADHEAD__
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: #F4F4F2; color: #1a1a1a;
+    padding-bottom: 70px;
+  }
+  .header { background: #185FA5; padding: 14px 16px 0; }
+  .headerTop {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .title { font-size: 18px; font-weight: 500; color: #fff; }
+  .badges { display: flex; align-items: center; gap: 10px; }
+  .coins {
+    display: flex; align-items: center; gap: 4px;
+    background: #042C53; padding: 4px 10px; border-radius: 12px;
+    font-size: 13px; color: #FAC775;
+  }
+  .level {
+    cursor: pointer;
+    width: 34px; height: 34px; border-radius: 50%;
+    background: #EF9F27; color: #412402;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 600;
+  }
+  /* XP now sits small, on the right */
+  .xpRow {
+    display: flex; align-items: center; justify-content: flex-end;
+    gap: 6px; padding-bottom: 10px;
+  }
+  .xpTrack {
+    width: 90px; height: 4px; background: #042C53;
+    border-radius: 2px; overflow: hidden; flex-shrink: 0;
+  }
+  .xpFill { height: 100%; background: #EF9F27; width: 0%; }
+  .xpText { font-size: 10px; color: #B5D4F4; }
+
+  /* Rolling live scores across the header */
+  .ticker {
+    flex: 1; min-width: 0; overflow: hidden;
+    margin: 0 10px; height: 34px;
+    display: flex; align-items: center;
+  }
+  .tickerInner {
+    width: 100%; opacity: 1;
+    transition: opacity 0.35s;
+  }
+  .tickerInner.fade { opacity: 0; }
+  .tickerLine {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 13px; color: #fff; white-space: nowrap;
+  }
+  .tickerLine img { width: 16px; height: 16px; object-fit: contain; flex-shrink: 0; }
+  .tickerLine .nm {
+    overflow: hidden; text-overflow: ellipsis;
+    max-width: 90px;
+  }
+  .tickerLine .sc { font-weight: 600; }
+  .tickerLine .mn { color: #EF9F27; font-size: 11px; margin-left: 2px; }
+  .tickerQuiet { font-size: 12px; color: #85B7EB; }
+
+  .dates { display: flex; }
+  .dateBtn {
+    flex: 1; text-align: center; padding: 6px 0 8px;
+    color: #85B7EB; cursor: pointer; border-bottom: 2px solid transparent;
+  }
+  .dateBtn.on { color: #EF9F27; border-bottom-color: #EF9F27; }
+  .dateDay { font-size: 11px; }
+  .dateNum { font-size: 15px; margin-top: 2px; }
+
+  .picker {
+    display: flex; align-items: center; justify-content: space-between;
+    background: #042C53; border-radius: 6px; padding: 9px 12px;
+    margin-bottom: 12px; color: #fff; font-size: 14px;
+  }
+  .picker select {
+    background: transparent; border: none; color: #fff;
+    font-size: 14px; width: 100%; outline: none;
+  }
+  .picker select option { background: #042C53; color: #fff; }
+
+  .searchBox {
+    display: flex; align-items: center; gap: 8px;
+    background: #fff; border-radius: 6px; padding: 9px 12px;
+    margin-bottom: 12px;
+  }
+  .searchBox input {
+    border: none; outline: none; font-size: 14px;
+    width: 100%; background: transparent;
+  }
+
+  .updated { padding: 8px 16px; font-size: 12px; color: #777; }
+  .leagueRow, .countryRow {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 16px; background: #E8E8E4;
+    font-size: 12px; color: #555;
+  }
+  .leagueLogo { width: 16px; height: 16px; object-fit: contain; }
+
+  .match {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .when { width: 44px; font-size: 12px; color: #BA7517; flex-shrink: 0; font-weight: 600; }
+  .when.grey { color: #777; font-weight: 400; }
+  .when.live { color: #BA7517; }
+  .teams { flex: 1; min-width: 0; }
+  .teamRow {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  .teamRow:first-child { margin-bottom: 7px; }
+  .teamName { display: flex; align-items: center; gap: 8px; font-size: 15px; min-width: 0; }
+  .teamName span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crest { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; }
+  .goals { font-size: 15px; font-weight: 600; flex-shrink: 0; }
+  .bell {
+    font-size: 19px; color: #D5D5D0; cursor: pointer;
+    flex-shrink: 0; user-select: none;
+  }
+  .bell.on { color: #EF9F27; }
+
+  .leagueItem {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4; cursor: pointer;
+  }
+  .leagueItem img { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
+  .leagueItem .nm { flex: 1; font-size: 15px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .liveTag {
+    font-size: 12px; padding: 3px 9px; border-radius: 10px;
+    background: #FAEEDA; color: #854F0B; flex-shrink: 0;
+  }
+  .star { font-size: 18px; color: #ccc; flex-shrink: 0; user-select: none; }
+  .star.on { color: #EF9F27; }
+
+  .tableHead {
+    display: flex; padding: 8px 16px; background: #E8E8E4;
+    font-size: 11px; color: #555;
+  }
+  .tableRow {
+    display: flex; align-items: center; padding: 10px 16px;
+    background: #fff; border-bottom: 1px solid #E8E8E4;
+  }
+  .tableRow.meRow { background: #E6F1FB; }
+  .tableRow.meRow .colTeam span { font-weight: 600; }
+  .colPos { width: 22px; font-size: 13px; color: #777; }
+  .colTeam { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .colTeam span { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .colTeam img { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
+  .colNum { width: 30px; text-align: center; font-size: 13px; color: #777; }
+  .colPts { width: 32px; text-align: right; font-size: 14px; font-weight: 600; }
+
+  .matchHead { background: #185FA5; padding: 12px 16px 16px; }
+  .matchTop {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .back { font-size: 20px; color: #fff; cursor: pointer; user-select: none; }
+  .comp { font-size: 12px; color: #B5D4F4; }
+  .scoreLine { display: flex; align-items: center; }
+  .side { flex: 1; text-align: center; }
+  .side img { width: 44px; height: 44px; object-fit: contain; margin-bottom: 8px; }
+  .side div { font-size: 13px; color: #fff; }
+  .bigScore { text-align: center; padding: 0 8px; }
+  .bigScore .nums { font-size: 30px; font-weight: 600; color: #fff; }
+  .bigScore .clock { font-size: 12px; color: #EF9F27; margin-top: 2px; }
+
+  .tabs { display: flex; background: #fff; border-bottom: 1px solid #E8E8E4; }
+  .tabsUnder .tab { font-size: 13px; padding: 9px 0; }
+  .tab {
+    flex: 1; text-align: center; padding: 11px 0;
+    font-size: 14px; color: #777; cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  .tab.on { color: #185FA5; border-bottom-color: #185FA5; }
+
+  .event {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .evMin { width: 34px; font-size: 12px; color: #777; }
+  .evIcon { font-size: 15px; width: 20px; }
+  .evName { font-size: 14px; flex: 1; }
+  .evTeam { font-size: 12px; color: #999; }
+
+  /* Commentary feed */
+  .vizBox {
+    background: #fff; padding: 12px 16px 10px;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .vizInner { max-width: 520px; margin: 0 auto; }
+  .vizInner svg { display: block; }
+  .vizHead {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; color: #777; margin-bottom: 8px;
+  }
+  .vizKey { display: flex; align-items: center; font-size: 10px; color: #999; }
+  .vizKey i {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 2px; margin-right: 4px;
+  }
+
+  .commRow {
+    display: flex; gap: 12px; padding: 12px 16px;
+    background: #fff; border-bottom: 1px solid #E8E8E4;
+  }
+  .commMin {
+    width: 34px; flex-shrink: 0; font-size: 12px;
+    color: #777; padding-top: 2px;
+  }
+  .commIcon { width: 20px; flex-shrink: 0; font-size: 15px; }
+  .commText { flex: 1; font-size: 14px; line-height: 1.45; }
+  .commRow.goal { background: #FFF8EA; }
+  .commRow.goal .commText { font-weight: 600; }
+  .commRow.goal .commMin { color: #BA7517; font-weight: 600; }
+  .commRow.red { background: #FDF0F0; }
+  .commRow.danger { background: #FFF4E8; }
+  .commRow.danger .commText { font-weight: 600; }
+  .commRow.corner .commMin, .commRow.attack .commMin,
+  .commRow.danger .commMin { color: #185FA5; }
+  .commRow.possession .commText, .commRow.throw .commText,
+  .commRow.goalkick .commText, .commRow.note .commText { color: #777; }
+  .commRow.possession, .commRow.throw, .commRow.goalkick { padding: 8px 16px; }
+  .liveTag2 {
+    display: inline-block; font-size: 10px; padding: 2px 7px;
+    border-radius: 8px; background: #FAEEDA; color: #854F0B;
+    margin-left: 8px;
+  }
+  .commRow.start .commText, .commRow.end .commText { color: #555; font-style: italic; }
+  .commRow.commDerived .commText { color: #5A6472; }
+  .commRow.save .commText, .commRow.offside .commText { color: #5A6472; }
+
+  /* Pitch view */
+  .pitchWrap { background: #fff; padding: 12px 8px 16px; }
+  .pitchNote {
+    display: flex; justify-content: space-between;
+    padding: 0 8px 10px; font-size: 12px; color: #777;
+  }
+  .pitchNote b { font-weight: 600; color: #333; }
+  .sheets { display: flex; gap: 1px; background: #E8E8E4; }
+  .sheetCol { flex: 1; min-width: 0; background: #fff; }
+  .sheetHead {
+    padding: 9px 10px; font-size: 12px; font-weight: 600;
+    color: #fff; text-align: center;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sheetHead.home { background: #185FA5; }
+  .sheetHead.away { background: #BA7517; }
+  .sheetRow {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-bottom: 1px solid #F0F0EC;
+    font-size: 13px;
+  }
+  .sheetNum {
+    width: 20px; flex-shrink: 0; text-align: right;
+    color: #999; font-size: 12px;
+  }
+  .sheetName {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sheetGoal { font-size: 11px; }
+  .sheetSub {
+    padding: 8px 10px; background: #F1EFE8;
+    font-size: 11px; color: #666; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .benchRow .sheetName { color: #666; }
+  .sheetNone { color: #999; font-size: 12px; }
+  .subMark { font-size: 9px; flex-shrink: 0; }
+  .subMark.off { color: #E24B4A; }
+  .subMark.on { color: #639922; }
+
+  .extras {
+    padding: 10px 16px; background: #F4F4F2;
+    font-size: 12px; color: #666; line-height: 1.6;
+  }
+
+  .statBox { padding: 16px; background: #fff; }
+  .stat { margin-bottom: 16px; }
+  .stat:last-child { margin-bottom: 0; }
+  .statTop {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 6px;
+  }
+  .statVal { font-size: 14px; font-weight: 600; }
+  .statName { font-size: 13px; color: #777; }
+  .statBar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: #E8E8E4; }
+  .statHome { background: #185FA5; }
+  .statAway { background: #EF9F27; }
+
+  .empty { padding: 50px 24px; text-align: center; color: #777; line-height: 1.6; }
+
+  /* Slide-out country drawer */
+  .burger {
+    font-size: 20px; color: #fff; cursor: pointer;
+    user-select: none; margin-right: 12px; line-height: 1;
+  }
+  .shade {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    z-index: 40;
+  }
+  .shade.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 280px;
+    max-width: 82vw; background: #FFFFFF; z-index: 50;
+    transform: translateX(-100%); transition: transform 0.22s;
+    display: flex; flex-direction: column;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawerTop {
+    background: #0B1E3D; color: #fff;
+    padding: calc(16px + env(safe-area-inset-top, 0px)) 16px 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .drawerTop span:first-child { font-size: 16px; font-weight: 500; }
+  .drawerClose { font-size: 20px; cursor: pointer; user-select: none; }
+  .drawerBody { overflow-y: auto; flex: 1; }
+  .drawerHint {
+    padding: 9px 16px; background: #F0F1F4;
+    font-size: 11px; color: #6B7280; text-transform: uppercase;
+    letter-spacing: 0.4px; font-weight: 700;
+  }
+  .countryItem {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; cursor: pointer;
+    border-bottom: 1px solid #ECEEF1;
+  }
+  .countryItem img {
+    width: 18px; height: 18px; object-fit: contain;
+    flex-shrink: 0; border-radius: 2px;
+  }
+  .countryItem .cname {
+    flex: 1; font-size: 14px; color: #111827; font-weight: 600;
+  }
+  .countryItem .arrow { font-size: 11px; color: #9CA3AF; }
+  .countryItem:hover { background: #F5F6F8; }
+  .leagueChild {
+    padding: 11px 16px 11px 44px; font-size: 13px;
+    color: #374151; font-weight: 500;
+    cursor: pointer; background: #F8F9FB;
+    border-bottom: 1px solid #ECEEF1;
+  }
+  .leagueChild:hover { background: #EFF6FF; }
+
+  /* League screen */
+  .leagueHead { background: #185FA5; padding: 12px 16px 0; }
+  .leagueHeadTop {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+  }
+  .leagueHeadTop img { width: 28px; height: 28px; object-fit: contain; }
+  .leagueHeadTop .txt { flex: 1; min-width: 0; }
+  .leagueHeadTop .ln {
+    font-size: 16px; font-weight: 500; color: #fff;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .leagueHeadTop .cn { font-size: 12px; color: #B5D4F4; }
+  .leagueTabs { display: flex; }
+  .lTab {
+    flex: 1; text-align: center; padding: 9px 0 8px;
+    font-size: 13px; color: #85B7EB; cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  .lTab.on { color: #EF9F27; border-bottom-color: #EF9F27; }
+
+  /* Club player stats */
+  .statHead {
+    display: flex; align-items: center; padding: 8px 16px;
+    background: #E8E8E4; font-size: 11px; color: #555;
+  }
+  .statRow {
+    display: flex; align-items: center; padding: 9px 16px;
+    background: #fff; border-bottom: 1px solid #E8E8E4;
+  }
+  .shPlayer {
+    flex: 1; min-width: 0; display: flex;
+    align-items: center; gap: 9px;
+  }
+  .shPlayer img {
+    width: 28px; height: 28px; border-radius: 50%;
+    object-fit: cover; flex-shrink: 0; background: #F1EFE8;
+  }
+  .noFace {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: #E8E8E4; color: #777; font-size: 11px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .pName {
+    font-size: 14px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .shNum { width: 34px; text-align: center; font-size: 13px; color: #777; }
+  .shNum.strong { font-weight: 600; color: #1a1a1a; }
+  .shNum.yel { color: #BA7517; }
+  .shNum.red { color: #E24B4A; }
+
+  .scorerRow {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .scorerRow .pl { width: 22px; font-size: 13px; color: #777; }
+  .scorerRow .who { flex: 1; min-width: 0; }
+  .scorerRow .pn {
+    font-size: 14px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .scorerRow .tn { font-size: 12px; color: #999; }
+  .scorerRow .gl { font-size: 15px; font-weight: 600; }
+
+  .teamRowItem {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .teamRowItem img { width: 24px; height: 24px; object-fit: contain; flex-shrink: 0; }
+  .teamRowItem span { font-size: 14px; }
+
+  .nav {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    display: flex; align-items: flex-end;
+    background: #fff; border-top: 1px solid #E8E8E4;
+    padding: 8px 0 10px; z-index: 30;
+  }
+  .navItem {
+    flex: 1; text-align: center; font-size: 10px;
+    color: #999; cursor: pointer; user-select: none;
+  }
+  .navItem.on { color: #185FA5; }
+  .navIcon { font-size: 18px; display: block; margin-bottom: 3px; }
+
+  /* The home button sits raised in the middle. */
+  .navHome {
+    flex: 1; text-align: center; cursor: pointer;
+    user-select: none; position: relative;
+  }
+  .navHomeBall {
+    width: 54px; height: 54px; border-radius: 50%;
+    background: #185FA5; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; margin: -26px auto 2px;
+    border: 4px solid #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+  }
+  .navHome.on .navHomeBall { background: #EF9F27; }
+  .navHomeLabel { font-size: 10px; color: #999; }
+  .navHome.on .navHomeLabel { color: #185FA5; }
+
+  /* Two-column home screen */
+  /* Home board of favourite badges */
+  .board { background: #fff; border-bottom: 1px solid #E8E8E4; }
+  .boardHead {
+    padding: 12px 16px 8px; font-size: 11px;
+    color: #888; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .slotRow {
+    display: grid; grid-template-columns: repeat(5, 1fr);
+    gap: 10px; padding: 0 14px 14px;
+  }
+  .slot {
+    width: 100%; aspect-ratio: 1; border-radius: 50%;
+    background: #F4F4F2;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; overflow: hidden;
+    border: 1px solid #E4E4E0;
+  }
+  .slot img { width: 62%; height: 62%; object-fit: contain; }
+  .slot:active { background: #E8E8E4; }
+  .slotEmpty {
+    border: 1.5px dashed #D5D5D0; background: transparent;
+    color: #C4C4BE; font-size: 17px;
+  }
+
+  /* Next games for followed clubs */
+  .upRow {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4; cursor: pointer;
+  }
+  .upCrest { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
+  .upTeams {
+    flex: 1; min-width: 0; font-size: 13px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .upWhen { font-size: 11px; color: #888; flex-shrink: 0; }
+
+  /* Profile screen */
+.profHead {
+  background: #0B1E3D; color: #fff; margin: 12px;
+  border-radius: 14px; padding: 18px;
+  display: flex; align-items: center; gap: 16px;
+}
+.profCrest {
+  width: 66px; height: 66px; border-radius: 50%;
+  background: #16305A; flex-shrink: 0; position: relative;
+  display: flex; align-items: center; justify-content: center;
+}
+.profCrest img { width: 44px; height: 44px; object-fit: contain; }
+.profLevelBig { font-size: 26px; font-weight: 700; color: #F5A623; }
+.profLevelTag {
+  position: absolute; right: -3px; bottom: -3px;
+  min-width: 24px; height: 24px; padding: 0 5px;
+  border-radius: 12px; background: #F5A623; color: #3A2400;
+  font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid #0B1E3D;
+}
+.profNameBox { min-width: 0; }
+.profNick { font-size: 19px; font-weight: 600; }
+.profUnder { font-size: 12px; color: #8FA6C4; margin-top: 3px; }
+.profClub { font-size: 12px; color: #F5A623; margin-top: 4px; }
+
+.profGrid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 8px; padding: 0 12px 12px;
+}
+.profGrid.two { grid-template-columns: repeat(2, 1fr); }
+.profCell {
+  background: #fff; border: 1px solid #ECEEF1; border-radius: 12px;
+  padding: 12px 8px; text-align: center;
+}
+.profCell b { display: block; font-size: 17px; color: #111827; }
+.profCell span { font-size: 10px; color: #6B7280; }
+
+.trophyWrap {
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 0 12px 12px;
+}
+.trophy, .chipItem {
+  display: flex; align-items: center; gap: 7px;
+  background: #fff; border: 1px solid #ECEEF1;
+  border-radius: 18px; padding: 7px 13px; font-size: 12px;
+}
+.trophy span { font-size: 14px; }
+.chipItem img { width: 16px; height: 16px; object-fit: contain; }
+
+.badgePick {
+  display: flex; gap: 10px; padding: 0 16px 14px;
+}
+.pickOne {
+  width: 46px; height: 46px; border-radius: 50%;
+  background: #fff; border: 2px solid #ECEEF1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0;
+}
+.pickOne.on { border-color: #F5A623; }
+.pickOne img { width: 28px; height: 28px; object-fit: contain; }
+.pickLevel { font-size: 15px; font-weight: 700; color: #6B7280; }
+.pickOne.on .pickLevel { color: #F5A623; }
+
+.recentRow {
+  display: flex; align-items: center; gap: 8px;
+  background: #fff; margin: 0 12px 8px;
+  border: 1px solid #ECEEF1; border-radius: 12px;
+  padding: 11px 13px; font-size: 13px;
+}
+.recentStar { color: #F5A623; font-size: 13px; flex-shrink: 0; }
+.recentRow img { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
+.recentName {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.recentName.right { text-align: right; }
+.recentScore { font-weight: 700; flex-shrink: 0; }
+
+/* A club crest reads far better on white than on gold, so the
+   gold moves out to a ring around it. */
+.level.hasCrest {
+  background: #FFFFFF; padding: 3px;
+  border: 2px solid #F5A623;
+  box-shadow: 0 0 0 1px rgba(11,30,61,0.35);
+}
+.level.hasCrest img { width: 100%; height: 100%; object-fit: contain; }
+
+/* Settings */
+  .setRow {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 14px; padding: 13px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .setTap { cursor: pointer; }
+  .setTap:active { background: #F4F4F2; }
+  .setLabel { font-size: 14px; }
+  .setRight {
+    font-size: 13px; color: #888; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 60%;
+  }
+  .setNote {
+    padding: 10px 16px 14px; font-size: 12px;
+    color: #888; line-height: 1.5; background: #F4F4F2;
+  }
+  .setDanger .setLabel { color: #C0392B; font-weight: 600; }
+
+  /* Weekly league table */
+  .leagueTime { float: right; color: #999; font-weight: 400; text-transform: none; }
+  .movedBox {
+    padding: 10px 16px; font-size: 13px; font-weight: 600;
+  }
+  .movedBox.up { background: #EAF3DE; color: #27500A; }
+  .movedBox.down { background: #FCEBEB; color: #791F1F; }
+  .lgRow {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid #F0F0EC;
+    border-left: 3px solid transparent;
+  }
+  .lgRow.up { border-left-color: #639922; }
+  .lgRow.down { border-left-color: #E24B4A; }
+  .lgYou { background: #E6F1FB; }
+  .lgYou .lgName { font-weight: 700; }
+  .lgPos { width: 22px; font-size: 13px; color: #888; }
+  .lgName {
+    flex: 1; min-width: 0; font-size: 14px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .lgXp { font-size: 14px; font-weight: 600; }
+  .lgKey {
+    display: flex; gap: 16px; padding: 9px 16px;
+    background: #F4F4F2; font-size: 11px; color: #777;
+  }
+  .lgKey i {
+    display: inline-block; width: 9px; height: 3px;
+    margin-right: 5px; vertical-align: middle;
+  }
+  .upDot { background: #639922; }
+  .downDot { background: #E24B4A; }
+  .nameRow {
+    display: flex; gap: 8px; padding: 12px 16px;
+    border-top: 1px solid #E8E8E4;
+  }
+  .nameField {
+    flex: 1; min-width: 0; padding: 9px 11px;
+    border: 1px solid #DDD; border-radius: 8px;
+    font-size: 14px; outline: none;
+  }
+  .nameNote {
+    padding: 0 16px 12px; font-size: 11.5px;
+    color: #6B7280; line-height: 1.5;
+  }
+  .nameLocked { padding: 12px 16px 14px; border-top: 1px solid #ECEEF1; }
+  .nameLockedTop {
+    display: flex; align-items: center; gap: 9px; margin-bottom: 6px;
+  }
+  .nameLockedWho { font-size: 15px; font-weight: 600; }
+  .nameLockedTag {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+    padding: 3px 8px; border-radius: 8px;
+    background: #F1EFE8; color: #854F0B;
+  }
+  .nameLocked .nameNote { padding: 0 0 10px; }
+  .nameBtn {
+    background: #185FA5; color: #fff; border: none;
+    padding: 9px 18px; border-radius: 8px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+
+  /* Account panel */
+  .acctBox {
+    background: #fff; padding: 16px;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .acctHead { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .acctNote { font-size: 12px; color: #777; line-height: 1.5; margin-bottom: 12px; }
+  .acctField {
+    width: 100%; padding: 11px 12px; margin-bottom: 8px;
+    border: 1px solid #DDD; border-radius: 8px;
+    font-size: 15px; outline: none; background: #FAFAF8;
+  }
+  .acctField:focus { border-color: #185FA5; background: #fff; }
+  .acctButtons { display: flex; gap: 8px; margin-top: 4px; }
+  .acctBtn {
+    flex: 1; padding: 11px; border-radius: 8px; border: none;
+    background: #185FA5; color: #fff;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  .acctBtn.ghost {
+    background: #fff; color: #185FA5; border: 1px solid #185FA5;
+  }
+  .acctMsg { font-size: 12px; color: #777; margin-top: 10px; min-height: 16px; }
+  .acctMsg.bad { color: #C0392B; }
+  .acctIn { display: flex; align-items: center; gap: 10px; }
+  .acctTick {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: #639922; color: #fff; font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .acctWho {
+    flex: 1; min-width: 0; font-size: 14px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .acctOut {
+    background: none; border: none; color: #185FA5;
+    font-size: 13px; cursor: pointer; flex-shrink: 0;
+  }
+
+  /* XP League screen */
+  .profCard { background: #185FA5; padding: 16px; color: #fff; }
+  .profTop { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  .profRing {
+    width: 58px; height: 58px; border-radius: 50%;
+    background: #EF9F27; color: #412402; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700;
+  }
+  .profWho { min-width: 0; }
+  .profDiv { font-size: 19px; font-weight: 600; }
+  .profSub { font-size: 12px; color: #B5D4F4; margin-top: 2px; }
+  .profBar {
+    height: 6px; background: #042C53; border-radius: 3px;
+    overflow: hidden; margin-bottom: 6px;
+  }
+  .profFill { height: 100%; background: #EF9F27; }
+  .profBarText { font-size: 11px; color: #B5D4F4; margin-bottom: 14px; }
+  .profStats { display: flex; gap: 8px; }
+  .profStats > div {
+    flex: 1; background: #042C53; border-radius: 8px;
+    padding: 9px 6px; text-align: center;
+  }
+  .profStats b { display: block; font-size: 17px; }
+  .profStats span { font-size: 10px; color: #85B7EB; }
+  .boostFlag {
+    margin-top: 10px; padding: 7px; border-radius: 8px;
+    background: #EF9F27; color: #412402;
+    font-size: 12px; font-weight: 600; text-align: center;
+  }
+
+  .spinBox {
+    background: #fff; padding: 16px; text-align: center;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .spinHead { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .spinSub { font-size: 12px; color: #777; margin-bottom: 12px; }
+  .spinDone { font-size: 12px; color: #999; }
+  .spinWon {
+    font-size: 18px; font-weight: 700; color: #BA7517;
+    margin: 8px 0 10px;
+  }
+  .spinBtn {
+    background: #EF9F27; color: #412402; border: none;
+    padding: 11px 34px; border-radius: 22px;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    min-width: 150px;
+  }
+  .spinBtn:disabled { background: #F1DDBE; cursor: default; }
+
+  .listBox { background: #fff; border-bottom: 1px solid #E8E8E4; }
+  .boxHead {
+    padding: 11px 16px 9px; font-size: 11px; color: #888;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+    background: #F4F4F2;
+  }
+  .earnRow {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 16px; border-bottom: 1px solid #F0F0EC;
+  }
+  .earnLabel { flex: 1; font-size: 14px; }
+  .earnCap { font-size: 12px; color: #999; }
+  .earnXp { font-size: 13px; font-weight: 600; color: #BA7517; width: 38px; text-align: right; }
+  .earnDone .earnLabel, .earnDone .earnXp { color: #BBB; }
+  .earnDone .earnCap { color: #639922; }
+
+  .rung {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid #F0F0EC;
+  }
+  .rungNum {
+    width: 22px; font-size: 12px; color: #AAA; text-align: center;
+  }
+  .rungName { flex: 1; font-size: 14px; }
+  .rungReq { font-size: 11px; color: #999; }
+  .rungNow { background: #FFF8EA; }
+  .rungNow .rungName { font-weight: 700; color: #BA7517; }
+  .rungLocked .rungName, .rungLocked .rungNum { color: #C4C4BE; }
+
+  /* Challenges */
+  .chGroup {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 12px 16px 9px; background: #F4F4F2;
+    border-top: 1px solid #E8E8E4;
+  }
+  .chTitle {
+    font-size: 12px; font-weight: 700; color: #444;
+    text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .chNote { font-size: 11px; color: #999; }
+  .chRow {
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .chTop {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin-bottom: 8px;
+  }
+  .chText { font-size: 14px; flex: 1; min-width: 0; }
+  .chXp { font-size: 13px; font-weight: 600; color: #BA7517; flex-shrink: 0; }
+  .chBar {
+    height: 6px; background: #EDEDE9; border-radius: 3px;
+    overflow: hidden; margin-bottom: 7px;
+  }
+  .chFill { height: 100%; background: #185FA5; }
+  .chBottom {
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .chCount { font-size: 11px; color: #888; }
+  .chTodo { font-size: 11px; color: #AAA; }
+  .chDone { font-size: 11px; color: #639922; font-weight: 600; }
+  .chClaim {
+    background: #EF9F27; color: #412402; border: none;
+    padding: 5px 16px; border-radius: 14px;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .chTaken { opacity: 0.55; }
+  .chTaken .chFill { background: #639922; }
+
+  /* Games the person is following */
+  .followRow {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4; cursor: pointer;
+  }
+  .fWhen { width: 52px; flex-shrink: 0; font-size: 11px; color: #888; }
+  .fWhen.liveNow { color: #BA7517; font-weight: 600; }
+  .fTeams { flex: 1; min-width: 0; }
+  .fLine {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 5px;
+  }
+  .fLine:last-child { margin-bottom: 0; }
+  .fLine img { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
+  .fName {
+    flex: 1; min-width: 0; font-size: 14px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fScore { font-size: 14px; font-weight: 600; flex-shrink: 0; }
+
+  /* Live matches, three across */
+  .liveCount {
+    display: inline-block; margin-left: 6px; padding: 1px 7px;
+    border-radius: 8px; background: #FAEEDA; color: #854F0B;
+    font-size: 10px;
+  }
+  .liveGrid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 7px; padding: 0 14px 16px;
+  }
+  .liveCard {
+    background: #fff; border: 1px solid #E4E4E0;
+    border-radius: 10px; padding: 7px 7px 8px; cursor: pointer;
+  }
+  .liveCard:active { background: #F4F4F2; }
+  .lcTop {
+    font-size: 10px; color: #BA7517; font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .lcSide {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 6px; margin-bottom: 4px;
+  }
+  .lcSide:last-child { margin-bottom: 0; }
+  .lcSide img { width: 16px; height: 16px; object-fit: contain; flex-shrink: 0; }
+  .lcTag {
+    flex: 1; min-width: 0; font-size: 11px; color: #555;
+    letter-spacing: 0.3px;
+  }
+  .lcScore { font-size: 14px; font-weight: 600; flex-shrink: 0; }
+
+  .homeCols { display: flex; gap: 1px; background: #E8E8E4; }
+  .homeCol { flex: 1; min-width: 0; background: #F4F4F2; }
+  .colHead {
+    padding: 9px 12px; background: #185FA5; color: #fff;
+    font-size: 12px; font-weight: 600; text-align: center;
+  }
+  .miniMatch {
+    background: #fff; padding: 10px 12px;
+    border-bottom: 1px solid #E8E8E4;
+  }
+  .miniTop {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px; gap: 6px;
+  }
+  .miniWhen { font-size: 11px; color: #777; }
+  .miniWhen.liveNow { color: #BA7517; font-weight: 600; }
+  .miniBell { font-size: 14px; }
+  .miniTeam {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 13px; margin-bottom: 4px;
+  }
+  .miniTeam:last-child { margin-bottom: 0; }
+  .miniTeam img { width: 16px; height: 16px; object-fit: contain; flex-shrink: 0; }
+  .miniTeam span {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .colEmpty { padding: 24px 12px; text-align: center; font-size: 12px; color: #888; }
+
+  /* Favourites drill-down */
+  .crumbs {
+    display: flex; align-items: center; gap: 6px;
+    padding: 10px 16px; background: #E8E8E4;
+    font-size: 12px; color: #555;
+  }
+  .crumb { cursor: pointer; color: #185FA5; }
+  .pickRow {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: #fff;
+    border-bottom: 1px solid #E8E8E4; cursor: pointer;
+  }
+  .pickRow img { width: 22px; height: 22px; object-fit: contain; flex-shrink: 0; }
+  .pickRow .pname { flex: 1; font-size: 14px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pickRow .chev { font-size: 12px; color: #bbb; }
+
+  /* Filter strip on the fixtures screen */
+  .filterBar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 16px; background: #E8E8E4;
+    font-size: 13px; flex-wrap: wrap;
+  }
+  .chips { display: flex; gap: 6px; width: 100%; }
+  .chip {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    gap: 5px; padding: 7px 6px; border-radius: 16px;
+    background: #fff; border: 1px solid #D5D5D0;
+    font-size: 12px; color: #555; cursor: pointer;
+    user-select: none; white-space: nowrap;
+  }
+  .chip.on { background: #185FA5; border-color: #185FA5; color: #fff; }
+  .chip .cIcon { font-size: 13px; }
+  .chip .cCount {
+    font-size: 10px; opacity: 0.75;
+  }
+  .filterBtn {
+    background: #185FA5; color: #fff; border: none;
+    padding: 6px 12px; border-radius: 14px;
+    font-size: 12px; cursor: pointer;
+  }
+  .filterNote { flex: 1; color: #555; font-size: 12px; }
+  .filterClear { color: #B33; font-size: 12px; cursor: pointer; }
+
+/* =============================================================
+   THE LOOK
+   Dark navy chrome, light grey page, white cards.
+   ============================================================= */
+html { background: #0B1E3D; }
+body {
+  background: #F5F6F8; color: #111827;
+  /* Clear of the home bar at the bottom of newer phones. */
+  padding-bottom: calc(86px + env(safe-area-inset-bottom, 0px));
+}
+
+.header {
+  background: #0B1E3D;
+  /* The top padding leaves the clock and battery their own space. */
+  padding: calc(14px + env(safe-area-inset-top, 0px)) 16px 0;
+}
+.headerTop { margin-bottom: 12px; }
+.brand { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.brandBolt { font-size: 17px; line-height: 1; }
+.brandName {
+  font-size: 19px; font-weight: 700; color: #fff;
+  letter-spacing: -0.3px; white-space: nowrap;
+}
+.brandName span { color: #F5A623; }
+.burger { color: #fff; }
+.cog { color: #8FA6C4; }
+.coins { background: #16305A; color: #FFC24A; }
+.level { background: #F5A623; color: #3A2400; font-weight: 700; }
+
+.xpRow { justify-content: flex-start; gap: 10px; padding-bottom: 14px; }
+.xpTrack { flex: 1; width: auto; height: 6px; background: #16305A; border-radius: 3px; }
+.xpFill { background: #F5A623; }
+.xpText { font-size: 11px; color: #8FA6C4; order: 2; }
+.xpRow::before {
+  content: "Level"; font-size: 11px; color: #F5A623;
+  font-weight: 600; flex-shrink: 0;
+}
+
+.ticker {
+  height: auto; margin: 0 0 12px; flex: none; width: 100%;
+  padding: 8px 12px; background: #16305A; border-radius: 10px;
+}
+.tickerLine { font-size: 14px; gap: 8px; justify-content: center; }
+.tickerLine img { width: 18px; height: 18px; }
+.tickerLine .nm { max-width: none; }
+.tickerLine .sc {
+  padding: 0 6px; font-size: 15px;
+}
+.tickerLine .mn { color: #4ADE80; font-weight: 600; }
+.tickerQuiet { display: block; text-align: center; }
+
+.dates { border-top: 1px solid #16305A; }
+.dateBtn { color: #8FA6C4; border-radius: 8px 8px 0 0; }
+.dateBtn.on { color: #fff; background: #1E6FD9; border-bottom-color: transparent; }
+
+/* ---- Cards instead of flat rows ---- */
+.updated { color: #6B7280; font-size: 12px; }
+
+.leagueRow, .countryRow {
+  background: transparent; padding: 14px 16px 8px;
+  font-size: 12px; color: #374151; font-weight: 600;
+}
+
+.match {
+  background: #fff; margin: 0 12px 8px; border-radius: 12px;
+  border: 1px solid #ECEEF1; border-bottom: 1px solid #ECEEF1;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.when { color: #16A34A; font-weight: 600; }
+.when.grey { color: #9CA3AF; }
+.crest { width: 20px; height: 20px; }
+.teamName { font-size: 14px; }
+.goals { font-size: 15px; }
+
+/* ---- Filter chips ---- */
+.filterBar { background: transparent; padding: 12px 12px 6px; }
+.chips { gap: 7px; }
+.chip {
+  background: #fff; border: 1px solid #E5E7EB; color: #4B5563;
+  border-radius: 18px; padding: 8px 4px; font-weight: 500;
+}
+.chip.on { background: #1E6FD9; border-color: #1E6FD9; color: #fff; }
+.chip[data-state="live"].on { background: #16A34A; border-color: #16A34A; }
+.chip[data-state="finished"].on { background: #6B7280; border-color: #6B7280; }
+.chip .cCount { opacity: 0.8; }
+.filterBtn { background: #1E6FD9; border-radius: 18px; }
+
+/* ---- Home board ---- */
+.board { background: transparent; border: none; }
+.boardHead {
+  padding: 16px 16px 10px; color: #6B7280;
+  font-size: 11px; letter-spacing: 0.5px;
+}
+.slotRow { gap: 9px; padding: 0 12px 8px; }
+.slot {
+  aspect-ratio: auto; height: auto; border-radius: 12px;
+  background: #fff; border: 1px solid #ECEEF1;
+  flex-direction: column; gap: 5px; padding: 10px 4px 8px;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.slot img { width: 30px; height: 30px; }
+.slotName {
+  font-size: 9px; color: #4B5563; text-align: center;
+  width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; line-height: 1.2;
+}
+.slotEmpty {
+  border: 1.5px dashed #D1D5DB; background: transparent;
+  box-shadow: none; min-height: 62px; justify-content: center;
+}
+
+.upRow {
+  background: #fff; margin: 0 12px 8px; border-radius: 12px;
+  border: 1px solid #ECEEF1; box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+  padding: 12px 14px;
+}
+.followRow, .liveCard {
+  background: #fff; border-radius: 12px; border: 1px solid #ECEEF1;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.followRow { margin: 0 12px 8px; }
+.liveCount { background: #DCFCE7; color: #166534; }
+.lcTop { color: #16A34A; }
+
+/* ---- Bottom bar ---- */
+.nav {
+  background: #0B1E3D; border-top: none;
+  padding: 12px 0 calc(14px + env(safe-area-inset-bottom, 0px));
+}
+.navItem { color: #7C93B4; font-size: 11px; }
+.navIcon { font-size: 20px; margin-bottom: 4px; }
+.navItem.on { color: #F5A623; }
+.navHomeBall {
+  width: 58px; height: 58px; font-size: 28px;
+  margin: -28px auto 3px;
+  background: #1E6FD9; border: 5px solid #0B1E3D;
+  box-shadow: 0 0 0 3px rgba(30,111,217,0.25);
+}
+.navHomeLabel { font-size: 11px; }
+.navHome.on .navHomeBall { background: #1E6FD9; }
+.navHomeLabel { color: #7C93B4; }
+.navHome.on .navHomeLabel { color: #fff; }
+
+/* ---- Match centre ---- */
+.matchHead, .leagueHead { background: #0B1E3D; }
+.bigScore .clock { color: #4ADE80; }
+.tabs { background: #fff; }
+.tab.on { color: #1E6FD9; border-bottom-color: #1E6FD9; }
+.lTab.on { color: #F5A623; border-bottom-color: #F5A623; }
+.commRow, .event, .statBox, .vizBox { border-bottom-color: #ECEEF1; }
+
+/* ---- Tables ---- */
+.tableHead, .statHead { background: #F0F1F4; color: #6B7280; }
+.tableRow, .statRow { border-bottom-color: #ECEEF1; }
+.tableRow.meRow { background: #EFF6FF; }
+
+/* ---- Challenges as cards ---- */
+.chGroup { background: transparent; border-top: none; padding: 18px 16px 8px; }
+.chTitle { color: #374151; }
+.chRow {
+  background: #fff; margin: 0 12px 9px; border-radius: 12px;
+  border: 1px solid #ECEEF1; border-bottom: 1px solid #ECEEF1;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+  display: flex; gap: 12px; align-items: flex-start;
+}
+.chIcon {
+  width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; background: #EFF6FF;
+}
+.chBody { flex: 1; min-width: 0; }
+.chXp { color: #F5A623; }
+.chFill { background: #1E6FD9; }
+.chTaken .chFill { background: #16A34A; }
+.chDone { color: #16A34A; }
+.chClaim { background: #F5A623; color: #3A2400; }
+
+/* ---- XP screen ---- */
+.acctBox { border-bottom: 1px solid #ECEEF1; }
+.profCard {
+  background: #0B1E3D; margin: 12px; border-radius: 14px;
+  padding: 18px;
+}
+.profRing { background: #F5A623; }
+.profStats > div { background: #16305A; border-radius: 10px; }
+.profStats span { color: #8FA6C4; }
+
+.spinBox {
+  background: #fff; margin: 0 12px 12px; border-radius: 14px;
+  border: 1px solid #ECEEF1; border-bottom: 1px solid #ECEEF1;
+  display: flex; align-items: center; gap: 16px; text-align: left;
+}
+.spinWheel { width: 92px; height: 92px; flex-shrink: 0; }
+.spinRight { flex: 1; min-width: 0; }
+.spinHead { font-size: 16px; }
+.spinBtn { background: #F5A623; color: #3A2400; min-width: 0; padding: 10px 22px; }
+
+.listBox { background: transparent; }
+.boxHead { background: transparent; color: #6B7280; padding: 16px 16px 8px; }
+.earnRow, .rung {
+  background: #fff; border-bottom: 1px solid #ECEEF1;
+}
+.earnXp { color: #F5A623; }
+.earnIcon {
+  width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; background: #EFF6FF;
+}
+
+.lgRow { background: #fff; border-bottom: 1px solid #ECEEF1; }
+.lgAvatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: #E5E7EB; color: #6B7280; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px;
+}
+.lgYou { background: #EFF6FF; }
+.lgYou .lgName { color: #1E6FD9; }
+
+/* Scores to chase, drawn quieter than real players so the two are
+   never mistaken for one another. */
+.lgPace .lgName, .lgPace .lgXp { color: #6B7280; }
+.lgPace .lgAvatar { background: #F0F1F4; color: #9CA3AF; }
+.lgPaceTag {
+  font-size: 9px; letter-spacing: 0.4px; text-transform: uppercase;
+  color: #6B7280; background: #F0F1F4; border-radius: 8px;
+  padding: 2px 7px; flex-shrink: 0; margin-right: 8px;
+}
+.lgPaceNote {
+  padding: 10px 16px 14px; font-size: 11.5px;
+  color: #6B7280; line-height: 1.5;
+}
+.lgPaceNote b { color: #374151; font-weight: 600; }
+.setRow { border-bottom-color: #ECEEF1; }
+
+.startupError {
+  display: none; margin: 60px 16px; padding: 18px;
+  background: #FEF3C7; border-radius: 14px;
+  color: #92400E; font-size: 14px; line-height: 1.5;
+}
+.startupWhat {
+  margin: 10px 0 14px; font-family: ui-monospace, monospace;
+  font-size: 12px; word-break: break-word;
+}
+#startupReset {
+  width: 100%; padding: 12px; border: none; border-radius: 10px;
+  background: #92400E; color: #fff; font-size: 14px; cursor: pointer;
+}
+
+/* =============================================================
+   CHROME THAT FOLLOWS YOU DOWN THE PAGE
+   Only one of these three is ever on screen at a time, so they
+   can all sit at the top.
+   ============================================================= */
+#mainHeader, #matchHead, #leagueHead {
+  position: sticky; top: 0; z-index: 35;
+}
+#matchHead:empty, #leagueHead:empty { display: none; }
+
+/* The badge in the corner of the bar. */
+.brandLogo {
+  width: 27px; height: 27px; border-radius: 50%;
+  object-fit: contain; flex-shrink: 0; display: block;
+}
+.brand { gap: 8px; }
+
+/* Live, News and Following, sitting under the bar on Home. */
+.subTabs {
+  display: flex; align-items: stretch;
+  border-top: 1px solid #16305A;
+}
+.subTab {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  gap: 6px; padding: 11px 4px 9px;
+  font-size: 13px; color: #8FA6C4; cursor: pointer;
+  user-select: none; border-bottom: 2px solid transparent;
+}
+.subTab.on { color: #fff; border-bottom-color: #F5A623; }
+.subIcon {
+  height: 15px; width: auto; flex-shrink: 0;
+  fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+.subTab[data-sub="following"] .subIcon { fill: none; }
+.subTab[data-sub="following"].on .subIcon { fill: #F5A623; stroke: #F5A623; }
+
+/* The way back out of a tab. The empty twin on the right is there
+   so the middle tab sits in the actual middle. */
+.subBack {
+  flex: 0 0 34px; display: flex;
+  align-items: center; justify-content: center;
+  font-size: 19px; color: #8FA6C4;
+  cursor: pointer; user-select: none;
+  padding-bottom: 2px;
+}
+.subBack:active { color: #fff; }
+.subSpacer { pointer-events: none; }
+.subTabs .subTab span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Kick-off times now carry the day above them. */
+.when {
+  width: 60px; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  line-height: 1.2;
+}
+.whenDate {
+  font-size: 10px; color: #9CA3AF;
+  font-weight: 500; white-space: nowrap;
+}
+.whenMain { font-size: 12.5px; font-weight: 600; color: inherit; }
+
+/* Team names on the match screen go somewhere now. */
+.side.tappable { cursor: pointer; }
+.side.tappable div { text-decoration: underline; text-decoration-color: rgba(255,255,255,0.35); text-underline-offset: 3px; }
+.side.tappable:active { opacity: 0.7; }
+
+/* News */
+.newsRow {
+  display: flex; align-items: flex-start; gap: 12px;
+  background: #fff; margin: 0 12px 8px; padding: 12px 14px;
+  border: 1px solid #ECEEF1; border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+  cursor: pointer; text-decoration: none; color: inherit;
+}
+.newsThumb {
+  width: 62px; height: 62px; border-radius: 8px;
+  object-fit: cover; flex-shrink: 0; background: #F0F1F4;
+}
+.newsBody { flex: 1; min-width: 0; }
+.newsTitle { font-size: 14px; line-height: 1.35; color: #111827; }
+.newsMeta { font-size: 11px; color: #6B7280; margin-top: 6px; }
+/* =============================================================
+   THE FEATURED MATCH
+   Sits at the top of Home, laid out the way the match centre
+   lays a game out.
+   ============================================================= */
+/* A row of cards that snaps one to a screen, so the live matches
+   swipe like a feed rather than scrolling loosely. */
+.featTrack {
+  display: flex; overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.featTrack::-webkit-scrollbar { display: none; }
+.featureBoxPad { padding: 12px 6px 4px; }
+
+.feature {
+  background: #0B1E3D; color: #fff; cursor: pointer;
+  border-radius: 14px; padding: 14px 14px 12px;
+  box-shadow: 0 2px 10px rgba(11,30,61,0.18);
+}
+
+/* Inside the swipe track it is one card per screen. The gap is a
+   transparent border rather than a margin, so the snap points
+   still land exactly one card apart. */
+.featTrack .feature {
+  flex: 0 0 100%; scroll-snap-align: start;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Stacked down the page it is an ordinary card. */
+.liveStack { padding: 0 12px 4px; }
+.liveStack .feature { margin-bottom: 10px; }
+
+/* The fixtures list: the same card, without the goals. */
+.fixStack { padding: 8px 12px 4px; }
+.fixCard { margin-bottom: 9px; padding: 12px 14px 13px; }
+.fixCard .featTop { margin-bottom: 10px; }
+.fixCard .featSide img { width: 34px; height: 34px; margin-bottom: 6px; }
+.fixCard .featName { font-size: 12px; }
+.fixCard .featNums { font-size: 24px; }
+.fixRight { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
+.fixWhen { font-size: 11.5px; color: #8FA6C4; white-space: nowrap; }
+.fixTime {
+  font-size: 15px; font-weight: 600; color: #C9D6E8;
+  padding: 0 12px; flex-shrink: 0; white-space: nowrap;
+}
+.fixStar {
+  font-size: 15px; color: #3A5B8C;
+  cursor: pointer; user-select: none; line-height: 1;
+}
+.fixStar.on { color: #F5A623; }
+.fixGroup { margin-bottom: 4px; }
+.fixHead {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 4px 9px; cursor: pointer; user-select: none;
+}
+.fixHead img { width: 20px; height: 20px; object-fit: contain; flex-shrink: 0; }
+.fixHeadBlank { width: 20px; flex-shrink: 0; }
+.fixHeadName {
+  flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600;
+  color: #111827;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fixHeadCount {
+  font-size: 11px; color: #6B7280; background: #E8EDF3;
+  border-radius: 9px; padding: 2px 8px; flex-shrink: 0;
+}
+.fixHeadChevron {
+  font-size: 10px; color: #9CA3AF; flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.fixHeadChevron.folded { transform: rotate(180deg); }
+
+/* With the heading naming the competition, the card's own top row
+   only carries the time and the star. */
+.fixCard .featTop { min-height: 16px; }
+
+.fixMore { padding: 4px 12px 18px; text-align: center; }
+.fixMoreBtn {
+  width: 100%; background: #fff; color: #1E6FD9;
+  border: 1px solid #D6E0EE; border-radius: 12px;
+  padding: 13px; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.fixMoreBtn:active { background: #EFF6FF; }
+.fixCount { font-size: 11.5px; color: #9CA3AF; margin-top: 8px; }
+.feature:active { opacity: 0.92; }
+.featTop {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; margin-bottom: 12px;
+}
+.featComp {
+  color: #8FA6C4; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.featClock {
+  color: #4ADE80; font-weight: 700;
+  flex-shrink: 0; margin-left: 10px;
+}
+.featDot {
+  display: inline-block; width: 6px; height: 6px;
+  border-radius: 50%; background: #4ADE80;
+  margin-right: 5px; vertical-align: middle;
+  animation: featPulse 1.6s ease-in-out infinite;
+}
+@keyframes featPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
+
+.featScore { display: flex; align-items: center; }
+.featSide { flex: 1; min-width: 0; text-align: center; }
+.featSide img {
+  width: 42px; height: 42px; object-fit: contain;
+  margin-bottom: 7px;
+}
+.featName {
+  font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.featNums {
+  font-size: 30px; font-weight: 700; letter-spacing: -0.5px;
+  padding: 0 12px; flex-shrink: 0;
+}
+
+/* Room for four scorers a side, held open whether they are there
+   or not. Without this the card grows and shrinks as it cycles
+   and the whole screen jumps under your thumb. */
+.featGoals {
+  display: flex; gap: 10px; align-items: flex-start;
+  margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid #16305A;
+  min-height: 76px;
+}
+.featCol {
+  flex: 1; min-width: 0; font-size: 11.5px;
+  color: #B9C8DC; line-height: 1.65;
+}
+.featCol.right { text-align: right; }
+.featMore { color: #6F86A6; }
+.featCol div {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The goalless and loading states have to stand exactly as tall
+   as a full set of scorers, or the card still jumps. */
+.featQuiet {
+  margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid #16305A;
+  font-size: 11.5px; color: #6F86A6; text-align: center;
+  min-height: 76px;
+  display: flex; align-items: center; justify-content: center;
+}
+.featDots {
+  display: flex; justify-content: center;
+  gap: 5px; margin-top: 12px;
+}
+.featDots i {
+  display: block; width: 5px; height: 5px;
+  border-radius: 50%; background: #2C4570;
+  transition: width 0.2s, background 0.2s;
+}
+.featDots i.on { background: #F5A623; width: 15px; border-radius: 3px; }
+.featDots i { cursor: pointer; }
+
+/* =============================================================
+   THE FIVE-A-SIDE TEAM
+   ============================================================= */
+.profRing { position: relative; }
+.profRing.hasCrest {
+  background: #FFFFFF; padding: 5px;
+  border: 3px solid #F5A623;
+  box-shadow: 0 0 0 1px rgba(11,30,61,0.35);
+}
+.profRing.hasCrest img { width: 100%; height: 100%; object-fit: contain; }
+.profRingTag {
+  position: absolute; right: -4px; bottom: -4px;
+  min-width: 22px; height: 22px; padding: 0 5px;
+  border-radius: 11px; background: #F5A623; color: #3A2400;
+  font-size: 11px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid #0B1E3D;
+}
+.profRing:not(.hasCrest) .profRingTag { display: none; }
+
+.fiveTotal {
+  display: flex; justify-content: space-between; align-items: center;
+  background: #fff; margin: 12px 12px 0;
+  border: 1px solid #ECEEF1; border-radius: 12px; padding: 13px 15px;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.fiveTotalWho { min-width: 0; }
+.fiveTotalRight { text-align: right; flex-shrink: 0; }
+.fiveTotalLabel {
+  font-size: 10px; color: #6B7280; margin-top: 2px;
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.fiveTotalHead { font-size: 15px; font-weight: 600; color: #111827; }
+.fiveTotalSub { font-size: 12px; color: #6B7280; margin-top: 3px; }
+.fiveTotalNum { font-size: 22px; font-weight: 700; color: #1E6FD9; }
+
+.fivePitch {
+  background: #2F6410; margin: 10px 12px 0;
+  border-radius: 14px; padding: 18px 10px;
+}
+.fiveRow {
+  display: flex; justify-content: center;
+  gap: 12px; margin-bottom: 16px;
+}
+.fiveRow:last-child { margin-bottom: 0; }
+.fiveSlot { width: 88px; text-align: center; cursor: pointer; }
+.fiveSlot:active { opacity: 0.75; }
+.fiveShirt {
+  width: 54px; height: 54px; border-radius: 50%;
+  margin: 0 auto 7px; overflow: hidden;
+  background: rgba(255,255,255,0.12);
+  border: 2px dashed rgba(255,255,255,0.55);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; color: rgba(255,255,255,0.85);
+}
+.fiveShirt.filled {
+  background: #fff; border: 2px solid #F5A623;
+  color: #0B1E3D; font-weight: 700;
+}
+.fiveShirt img { width: 100%; height: 100%; object-fit: cover; }
+.fivePos {
+  font-size: 9.5px; color: #C9E3A8;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.fiveWho {
+  font-size: 11px; color: #fff; margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.fiveStrip {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 7px; padding: 0 12px 10px;
+}
+.fiveMini { text-align: center; cursor: pointer; }
+.fiveMiniDisc {
+  width: 100%; aspect-ratio: 1; border-radius: 50%;
+  background: #fff; border: 1.5px dashed #D1D5DB;
+  display: flex; align-items: center; justify-content: center;
+  color: #C4C4BE; font-size: 15px; overflow: hidden;
+}
+.fiveMiniDisc.filled {
+  border: 2px solid #F5A623; color: #0B1E3D; font-weight: 700;
+}
+.fiveMiniDisc img { width: 100%; height: 100%; object-fit: cover; }
+.fiveMiniPos {
+  font-size: 9px; color: #6B7280; margin-top: 4px;
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+
+.playerRow {
+  display: flex; align-items: center; gap: 11px;
+  background: #fff; padding: 11px 16px;
+  border-bottom: 1px solid #ECEEF1; cursor: pointer;
+}
+.playerRow:active { background: #F5F6F8; }
+.playerTaken { opacity: 0.45; cursor: default; }
+.playerFace {
+  width: 34px; height: 34px; border-radius: 50%;
+  object-fit: cover; flex-shrink: 0; background: #F1EFE8;
+}
+.playerWho { flex: 1; min-width: 0; }
+.playerName {
+  display: block; font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.playerTeam { display: block; font-size: 11.5px; color: #6B7280; margin-top: 2px; }
+.playerPts { font-size: 15px; font-weight: 700; color: #1E6FD9; flex-shrink: 0; }
+.playerTick { width: 16px; color: #16A34A; font-size: 14px; flex-shrink: 0; }
+
+/* =============================================================
+   PREMIER LEAGUE PLAYERS
+   ============================================================= */
+.plHead {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px; background: #F0F1F4;
+  font-size: 11px; color: #6B7280;
+}
+.plPosHead { width: 34px; flex-shrink: 0; }
+.plFaceHead { width: 36px; flex-shrink: 0; }
+
+.plRow {
+  display: flex; align-items: center; gap: 10px;
+  background: #fff; padding: 10px 14px;
+  border-bottom: 1px solid #ECEEF1; cursor: pointer;
+}
+.plRow:active { background: #F5F6F8; }
+.plPos {
+  width: 34px; flex-shrink: 0; text-align: center;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+  padding: 4px 0; border-radius: 5px;
+  background: #EFF6FF; color: #1E6FD9;
+}
+.plPos.gk  { background: #FEF3C7; color: #92400E; }
+.plPos.def { background: #DCFCE7; color: #166534; }
+.plPos.mid { background: #EFF6FF; color: #1E6FD9; }
+.plPos.st  { background: #FCE7F3; color: #9D174D; }
+.plFace {
+  width: 36px; height: 36px; border-radius: 50%;
+  object-fit: cover; background: #F0F1F4; flex-shrink: 0;
+  display: block;
+}
+.plWho { flex: 1; min-width: 0; }
+.plName {
+  display: block; font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.plTeam { display: block; font-size: 11px; color: #6B7280; margin-top: 2px; }
+.plNum {
+  width: 46px; flex-shrink: 0; text-align: right;
+  font-size: 13px; color: #6B7280;
+}
+.plNum.total { font-weight: 700; color: #111827; }
+
+.plHero {
+  background: #0B1E3D; color: #fff; margin: 12px;
+  border-radius: 14px; padding: 18px;
+  display: flex; align-items: center; gap: 16px;
+}
+.plHeroFace {
+  width: 76px; height: 76px; border-radius: 50%;
+  object-fit: cover; background: #16305A; flex-shrink: 0;
+  border: 3px solid #F5A623; display: block;
+}
+.plHeroWho { min-width: 0; }
+.plHeroName { display: block; font-size: 19px; font-weight: 600; }
+.plHeroTeam {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12.5px; color: #8FA6C4; margin-top: 6px;
+}
+.plHeroTeam img { width: 18px; height: 18px; object-fit: contain; }
+.plHeroPos {
+  display: inline-block; margin-top: 9px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+  padding: 3px 10px; border-radius: 9px;
+  background: #F5A623; color: #3A2400;
+}
+.plNews {
+  margin: 0 12px 12px; padding: 11px 14px;
+  background: #FEF3C7; border-radius: 10px;
+  font-size: 12.5px; color: #92400E; line-height: 1.5;
+}
+
+/* Value column, and the budget. */
+.plValue { width: 52px; color: #1E6FD9; font-weight: 600; }
+.plHead .plValue { color: #6B7280; font-weight: 400; }
+.plRow, .plHead { gap: 8px; padding-left: 12px; padding-right: 12px; }
+.plNum { width: 38px; font-size: 12.5px; }
+.plPos { width: 30px; }
+.plPosHead { width: 30px; }
+.plFace, .plFaceHead { width: 32px; }
+.plFace { height: 32px; }
+
+.budgetBar {
+  margin: 10px 12px 0; padding: 12px 14px;
+  background: #fff; border: 1px solid #ECEEF1; border-radius: 12px;
+}
+.budgetTop {
+  display: flex; align-items: baseline; gap: 6px; margin-bottom: 8px;
+}
+.budgetSpent { font-size: 17px; font-weight: 700; color: #111827; }
+.budgetCap { font-size: 12px; color: #6B7280; }
+.budgetTrack {
+  height: 6px; border-radius: 3px;
+  background: #EDEDE9; overflow: hidden;
+}
+.budgetFill { height: 100%; background: #16A34A; }
+.budgetLeft { font-size: 11.5px; color: #6B7280; margin-top: 7px; line-height: 1.5; }
+.budgetOver .budgetFill { background: #E24B4A; }
+.budgetOver .budgetSpent { color: #C0392B; }
+
+.chooserBudget {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 10px; padding: 10px 16px; background: #F0F1F4;
+  font-size: 12px; color: #374151;
+}
+.chooserMax { color: #6B7280; }
+.chooserOver { background: #FEE2E2; color: #7F1D1D; }
+.chooserOver .chooserMax { color: #991B1B; }
+.playerCost {
+  font-size: 12.5px; color: #6B7280; flex-shrink: 0;
+  width: 50px; text-align: right;
+}
+.playerPts { width: 34px; text-align: right; }
+
+/* The minus badge, and the rule banner. */
+.fiveSlot { position: relative; }
+.fiveMinus {
+  position: absolute; top: -4px; right: 12px; z-index: 2;
+  width: 23px; height: 23px; border-radius: 50%;
+  background: #E24B4A; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; font-weight: 700; line-height: 1;
+  border: 2px solid #2F6410; cursor: pointer;
+}
+.fiveMinus.off { background: #7C93B4; border-color: #2F6410; opacity: 0.6; }
+.fiveCost { font-size: 10px; color: #C9E3A8; margin-top: 2px; }
+
+.fiveMini { position: relative; }
+.fiveMiniMinus {
+  position: absolute; top: -5px; right: -3px; z-index: 2;
+  width: 19px; height: 19px; border-radius: 50%;
+  background: #E24B4A; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; line-height: 1;
+  border: 2px solid #F5F6F8; cursor: pointer;
+}
+.fiveMiniMinus.off { background: #B8C2CF; opacity: 0.75; }
+
+.lockShut .lockDot { background: #E24B4A; }
+
+.chooserShut {
+  margin: 0 12px 10px; padding: 12px 14px;
+  background: #FEF3C7; border-radius: 12px;
+}
+.chooserShutHead { font-size: 13.5px; font-weight: 600; color: #92400E; }
+.chooserShutNote {
+  font-size: 12px; color: #92400E;
+  margin-top: 5px; line-height: 1.5; opacity: 0.85;
+}
+
+/* The Wednesday lock. */
+.lockBar {
+  margin: 8px 12px 0; padding: 12px 14px;
+  background: #fff; border: 1px solid #ECEEF1;
+  border-radius: 12px;
+}
+.lockLine {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: #111827;
+}
+.lockDot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #16A34A; flex-shrink: 0;
+}
+.lockPaid { font-size: 11.5px; color: #6B7280; margin-top: 7px; }
+
+/* =============================================================
+   MATCH FACTS AND NEWS
+   ============================================================= */
+.tabsUnder { border-bottom: 1px solid #E3E6EA; }
+
+.factBox {
+  background: #fff; margin: 0 12px 10px;
+  border: 1px solid #ECEEF1; border-radius: 12px;
+  padding: 4px 14px; box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.factRow {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 14px; padding: 10px 0; border-bottom: 1px solid #F2F4F6;
+}
+.factRow:last-child { border-bottom: none; }
+.factLabel { font-size: 13px; color: #6B7280; flex-shrink: 0; }
+.factValue { font-size: 13.5px; color: #111827; text-align: right; }
+
+.h2hCounts { display: flex; padding: 14px 0 6px; }
+.h2hSide { flex: 1; text-align: center; min-width: 0; }
+.h2hSide b { display: block; font-size: 24px; font-weight: 700; color: #111827; }
+.h2hSide span {
+  display: block; font-size: 11px; color: #6B7280; margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.h2hNote {
+  font-size: 11px; color: #9CA3AF; text-align: center; padding-bottom: 12px;
+}
+.h2hRow {
+  display: flex; align-items: center; gap: 12px;
+  background: #fff; margin: 0 12px 6px; padding: 10px 14px;
+  border: 1px solid #ECEEF1; border-radius: 10px;
+}
+.h2hWhen { font-size: 11px; color: #9CA3AF; width: 74px; flex-shrink: 0; }
+.h2hGame {
+  flex: 1; min-width: 0; font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.compareRow {
+  display: flex; align-items: center;
+  padding: 9px 0; border-bottom: 1px solid #F2F4F6;
+}
+.compareRow:last-child { border-bottom: none; }
+.compareHead { font-weight: 600; }
+.compareHead .compareHome, .compareHead .compareAway {
+  font-size: 12px; color: #111827;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.compareHome, .compareAway {
+  width: 34%; font-size: 13.5px; color: #111827;
+}
+.compareHome { text-align: left; }
+.compareAway { text-align: right; }
+.compareLabel { flex: 1; text-align: center; font-size: 11.5px; color: #6B7280; }
+
+.formRow { display: inline-flex; gap: 3px; }
+.formPill {
+  width: 17px; height: 17px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.formPill.win { background: #16A34A; }
+.formPill.draw { background: #9CA3AF; }
+.formPill.loss { background: #E24B4A; }
+.formLine {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 11px 0; border-bottom: 1px solid #F2F4F6;
+}
+.formLine:last-child { border-bottom: none; }
+.formWho {
+  font-size: 13.5px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.newsBox {
+  background: #fff; margin: 0 12px 10px; padding: 4px 15px 12px;
+  border: 1px solid #ECEEF1; border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+}
+.newsBox p { font-size: 14px; line-height: 1.55; color: #374151; }
+
+.outSide { padding: 12px 0; border-bottom: 1px solid #F2F4F6; }
+.outSide:last-child { border-bottom: none; }
+.outWho { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.outRow {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; padding: 5px 0;
+}
+.outName { font-size: 13.5px; color: #111827; }
+.outWhy { font-size: 11.5px; color: #92400E; text-align: right; }
+.outNone { font-size: 12.5px; color: #9CA3AF; }
+
+/* Where the XP came from. */
+.splitRow {
+  display: flex; align-items: center; gap: 11px;
+  background: #fff; padding: 11px 16px;
+  border-bottom: 1px solid #ECEEF1;
+}
+.splitBody { flex: 1; min-width: 0; }
+.splitTop {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; margin-bottom: 6px;
+}
+.splitLabel {
+  font-size: 14px; color: #111827; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.splitXp { font-size: 13px; font-weight: 700; color: #F5A623; flex-shrink: 0; }
+.splitBar {
+  display: block; height: 5px; border-radius: 3px;
+  background: #EDEDE9; overflow: hidden;
+}
+.splitFill { display: block; height: 100%; background: #1E6FD9; }
+.splitTotal {
+  display: flex; justify-content: space-between;
+  padding: 12px 16px; background: #fff;
+  font-size: 14px; font-weight: 700; color: #111827;
+  border-top: 1px solid #E3E6EA;
+}
+
+/* Stars on the Coming up rows. */
+.upRow { gap: 10px; }
+.upStar {
+  font-size: 17px; color: #F5A623; flex-shrink: 0;
+  user-select: none; line-height: 1; padding-left: 2px;
+}
+.upStar.off { color: #D8DBE0; }
+.followRow .bell { font-size: 17px; }
+
+/* =============================================================
+   ADVERTS
+   Clearly labelled, set apart from the match cards, and folded
+   away completely if Google has nothing to show.
+   ============================================================= */
+.adBox {
+  margin: 6px 12px 14px; padding: 8px 0 10px;
+  background: #fff; border: 1px solid #ECEEF1; border-radius: 12px;
+  overflow: hidden; min-height: 60px;
+}
+.adLabel {
+  font-size: 9.5px; color: #9CA3AF; letter-spacing: 0.6px;
+  text-transform: uppercase; text-align: center; margin-bottom: 6px;
+}
+.adBox ins.adsbygoogle { display: block; width: 100%; }
+.adBox:has(ins[data-ad-status="unfilled"]) { display: none; }
+.liveStack .adBox, .fixStack .adBox { margin-left: 0; margin-right: 0; }
+.adPreviewSpace {
+  height: 100px; margin: 0 10px; border-radius: 8px;
+  border: 1.5px dashed #D1D5DB; background: #F5F6F8;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: #9CA3AF;
+}
+
+.newsNote {
+  padding: 4px 16px 16px; font-size: 11px;
+  color: #9CA3AF; line-height: 1.5; text-align: center;
+}
+</style>
+</head>
+<body>
+
+<div class="startupError" id="startupError"></div>
+
+<script>
+// Installed before anything else, so a fault in the main script is
+// reported rather than leaving a half-drawn screen and no clue.
+// A silent failure looks exactly like a slow network, which is how
+// this went unexplained for so long.
+(function () {
+  function show(what) {
+    var box = document.getElementById("startupError");
+    if (!box) return;
+    box.style.display = "block";
+    box.innerHTML =
+      '<b>GoalFlash hit a problem starting up</b>' +
+      '<div class="startupWhat">' + String(what).slice(0, 300) + '</div>' +
+      '<button id="startupReset">Clear this device and reload</button>';
+
+    document.getElementById("startupReset").onclick = function () {
+      try { localStorage.clear(); } catch (error) { /* nothing to do */ }
+      // A deliberate wipe: stop the iPhone app's backup putting it
+      // all straight back.
+      try { localStorage.setItem("gfCleared", "1"); } catch (error) { /* nothing */ }
+      try {
+        if (window.ReactNativeWebView) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: "gfClear" }));
+        }
+      } catch (error) { /* nothing to do */ }
+      location.reload();
+    };
+  }
+
+  window.onerror = function (message, source, line) {
+    show(message + "  (line " + line + ")");
+  };
+
+  window.addEventListener("unhandledrejection", function (event) {
+    // Only worth shouting about before the app has drawn.
+    if (window.__started) return;
+    show((event.reason && event.reason.message) || event.reason);
+  });
+})();
+</script>
+
+<div class="shade" id="shade"></div>
+<div class="drawer" id="drawer">
+  <div class="drawerTop">
+    <span>Countries</span>
+    <span class="drawerClose" id="drawerClose">&#10005;</span>
+  </div>
+  <div class="drawerBody" id="drawerBody"></div>
+</div>
+
+<div class="header" id="mainHeader">
+  <div class="headerTop">
+    <div style="display:flex; align-items:center; min-width:0; flex-shrink:0">
+      <span class="burger" id="burger">&#9776;</span>
+      <div class="brand">
+        <img class="brandLogo" id="brandLogo" src="/logo.png" alt="">
+        <span class="brandName">Goal<span>Flash</span></span>
+      </div>
+    </div>
+
+    <div class="badges">
+      <span class="cog" id="cogBtn" style="display:none">&#9881;</span>
+      <div class="coins">&#9679; <span id="coins">0</span></div>
+      <div class="level" id="level">1</div>
+    </div>
+  </div>
+  <div class="ticker" id="ticker">
+    <div class="tickerInner" id="tickerInner">
+      <span class="tickerQuiet">&nbsp;</span>
+    </div>
+  </div>
+  <div class="dates" id="dates" style="display:none"></div>
+  <div id="pickerBox" style="display:none"></div>
+  <div id="searchArea" style="display:none">
+    <div class="searchBox">
+      <span style="color:#888">&#128269;</span>
+      <input id="searchInput" placeholder="Search country or league" autocomplete="off">
+    </div>
+  </div>
+  <div class="subTabs" id="subTabs" style="display:none">
+    <div class="subTab on" data-sub="live">
+      <svg class="subIcon" viewBox="0 0 24 16" aria-hidden="true">
+        <rect x="1" y="1" width="22" height="14" rx="1.5"/>
+        <line x1="12" y1="1" x2="12" y2="15"/>
+        <circle cx="12" cy="8" r="3.2"/>
+        <rect x="1" y="4.5" width="3.5" height="7"/>
+        <rect x="19.5" y="4.5" width="3.5" height="7"/>
+      </svg>
+      <span>Live</span>
+    </div>
+    <div class="subTab" data-sub="news">
+      <svg class="subIcon" viewBox="0 0 20 16" aria-hidden="true">
+        <rect x="1" y="1.5" width="15" height="13" rx="1.5"/>
+        <path d="M16 5h3v7.5a2 2 0 0 1-3 0z"/>
+        <line x1="4" y1="5" x2="13" y2="5"/>
+        <line x1="4" y1="8" x2="13" y2="8"/>
+        <line x1="4" y1="11" x2="10" y2="11"/>
+      </svg>
+      <span>News</span>
+    </div>
+    <div class="subTab" data-sub="following">
+      <svg class="subIcon" viewBox="0 0 18 17" aria-hidden="true">
+        <path d="M9 1.4l2.3 4.7 5.2.75-3.75 3.65.9 5.15L9 13.2l-4.65 2.45.9-5.15L1.5 6.85l5.2-.75z"/>
+      </svg>
+      <span>Following</span>
+    </div>
+  </div>
+  <div class="subTabs" id="xpTabs" style="display:none">
+    <div class="subBack" id="xpBack">&#8592;</div>
+    <div class="subTab" data-xp="five">
+      <svg class="subIcon" viewBox="0 0 20 18" aria-hidden="true">
+        <path d="M7 1.5 3 3.5 1.5 7l3 1.5V16.5h11V8.5l3-1.5L17 3.5 13 1.5a3 3 0 0 1-6 0z"/>
+      </svg>
+      <span>6-a-side</span>
+    </div>
+    <div class="subTab on" data-xp="league">
+      <svg class="subIcon" viewBox="0 0 18 18" aria-hidden="true">
+        <path d="M4.5 1.5h9v5a4.5 4.5 0 0 1-9 0z"/>
+        <path d="M4.5 3h-3v1.5a3 3 0 0 0 3 3"/>
+        <path d="M13.5 3h3v1.5a3 3 0 0 1-3 3"/>
+        <line x1="9" y1="11" x2="9" y2="14"/>
+        <line x1="5.5" y1="16.5" x2="12.5" y2="16.5"/>
+      </svg>
+      <span>League</span>
+    </div>
+    <div class="subTab" data-xp="players">
+      <svg class="subIcon" viewBox="0 0 18 16" aria-hidden="true">
+        <line x1="1.5" y1="14.5" x2="16.5" y2="14.5"/>
+        <rect x="3" y="8" width="3.2" height="6.5"/>
+        <rect x="7.4" y="4" width="3.2" height="10.5"/>
+        <rect x="11.8" y="10" width="3.2" height="4.5"/>
+      </svg>
+      <span>Players</span>
+    </div>
+    <div class="subBack subSpacer" aria-hidden="true"></div>
+  </div>
+</div>
+
+<div id="matchHead"></div>
+<div id="leagueHead"></div>
+<div class="updated" id="updated">Loading...</div>
+<div id="list"></div>
+
+<div class="nav">
+  <div class="navItem" id="navFavourites"><span class="navIcon">&#9733;</span>Favourites</div>
+  <div class="navItem" id="navFixtures"><span class="navIcon">&#128197;</span>Fixtures</div>
+  <div class="navHome on" id="navHome">
+    <div class="navHomeBall">&#9917;</div>
+    <div class="navHomeLabel">Home</div>
+  </div>
+  <div class="navItem" id="navXp"><span class="navIcon">&#9889;</span>XP League</div>
+  <div class="navItem" id="navChallenges"><span class="navIcon">&#127919;</span>Challenges</div>
+</div>
+
+<script>
+const LEAGUES = __LEAGUES__;
 
 // ---------------------------------------------------------------
 // ADVERTS
 //
-// The adverts sit inside the page, between the matches, and are
-// controlled from scores.js. The fixed strip at the bottom of the
-// screen is switched off. Set SHOW_BOTTOM_BANNER to true to bring
-// it back.
+// One advert after every few cards on the long lists. Each one only
+// asks Google for an ad as it comes near the screen, so a long
+// fixtures list does not fire off dozens of requests at once.
 // ---------------------------------------------------------------
-const SHOW_BOTTOM_BANNER = false;
-const USE_TEST_ADS = true;
-const BANNER_UNIT_ID = "";   // ca-app-pub-9305446787515470/xxxxxxxxxx
+const ADS = __ADS__;
 
-const BANNER_ID = USE_TEST_ADS || !BANNER_UNIT_ID
-  ? TestIds.ADAPTIVE_BANNER
-  : BANNER_UNIT_ID;
+function adsOn() {
+  if (!ADS || !ADS.on) return false;
+  if (ADS.preview) return true;
+  return Boolean(ADS.client && ADS.slot);
+}
 
-// ---------------------------------------------------------------
-// THE BACKUP
+function adHtml() {
+  if (!adsOn()) return "";
+  if (ADS.preview) {
+    return '<div class="adBox adPreview">' +
+      '<div class="adLabel">Advertisement</div>' +
+      '<div class="adPreviewSpace">Advert space</div>' +
+    '</div>';
+  }
+  return '<div class="adBox">' +
+    '<div class="adLabel">Advertisement</div>' +
+    '<ins class="adsbygoogle" style="display:block"' +
+      ' data-ad-client="' + ADS.client + '"' +
+      ' data-ad-slot="' + ADS.slot + '"' +
+      ' data-ad-format="auto" data-full-width-responsive="true"></ins>' +
+  '</div>';
+}
+
+// Joins a list of card html with adverts in it: one above the first
+// card, then one after every ADS.every cards - but never as the
+// very last thing in the list.
 //
-// iOS can throw away the web page's saved data on its own, taking
-// XP, clubs, the squad and the anonymous account key with it. So the
-// page sends the app a copy of everything it saves, and the app keeps
-// that copy in its own storage, which iOS does not clear.
-//
-// When the app opens, the copy is handed back to the page before
-// anything on it runs - but only if the page has lost its own data.
-// If the page still has its data, it is left alone. If somebody chose
-// "Clear this device" or deleted their account, the page leaves a
-// marker and the backup is not restored over their fresh start.
-// ---------------------------------------------------------------
-const BACKUP_KEY = "goalflash-backup-v1";
+// A counter can be shared across several calls, so a list drawn in
+// pieces (competitions on the fixtures screen) keeps the spacing
+// even from one piece to the next. "started" says the top advert
+// has already been placed.
+function withAds(cards, counter) {
+  if (!adsOn()) return cards.join("");
+  const tally = counter || { n: 0, started: false };
+  let out = "";
 
-function restoreScript(saved) {
-  // Turned into a safe JavaScript string, so nothing in the saved
-  // data can break out of it.
-  const payload = JSON.stringify(saved || "");
-
-  return "(function () {" +
-    "try {" +
-      "var raw = " + payload + ";" +
-      "if (!raw) return;" +
-      "var snap = JSON.parse(raw);" +
-      "var store = window.localStorage;" +
-      "if (store.getItem('authRefresh') || store.getItem('xp') !== null ||" +
-      "    store.getItem('gfCleared')) return;" +
-      "for (var name in snap) {" +
-        "if (Object.prototype.hasOwnProperty.call(snap, name) && snap[name] !== null) {" +
-          "store.setItem(name, String(snap[name]));" +
-        "}" +
-      "}" +
-      "store.setItem('gfRestored', String(Date.now()));" +
-    "} catch (error) {}" +
-  "})();" +
-  "true;";
-}
-
-function hostOf(url) {
-  const match = String(url || "").match(/^https?:\/\/([^\/?#:]+)/i);
-  return match ? match[1].toLowerCase() : "";
-}
-
-function isOurs(url) {
-  return OUR_HOSTS.indexOf(hostOf(url)) !== -1;
-}
-
-// Consent first (Google's message, only shown in the UK, EU and
-// Switzerland), then Apple's tracking question, then the ads SDK.
-async function prepareAds() {
-  let personalised = false;
-
-  try {
-    await AdsConsent.requestInfoUpdate();
-    await AdsConsent.loadAndShowConsentFormIfRequired();
-  } catch (error) {
-    // No consent message set up in AdMob yet, or offline. Carry on.
+  if (!tally.started && cards.length > 0) {
+    out += adHtml();
+    tally.started = true;
+    tally.n = 0;
   }
 
-  try {
-    if (Platform.OS === "ios") {
-      const result = await requestTrackingPermissionsAsync();
-      personalised = result.status === "granted";
+  for (let i = 0; i < cards.length; i++) {
+    out += cards[i];
+    tally.n++;
+    if (tally.n >= ADS.every && i < cards.length - 1) {
+      out += adHtml();
+      tally.n = 0;
     }
-  } catch (error) {
-    personalised = false;
   }
-
-  try {
-    await mobileAds().initialize();
-  } catch (error) {
-    // Adverts simply will not load. The app itself carries on.
-  }
-
-  return personalised;
+  return out;
 }
 
-export default function App() {
-  const web = useRef(null);
-  const [saved, setSaved] = useState(undefined);   // undefined = still reading
-  const [adsReady, setAdsReady] = useState(false);
-  const [personalised, setPersonalised] = useState(false);
-  const [bannerFailed, setBannerFailed] = useState(false);
+let adWatcher = null;
 
-  // Read the backup before the page is shown, so it can be handed
-  // over before anything on the page runs.
-  useEffect(function () {
-    let cancelled = false;
-    AsyncStorage.getItem(BACKUP_KEY)
-      .then(function (value) { if (!cancelled) setSaved(value || ""); })
-      .catch(function () { if (!cancelled) setSaved(""); });
-    return function () { cancelled = true; };
-  }, []);
+function fillAd(slot) {
+  if (slot.getAttribute("data-gf") === "asked") return;
+  slot.setAttribute("data-gf", "asked");
+  try {
+    (window.adsbygoogle = window.adsbygoogle || []).push({});
+  } catch (error) {
+    // Blocked or not approved yet. The box folds itself away.
+  }
+}
 
-  useEffect(function () {
-    let cancelled = false;
-    prepareAds().then(function (allowed) {
-      if (cancelled) return;
-      setPersonalised(allowed);
-      setAdsReady(true);
-    });
-    return function () { cancelled = true; };
-  }, []);
+// Called after any list is drawn. Finds new advert slots and asks
+// for an ad as each one scrolls near the screen.
+function activateAds(within) {
+  if (!adsOn()) return;
+  const slots = (within || document).querySelectorAll(
+    "ins.adsbygoogle:not([data-gf])");
+  if (slots.length === 0) return;
 
-  // Messages from the page: a fresh copy to keep, or a deliberate
-  // wipe to follow.
-  function handleMessage(event) {
-    let message;
+  if (!("IntersectionObserver" in window)) {
+    for (const slot of slots) fillAd(slot);
+    return;
+  }
+
+  if (!adWatcher) {
+    adWatcher = new IntersectionObserver(function (entries) {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        adWatcher.unobserve(entry.target);
+        fillAd(entry.target);
+      }
+    }, { rootMargin: "300px 0px" });
+  }
+
+  for (const slot of slots) {
+    slot.setAttribute("data-gf", "waiting");
+    adWatcher.observe(slot);
+  }
+}
+
+// ---------------------------------------------------------------
+// STORAGE
+//
+// Two ways the browser's own store can stop this app dead, and both
+// of them look exactly like a freeze on startup:
+//
+//   1. Safari refuses writes in private browsing, and any browser
+//      refuses them when the device is out of space. The throw
+//      lands on a line near the top and nothing below it ever runs.
+//   2. A value half-written during one of those failures throws on
+//      the way back in the next time the app opens - which leaves
+//      it broken until somebody clears their data by hand.
+//
+// So nothing here is allowed to throw. A store that cannot be
+// written to is a nuisance; one that throws is a dead app.
+// ---------------------------------------------------------------
+const inMemory = {};
+let storeUsable = true;
+
+try {
+  localStorage.setItem("__check", "1");
+  localStorage.removeItem("__check");
+} catch (error) {
+  storeUsable = false;
+}
+
+// ---------------------------------------------------------------
+// THE IPHONE APP'S BACKUP
+//
+// iOS can throw away a web page's saved data on its own - and when
+// it does, the anonymous account key goes with it, so everything
+// resets: XP, clubs, squad, the lot. The iPhone app now keeps its
+// own copy of everything saved here, outside the web page, and puts
+// it back if the page's copy ever disappears.
+//
+// On the website none of this does anything.
+// ---------------------------------------------------------------
+const inNativeApp = Boolean(
+  window.ReactNativeWebView && window.ReactNativeWebView.postMessage);
+let nativeBackupTimer = null;
+
+function sendNativeBackup() {
+  nativeBackupTimer = null;
+  if (!inNativeApp) return;
+
+  try {
+    const snapshot = {};
+    if (storeUsable) {
+      for (let at = 0; at < localStorage.length; at++) {
+        const name = localStorage.key(at);
+        if (name && name !== "gfCleared") snapshot[name] = localStorage.getItem(name);
+      }
+    } else {
+      for (const name of Object.keys(inMemory)) snapshot[name] = inMemory[name];
+    }
+    window.ReactNativeWebView.postMessage(
+      JSON.stringify({ type: "gfBackup", data: snapshot }));
+  } catch (error) {
+    // The backup is a safety net. Failing it must never break the app.
+  }
+}
+
+// Saves come in bursts, so wait a moment and send one copy.
+function scheduleNativeBackup() {
+  if (!inNativeApp) return;
+  clearTimeout(nativeBackupTimer);
+  nativeBackupTimer = setTimeout(sendNativeBackup, 800);
+}
+
+const keep = {
+  getItem: function (name) {
     try {
-      message = JSON.parse(event.nativeEvent.data);
+      if (storeUsable) return localStorage.getItem(name);
     } catch (error) {
+      storeUsable = false;
+    }
+    return inMemory[name] === undefined ? null : inMemory[name];
+  },
+
+  setItem: function (name, value) {
+    inMemory[name] = String(value);
+    try {
+      if (storeUsable) localStorage.setItem(name, String(value));
+    } catch (error) {
+      // Out of space, or refused. Carry on in memory for this
+      // session rather than falling over.
+      storeUsable = false;
+    }
+    scheduleNativeBackup();
+  },
+
+  removeItem: function (name) {
+    delete inMemory[name];
+    try {
+      if (storeUsable) localStorage.removeItem(name);
+    } catch (error) {
+      storeUsable = false;
+    }
+    scheduleNativeBackup();
+  },
+
+  // A deliberate wipe - "Clear this device" or deleting the account.
+  // The app's backup is wiped too, and a marker left behind so the
+  // backup is not restored over the top of the fresh start.
+  clear: function () {
+    for (const name of Object.keys(inMemory)) delete inMemory[name];
+    try { localStorage.clear(); } catch (error) { /* nothing to do */ }
+    try { localStorage.setItem("gfCleared", "1"); } catch (error) { /* nothing */ }
+    clearTimeout(nativeBackupTimer);
+    nativeBackupTimer = null;
+    if (inNativeApp) {
+      try {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: "gfClear" }));
+      } catch (error) { /* nothing to do */ }
+    }
+  },
+};
+
+// Reads a saved value. A corrupted one gives back the fallback
+// instead of throwing, so a bad write can never brick the next open.
+function readSaved(name, fallback) {
+  const raw = keep.getItem(name);
+  if (raw === null || raw === undefined) return fallback;
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    console.log("discarding a corrupted saved value: " + name);
+    keep.removeItem(name);
+    return fallback;
+  }
+}
+
+// ---------------------------------------------------------------
+// XP AND COINS
+// ---------------------------------------------------------------
+function load(name, fallback) {
+  const value = keep.getItem(name);
+  return value === null ? fallback : Number(value);
+}
+
+// Declared here rather than beside the sign-in code, because the
+// startup checks below run before that point in the file.
+let authToken = keep.getItem("authToken") || "";
+let authRefresh = keep.getItem("authRefresh") || "";
+
+let xp = load("xp", 0);
+let coins = load("coins", 0);
+let alerts = readSaved("alerts", []);
+
+// ---------------------------------------------------------------
+// WHERE THE XP CAME FROM
+//
+// One running total per source, so the league page can break it
+// down rather than showing a single number nobody can account for.
+// Anything earned before this existed lands in "other" on first
+// run, which keeps the parts adding up to the whole.
+// ---------------------------------------------------------------
+let xpSources = readSaved("xpSources", null);
+if (!xpSources) {
+  xpSources = {
+    challenges: 0, matches: 0, sixaside: 0,
+    spin: 0, favourites: 0, other: xp,
+  };
+}
+
+// The only place XP is ever added. Returns what was given.
+function creditXp(source, amount) {
+  const given = Number(amount) || 0;
+  if (given === 0) return 0;
+
+  xp = xp + given;
+  xpSources[source] = (xpSources[source] || 0) + given;
+  keep.setItem("xpSources", JSON.stringify(xpSources));
+  return given;
+}
+
+// Which bucket each earnable action belongs in.
+const SOURCE_OF = {
+  match: "matches",
+  table: "matches",
+  club: "favourites",
+  daily: "other",
+  streak: "other",
+};
+
+// ---------------------------------------------------------------
+// XP, STREAKS AND DAILY LIMITS
+//
+// Everything that earns XP has a daily cap, so nobody can farm it
+// by tapping through matches. The caps reset at midnight.
+// ---------------------------------------------------------------
+const DIVISIONS = [
+  { name: "Rookie",       from: 0 },
+  { name: "Amateur",      from: 3 },
+  { name: "Semi-Pro",     from: 6 },
+  { name: "Professional", from: 10 },
+  { name: "National",     from: 15 },
+  { name: "Continental",  from: 21 },
+  { name: "Elite",        from: 28 },
+  { name: "Champions",    from: 36 },
+  { name: "World Class",  from: 45 },
+  { name: "Legend",       from: 55 },
+];
+
+// What each action is worth. No daily limits - people earn as
+// much as they use the app.
+const EARNINGS = {
+  daily:   { xp: 5,  once: true, label: "Open the app" },
+  match:   { xp: 5,  label: "Look at a match centre" },
+  club:    { xp: 5,  label: "Check one of your clubs" },
+  table:   { xp: 3,  label: "Look at a league table" },
+  streak:  { xp: 50, once: true, label: "Seven days in a row" },
+};
+
+let streak = load("streak", 0);
+let shields = load("shields", 0);
+let boostUntil = load("boostUntil", 0);
+let boostSize = load("boostSize", 1);
+
+let dailyCounts = readSaved("dailyCounts", null);
+const todayKey = new Date().toDateString();
+
+if (!dailyCounts || dailyCounts.day !== todayKey) {
+  dailyCounts = { day: todayKey };
+}
+
+// ---------------------------------------------------------------
+// COUNTERS
+//
+// Three timescales: today, this week, and the whole season. The
+// challenges read from these.
+// ---------------------------------------------------------------
+
+// Weeks start on Monday. This gives a key like "2026-W35".
+function weekKeyOf(date) {
+  const d = new Date(date);
+  const day = (d.getDay() + 6) % 7;          // Monday = 0
+  d.setDate(d.getDate() - day);              // back to Monday
+  return d.getFullYear() + "-W" +
+    String(Math.ceil(((d - new Date(d.getFullYear(), 0, 1)) / 86400000 + 1) / 7))
+      .padStart(2, "0");
+}
+
+// Seasons run July to June, same as the fixture lists.
+function seasonKeyOf(date) {
+  const d = new Date(date);
+  const start = d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1;
+  return start + "/" + String(start + 1).slice(2);
+}
+
+// Calendar months, for the monthly challenges.
+function monthKeyOf(date) {
+  const d = new Date(date);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+}
+
+const thisWeek = weekKeyOf(new Date());
+const thisMonth = monthKeyOf(new Date());
+const thisSeason = seasonKeyOf(new Date());
+
+let weekCounts = readSaved("weekCounts", null);
+if (!weekCounts || weekCounts.week !== thisWeek) {
+  weekCounts = { week: thisWeek, days: [] };
+}
+
+let monthCounts = readSaved("monthCounts", null);
+if (!monthCounts || monthCounts.month !== thisMonth) {
+  monthCounts = { month: thisMonth, days: [] };
+}
+
+let seasonCounts = readSaved("seasonCounts", null);
+if (!seasonCounts || seasonCounts.season !== thisSeason) {
+  seasonCounts = { season: thisSeason, days: 0 };
+}
+
+// A record of XP earned each week, kept for the graph.
+let xpHistory = readSaved("xpHistory", []);
+let weekStartXp = load("weekStartXp", null);
+let bestDivision = load("bestDivision", 1);
+let badgeClub = readSaved("badgeClub", null);
+
+// First run, or the week just turned over.
+if (weekStartXp === null) {
+  weekStartXp = xp;
+} else if (keep.getItem("weekStartKey") !== thisWeek) {
+  const lastWeek = keep.getItem("weekStartKey");
+  if (lastWeek) {
+    xpHistory.push({ week: lastWeek, xp: Math.max(0, xp - weekStartXp) });
+    // Two seasons of weeks is plenty to keep.
+    if (xpHistory.length > 80) xpHistory = xpHistory.slice(-80);
+  }
+  weekStartXp = xp;
+}
+keep.setItem("weekStartKey", thisWeek);
+
+function saveHistory() {
+  keep.setItem("xpHistory", JSON.stringify(xpHistory));
+  keep.setItem("weekStartXp", weekStartXp);
+  keep.setItem("bestDivision", bestDivision);
+  keep.setItem("badgeClub", JSON.stringify(badgeClub));
+}
+saveHistory();
+
+// Rewards already taken, keyed by challenge and the period it
+// belonged to, so dailies can be claimed again tomorrow.
+let claimed = readSaved("claimed", {});
+
+function saveCounters() {
+  keep.setItem("weekCounts", JSON.stringify(weekCounts));
+  keep.setItem("monthCounts", JSON.stringify(monthCounts));
+  keep.setItem("seasonCounts", JSON.stringify(seasonCounts));
+  keep.setItem("claimed", JSON.stringify(claimed));
+}
+
+// Adds one to today, this week, this month and this season at once.
+function tally(kind) {
+  dailyCounts[kind] = (dailyCounts[kind] || 0) + 1;
+  weekCounts[kind] = (weekCounts[kind] || 0) + 1;
+  monthCounts[kind] = (monthCounts[kind] || 0) + 1;
+  seasonCounts[kind] = (seasonCounts[kind] || 0) + 1;
+  saveCounters();
+}
+
+function saveXpState() {
+  markSaved();
+  if (typeof pushProgress === "function") pushProgress();
+  keep.setItem("xp", xp);
+  keep.setItem("xpSources", JSON.stringify(xpSources));
+  keep.setItem("coins", coins);
+  keep.setItem("streak", streak);
+  keep.setItem("shields", shields);
+  keep.setItem("boostUntil", boostUntil);
+  keep.setItem("boostSize", boostSize);
+  keep.setItem("dailyCounts", JSON.stringify(dailyCounts));
+}
+
+function boostActive() {
+  return Date.now() < boostUntil;
+}
+
+function currentMultiplier() {
+  return boostActive() ? boostSize : 1;
+}
+
+// The one way XP is ever added. Returns how much was given.
+function earn(kind) {
+  const rule = EARNINGS[kind];
+  if (!rule) return 0;
+
+  const used = dailyCounts[kind] || 0;
+
+  // A couple of things only pay once a day - opening the app and
+  // the weekly streak bonus. Everything else is unlimited.
+  if (rule.once && used >= 1) return 0;
+
+  tally(kind);
+  const amount = creditXp(SOURCE_OF[kind] || "other",
+                          rule.xp * currentMultiplier());
+  saveXpState();
+  drawProgress();
+  return amount;
+}
+
+function levelNow() {
+  return Math.floor(xp / 1000) + 1;
+}
+
+function divisionFor(level) {
+  let found = DIVISIONS[0];
+  for (const division of DIVISIONS) {
+    if (level >= division.from) found = division;
+  }
+  return found;
+}
+
+// ---------------------------------------------------------------
+// LEAVING THE OLD PROVIDER BEHIND
+//
+// League, team and fixture numbers are completely different on
+// API-Football, so everything saved under the old ones is now
+// meaningless - a followed club would point at some other club
+// entirely. This clears those once, and only once.
+//
+// XP, coins, streaks, challenges and the 6-a-side squad are all
+// untouched: none of them hold a football id.
+// ---------------------------------------------------------------
+if (keep.getItem("provider") !== "api-football") {
+  for (const key of ["myLeagues_v2", "leagueNames_v2",
+                     "favLeagues", "favTeams", "alerts", "badgeClub"]) {
+    keep.removeItem(key);
+  }
+  keep.setItem("provider", "api-football");
+}
+
+// The key is versioned, so switching data provider does not leave
+// old league numbers behind that mean nothing any more.
+let myLeagues = readSaved("myLeagues_v2", null);
+if (myLeagues === null) {
+  myLeagues = LEAGUES.map(function (l) { return l.id; });
+}
+
+let leagueNames = readSaved("leagueNames_v2", null);
+if (leagueNames === null) {
+  leagueNames = {};
+  for (const l of LEAGUES) leagueNames[l.id] = l.name;
+}
+
+// First visit of the day: streak, daily XP and a coin or two.
+const lastOpen = keep.getItem("lastOpen");
+if (lastOpen !== todayKey) {
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  // A day missed resets the streak.
+  streak = (lastOpen === yesterday.toDateString()) ? streak + 1 : 1;
+
+  creditXp("other", EARNINGS.daily.xp);
+  coins = coins + 2;
+  dailyCounts.daily = 1;
+
+  // Every seventh day pays a bonus.
+  if (streak > 0 && streak % 7 === 0) {
+    creditXp("other", EARNINGS.streak.xp);
+    coins = coins + 10;
+  }
+
+  // Note the day, for challenges counting how often someone comes back.
+  if (!weekCounts.days.includes(todayKey)) weekCounts.days.push(todayKey);
+  if (!monthCounts.days.includes(todayKey)) monthCounts.days.push(todayKey);
+  seasonCounts.days = (seasonCounts.days || 0) + 1;
+
+  keep.setItem("lastOpen", todayKey);
+  saveXpState();
+  saveCounters();
+}
+
+function saveProgress() {
+  keep.setItem("alerts", JSON.stringify(alerts));
+  saveXpState();
+}
+
+function saveLeagues() {
+  keep.setItem("myLeagues_v2", JSON.stringify(myLeagues));
+  keep.setItem("leagueNames_v2", JSON.stringify(leagueNames));
+}
+saveLeagues();
+
+function leagueParam() {
+  return "leagues=" + myLeagues.join(",");
+}
+
+function drawProgress() {
+  const badge = document.getElementById("level");
+  const level = Math.floor(xp / 1000) + 1;
+
+  // Show the chosen club crest if there is one, otherwise the level.
+  if (badgeClub && badgeClub.logo) {
+    badge.innerHTML = '<img src="' + badgeClub.logo + '" alt="Profile">';
+    badge.classList.add("hasCrest");
+  } else {
+    badge.textContent = level;
+    badge.classList.remove("hasCrest");
+  }
+
+  document.getElementById("coins").textContent = coins;
+}
+
+// ---------------------------------------------------------------
+// GOAL ALERTS
+//
+// The browser can pop a notification while the app is open. Proper
+// background alerts need the phone app, but this works today.
+// ---------------------------------------------------------------
+let lastKnownScores = {};
+
+function notificationsAllowed() {
+  return typeof Notification !== "undefined" && Notification.permission === "granted";
+}
+
+async function askForNotifications() {
+  if (typeof Notification === "undefined") return false;
+  if (Notification.permission === "granted") return true;
+  if (Notification.permission === "denied") return false;
+  const answer = await Notification.requestPermission();
+  return answer === "granted";
+}
+
+function toggleAlert(fixtureId, element) {
+  const position = alerts.indexOf(fixtureId);
+
+  if (position === -1) {
+    alerts.push(fixtureId);
+    if (element) element.classList.add("on");
+    tally("star");
+    // Ask the first time somebody turns one on.
+    askForNotifications();
+  } else {
+    alerts.splice(position, 1);
+    if (element) element.classList.remove("on");
+  }
+
+  saveProgress();
+  // Keep every copy of that bell in step, since the same match can
+  // appear on more than one part of the screen.
+  syncBells(fixtureId);
+}
+
+function syncBells(fixtureId) {
+  const on = alerts.includes(fixtureId);
+  for (const card of document.querySelectorAll('[data-id="' + fixtureId + '"]')) {
+    const bell = card.querySelector(".bell");
+    if (bell) bell.classList.toggle("on", on);
+  }
+}
+
+// Runs on its own timer. Compares the score of every followed match
+// against what it saw last time and shouts about anything new.
+async function checkForGoals() {
+  if (alerts.length === 0) return;
+
+  let matches;
+  try {
+    matches = await (await fetch("/api/ticker")).json();
+  } catch (error) {
+    return;
+  }
+
+  for (const match of matches) {
+    if (!alerts.includes(match.id)) continue;
+
+    const now = (match.hg === null ? 0 : match.hg) + "-" +
+                (match.ag === null ? 0 : match.ag);
+    const before = lastKnownScores[match.id];
+
+    // Only shout when we have seen this game before and it changed.
+    if (before !== undefined && before !== now && notificationsAllowed()) {
+      const clock = match.minute !== null ? match.minute + "'" : match.short;
+      new Notification("GOAL - " + match.home + " " + now + " " + match.away, {
+        body: match.league + "  " + clock,
+        tag: "goal-" + match.id,
+      });
+    }
+
+    lastKnownScores[match.id] = now;
+  }
+}
+
+setInterval(checkForGoals, 30000);
+checkForGoals();
+
+
+// A fetch that gives up rather than waiting forever. Anything a
+// screen waits on has to be time-boxed, or one slow answer leaves
+// the whole app sitting on whatever was drawn last.
+async function fetchJson(url, seconds) {
+  const stop = new AbortController();
+  const timer = setTimeout(function () { stop.abort(); }, (seconds || 12) * 1000);
+
+  try {
+    const answer = await fetch(url, { signal: stop.signal });
+    return await answer.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The full competition list runs to over a thousand entries and can
+// take a while on a cold server. Fetched once, in the background,
+// and the screens that need it redraw when it lands.
+let leaguesLoading = null;
+
+function loadLeagues() {
+  if (allLeagues !== null) return Promise.resolve(allLeagues);
+  if (leaguesLoading) return leaguesLoading;
+
+  leaguesLoading = (async function () {
+    try {
+      allLeagues = await fetchJson("/api/leagues", 20);
+      if (!Array.isArray(allLeagues)) allLeagues = [];
+    } catch (error) {
+      allLeagues = [];
+    }
+    leaguesLoading = null;
+    return allLeagues;
+  })();
+
+  return leaguesLoading;
+}
+
+
+// ---------------------------------------------------------------
+// WHICH SCREEN
+// ---------------------------------------------------------------
+let screen = "home";
+
+function isoDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return year + "-" + month + "-" + day;
+}
+
+let chosenDate = isoDate(new Date());
+
+// Kickoffs arrive as UTC. Which day a match belongs to depends on
+// where the person is standing, so it is worked out here rather
+// than by reading the date off the front of the timestamp.
+function localDateOf(match) {
+  const when = new Date(match.fixture.date);
+  return isNaN(when) ? "" : isoDate(when);
+}
+
+// The day above a kick-off time. Today is left blank, because the
+// time on its own says enough.
+function dayLabel(when) {
+  if (isNaN(when)) return "";
+
+  const sameDay = function (a, b) {
+    return a.getFullYear() === b.getFullYear() &&
+           a.getMonth() === b.getMonth() &&
+           a.getDate() === b.getDate();
+  };
+
+  const now = new Date();
+  if (sameDay(when, now)) return "";
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (sameDay(when, tomorrow)) return "Tomorrow";
+
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (sameDay(when, yesterday)) return "Yesterday";
+
+  return when.toLocaleDateString([], {
+    weekday: "short", day: "numeric", month: "short",
+  });
+}
+
+// Kick-off in the time the person is actually in.
+function localTime(when) {
+  return isNaN(when) ? "--:--"
+    : when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function goTo(name) {
+  screen = name;
+
+  // Coming back from a club, league or match page.
+  openClubInfo = null;
+  document.getElementById("leagueHead").innerHTML = "";
+  document.getElementById("matchHead").innerHTML = "";
+  document.getElementById("mainHeader").style.display = "block";
+
+  const buttons = {
+    favourites: "navFavourites",
+    fixtures: "navFixtures",
+    home: "navHome",
+    xp: "navXp",
+    challenges: "navChallenges",
+  };
+
+  for (const key of Object.keys(buttons)) {
+    document.getElementById(buttons[key]).classList.toggle("on", name === key);
+  }
+
+  document.getElementById("dates").style.display = name === "fixtures" ? "flex" : "none";
+  document.getElementById("subTabs").style.display = name === "home" ? "flex" : "none";
+  document.getElementById("xpTabs").style.display = name === "xp" ? "flex" : "none";
+  document.getElementById("pickerBox").style.display = "none";
+  document.getElementById("searchArea").style.display = "none";
+  document.getElementById("cogBtn").style.display = name === "home" ? "inline" : "none";
+
+  // The bar carries the app name now, and the bottom bar shows
+  // which screen you are on, so there is no title to update.
+
+  refresh();
+}
+
+// No logo.png on the server, so put the old bolt back.
+const brandLogo = document.getElementById("brandLogo");
+if (brandLogo) {
+  brandLogo.onerror = function () {
+    const bolt = document.createElement("span");
+    bolt.className = "brandBolt";
+    bolt.innerHTML = "&#9889;";
+    this.replaceWith(bolt);
+  };
+}
+
+document.getElementById("cogBtn").onclick = function () { goTo("settings"); };
+document.getElementById("level").onclick = function () { goTo("profile"); };
+document.getElementById("navFavourites").onclick = function () { favView = "countries"; goTo("favourites"); };
+document.getElementById("navFixtures").onclick = function () { goTo("fixtures"); };
+document.getElementById("navHome").onclick = function () { goTo("home"); };
+
+for (const tab of document.querySelectorAll("#subTabs .subTab")) {
+  tab.onclick = function () {
+    homeTab = this.getAttribute("data-sub");
+    tally(homeTab);
+    if (screen === "home") {
+      refresh();
+    } else {
+      goTo("home");
+    }
+  };
+}
+
+for (const tab of document.querySelectorAll("#xpTabs .subTab")) {
+  tab.onclick = function () {
+    xpTab = this.getAttribute("data-xp");
+    fivePicking = null;
+    openPlayerId = null;
+    if (screen === "xp") {
+      drawXpScreen();
+    } else {
+      goTo("xp");
+    }
+  };
+}
+
+// One step back out, wherever you are on the XP page: out of a
+// player list to the squad, off a side tab to the league, and off
+// the league to Home.
+document.getElementById("xpBack").onclick = function () {
+  if (openPlayerId) {
+    openPlayerId = null;
+    drawXpScreen();
+    return;
+  }
+  if (fivePicking) {
+    fivePicking = null;
+    drawXpScreen();
+    return;
+  }
+  if (xpTab !== "home") {
+    xpTab = "home";
+    drawXpScreen();
+    return;
+  }
+  goTo("home");
+};
+document.getElementById("navXp").onclick = function () {
+  xpTab = "home";
+  fivePicking = null;
+  openPlayerId = null;
+  goTo("xp");
+};
+document.getElementById("navChallenges").onclick = function () { goTo("challenges"); };
+
+
+// ---------------------------------------------------------------
+// DATE STRIP
+// ---------------------------------------------------------------
+function drawDates() {
+  const strip = document.getElementById("dates");
+  strip.innerHTML = "";
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  for (let offset = 0; offset <= 6; offset++) {
+    const date = new Date();
+    date.setDate(date.getDate() + offset);
+    const iso = isoDate(date);
+
+    const button = document.createElement("div");
+    button.className = "dateBtn" + (iso === chosenDate ? " on" : "");
+    button.innerHTML =
+      '<div class="dateDay">' + dayNames[date.getDay()] + '</div>' +
+      '<div class="dateNum">' + date.getDate() + '</div>';
+    button.onclick = function () {
+      chosenDate = iso;
+      drawDates();
+      refresh();
+    };
+    strip.appendChild(button);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// MATCH STATE
+//
+// Every screen needs to know whether a game is coming up, being
+// played, or done. The API is not always consistent, so this works
+// it out from several clues rather than trusting one field.
+// ---------------------------------------------------------------
+function stateOf(match) {
+  const status = match.fixture.status;
+
+  if (status.elapsed !== null) return "live";
+  if (status.short === "HT") return "live";
+  if (status.short === "FT" || status.short === "AET" || status.short === "PEN") {
+    return "finished";
+  }
+  if (status.short === "PST" || status.short === "CANC") return "finished";
+
+  // No minute and no clear status, but both scores filled in and
+  // kick-off has passed - that is a finished game.
+  const hasScores = match.goals.home !== null && match.goals.away !== null;
+  const kickoff = new Date(match.fixture.date);
+  const started = !isNaN(kickoff) && kickoff.getTime() < Date.now();
+
+  if (hasScores && started) return "finished";
+  return "upcoming";
+}
+
+// The minute a game is at. Uses the API's own figure when there is
+// one; otherwise works it out from the kick-off time, allowing
+// fifteen minutes for the interval.
+function minuteOf(match) {
+  if (match.fixture.status.elapsed !== null) {
+    return match.fixture.status.elapsed;
+  }
+  if (match.fixture.status.short === "HT") return 45;
+
+  const kickoff = new Date(match.fixture.date);
+  if (isNaN(kickoff)) return null;
+
+  const gone = Math.floor((Date.now() - kickoff.getTime()) / 60000);
+  if (gone < 0) return null;
+
+  // Before the break, the clock and real time match.
+  if (gone <= 45) return gone;
+  // During the interval.
+  if (gone <= 60) return 45;
+  // After it, take the fifteen minutes back off.
+  const playing = gone - 15;
+  return playing > 95 ? 90 : playing;
+}
+
+// True when the estimate came from the clock rather than the API,
+// so the screen can mark it as approximate.
+function minuteIsEstimated(match) {
+  return match.fixture.status.elapsed === null &&
+         match.fixture.status.short !== "HT";
+}
+
+// Live first, earliest minute at the top. Then games to come,
+// then today's results.
+// How far up the page a competition belongs. The pinned countries
+// come first in the order they are listed, and within a country the
+// top division outranks the ones below it. Anything unranked - youth
+// and regional competitions - goes to the back.
+//
+// competitionWeight does the same job for the live card, but it
+// takes the flat ticker shape, so this feeds it what it expects.
+function competitionOrder(match) {
+  return competitionWeight({
+    league: match.league && match.league.name,
+    country: match.league && match.league.country,
+  });
+}
+
+// The fixtures list. Grouped by competition, biggest first, with
+// each competition's games in kick-off order. Being played still
+// wins inside a competition, so a live game does not sit below a
+// result from three hours ago.
+function fixtureSort(a, b) {
+  const byLeague = competitionOrder(a) - competitionOrder(b);
+  if (byLeague !== 0) return byLeague;
+
+  const nameA = (a.league && a.league.name) || "";
+  const nameB = (b.league && b.league.name) || "";
+  if (nameA !== nameB) return nameA.localeCompare(nameB);
+
+  return matchSort(a, b);
+}
+
+function matchSort(a, b) {
+  const order = { live: 0, upcoming: 1, finished: 2 };
+  const sa = stateOf(a);
+  const sb = stateOf(b);
+
+  if (order[sa] !== order[sb]) return order[sa] - order[sb];
+
+  if (sa === "live") {
+    const ma = minuteOf(a);
+    const mb = minuteOf(b);
+    return (ma === null ? 45 : ma) - (mb === null ? 45 : mb);
+  }
+
+  return new Date(a.fixture.date) - new Date(b.fixture.date);
+}
+
+
+// ---------------------------------------------------------------
+// DRAWING MATCHES
+// ---------------------------------------------------------------
+// One fixture, in the same dark card as the live feed but without
+// the goalscorers - this is a list of games, not a summary of them.
+function fixtureCard(match) {
+  const state = stateOf(match);
+  const kickoff = new Date(match.fixture.date);
+  const starred = alerts.includes(match.fixture.id);
+
+  let status = "";
+  let live = false;
+
+  if (state === "live") {
+    const minute = minuteOf(match);
+    live = true;
+    if (match.fixture.status.short === "HT") status = "HT";
+    else if (minute === null) status = "LIVE";
+    else status = (minuteIsEstimated(match) ? "~" : "") + minute + "'";
+  } else if (state === "finished") {
+    status = match.fixture.status.short === "PST" ? "Off" : "FT";
+  } else {
+    // The time sits in the middle of the card, so the corner only
+    // needs the day - and nothing at all if the game is today.
+    status = dayLabel(kickoff);
+  }
+
+  const hg = match.goals.home === null ? "-" : match.goals.home;
+  const ag = match.goals.away === null ? "-" : match.goals.away;
+
+  // A game still to come shows the kick-off time where the score
+  // would be, rather than a pair of dashes that say nothing.
+  const middle = state === "upcoming"
+    ? '<div class="fixTime">' + localTime(kickoff) + '</div>'
+    : '<div class="featNums">' + hg + ' - ' + ag + '</div>';
+
+  // loading="lazy" keeps the crests off the wire until the card is
+  // near the screen, which matters on a long list.
+  return '<div class="feature fixCard" data-id="' + match.fixture.id + '">' +
+    '<div class="featTop">' +
+      // The heading above the group names the competition now, so
+      // repeating it on every card is just noise.
+      '<span class="featComp"></span>' +
+      '<span class="fixRight">' +
+        (status
+          ? '<span class="' + (live ? "featClock" : "fixWhen") + '">' +
+              (live ? '<i class="featDot"></i>' : '') + status + '</span>'
+          : '') +
+        '<span class="fixStar' + (starred ? " on" : "") + '">&#9733;</span>' +
+      '</span>' +
+    '</div>' +
+    '<div class="featScore">' +
+      '<div class="featSide">' +
+        '<img src="' + match.teams.home.logo + '" alt="" loading="lazy">' +
+        '<div class="featName">' + match.teams.home.name + '</div>' +
+      '</div>' +
+      middle +
+      '<div class="featSide">' +
+        '<img src="' + match.teams.away.logo + '" alt="" loading="lazy">' +
+        '<div class="featName">' + match.teams.away.name + '</div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+// A busy Saturday has fifteen hundred games on it. Building a card
+// for every one of them is well over a megabyte of html and three
+// thousand crests in a single go, which is what locks the phone up.
+// So they arrive a page at a time.
+const FIXTURE_PAGE = 40;
+
+function wireFixtureCards(within) {
+  for (const card of within.querySelectorAll(".fixCard")) {
+    const id = Number(card.getAttribute("data-id"));
+
+    card.onclick = function () { openMatch(id); };
+
+    // The star has to swallow the tap, or following a match would
+    // open it instead.
+    const star = card.querySelector(".fixStar");
+    if (star) {
+      star.onclick = function (event) {
+        event.stopPropagation();
+        toggleAlert(id, null);
+        this.className = "fixStar" + (alerts.includes(id) ? " on" : "");
+      };
+    }
+  }
+}
+
+// Competitions the person has folded away, so the choice survives
+// a redraw when a score changes.
+const foldedLeagues = {};
+
+function leagueHeading(league, count) {
+  const folded = foldedLeagues[league.id];
+
+  return '<div class="fixHead" data-league="' + league.id + '">' +
+    (league.logo
+      ? '<img src="' + league.logo + '" alt="" loading="lazy">'
+      : '<span class="fixHeadBlank"></span>') +
+    '<span class="fixHeadName">' +
+      (displayCountryForLeague(league) ? displayCountryForLeague(league) + " - " : "") +
+      (league.name || "") +
+    '</span>' +
+    '<span class="fixHeadCount">' + count + '</span>' +
+    '<span class="fixHeadChevron' + (folded ? " folded" : "") + '">&#9650;</span>' +
+  '</div>';
+}
+
+function drawMatches(matches, showKickoffTimes) {
+  const list = document.getElementById("list");
+
+  // The fixtures screen puts its filter bar at the top of this same
+  // list, after this function has run. Folding a competition calls
+  // us again, so without holding on to the bar it would disappear
+  // the first time somebody tapped a league heading.
+  const bar = list.querySelector(".filterBar");
+
+  list.innerHTML = "";
+  if (bar) list.appendChild(bar);
+
+  if (matches.length === 0) {
+    const nothing = document.createElement("div");
+    nothing.className = "empty";
+    nothing.textContent = "Nothing to show here.";
+    list.appendChild(nothing);
+    return;
+  }
+
+  // The matches arrive already ordered by competition, so walking
+  // them once is enough to group them - no second pass needed.
+  const groups = [];
+  for (const match of matches) {
+    const last = groups[groups.length - 1];
+    if (last && last.league.id === match.league.id) {
+      last.matches.push(match);
+    } else {
+      groups.push({ league: match.league, matches: [match] });
+    }
+  }
+
+  const stack = document.createElement("div");
+  stack.className = "fixStack";
+  list.appendChild(stack);
+
+  const more = document.createElement("div");
+  more.className = "fixMore";
+  list.appendChild(more);
+
+  let at = 0;        // which group we have reached
+  let shown = 0;     // matches drawn so far
+  const adCount = { n: 0, started: false };   // advert spacing
+
+  const redraw = function () {
+    // Folding a competition changes what is on screen, so the
+    // simplest correct thing is to start the list again.
+    drawMatches(matches, showKickoffTimes);
+  };
+
+  const addPage = function () {
+    const page = document.createElement("div");
+    let added = 0;
+
+    while (at < groups.length && added < FIXTURE_PAGE) {
+      const group = groups[at];
+      const folded = foldedLeagues[group.league.id];
+
+      const block = document.createElement("div");
+      block.className = "fixGroup";
+      block.innerHTML =
+        leagueHeading(group.league, group.matches.length) +
+        (folded ? "" : withAds(group.matches.map(fixtureCard), adCount));
+
+      page.appendChild(block);
+      wireFixtureCards(block);
+
+      // A folded competition costs nothing to draw, so it does not
+      // use up any of the page.
+      if (!folded) {
+        added += group.matches.length;
+        shown += group.matches.length;
+      }
+      at++;
+    }
+
+    stack.appendChild(page);
+    activateAds(page);
+
+    for (const head of page.querySelectorAll(".fixHead")) {
+      const id = Number(head.getAttribute("data-league"));
+      head.onclick = function () {
+        if (foldedLeagues[id]) delete foldedLeagues[id];
+        else foldedLeagues[id] = true;
+        redraw();
+      };
+    }
+
+    const leftGroups = groups.length - at;
+    if (leftGroups <= 0) {
+      more.innerHTML = groups.length > 1
+        ? '<div class="fixCount">' + matches.length + ' games in ' +
+          groups.length + ' competitions</div>'
+        : "";
       return;
     }
-    if (!message) return;
 
-    if (message.type === "gfBackup" && message.data) {
-      AsyncStorage.setItem(BACKUP_KEY, JSON.stringify(message.data))
-        .catch(function () {});
-    } else if (message.type === "gfClear") {
-      AsyncStorage.removeItem(BACKUP_KEY).catch(function () {});
-    }
-  }
+    more.innerHTML =
+      '<button class="fixMoreBtn">Show more competitions</button>' +
+      '<div class="fixCount">' + shown + ' of ' + matches.length +
+        ' games shown</div>';
 
-  // Decides where each page load goes.
-  function handleLink(request) {
-    const url = request.url || "";
+    more.querySelector(".fixMoreBtn").onclick = addPage;
+  };
 
-    if (url.startsWith("about:") || url.startsWith("data:") ||
-        url.startsWith("blob:")) {
-      return true;
-    }
-
-    // Frames inside the page - adverts included - load where they are.
-    if (request.isTopFrame === false) return true;
-
-    // GoalFlash's own pages stay in the app.
-    if (isOurs(url)) return true;
-
-    // Anything else opens in Safari, so the person can come back.
-    Linking.openURL(url);
-    return false;
-  }
-
-  // News headlines and tapped adverts ask for a new window. Those
-  // open in Safari.
-  function handleNewWindow(event) {
-    const url = event.nativeEvent && event.nativeEvent.targetUrl;
-    if (url) Linking.openURL(url);
-  }
-
-  function offlineScreen() {
-    return (
-      <View style={styles.offline}>
-        <Text style={styles.offlineHead}>GoalFlash can't connect</Text>
-        <Text style={styles.offlineText}>
-          Check your internet connection, then pull down to try again.
-        </Text>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.page}>
-      <StatusBar style="light" />
-
-      {saved === undefined ? (
-        // A split second while the backup is read.
-        <View style={styles.page} />
-      ) : (
-        <WebView
-          ref={web}
-          source={{ uri: APP_URL }}
-          style={styles.page}
-          originWhitelist={["*"]}
-          injectedJavaScriptBeforeContentLoaded={restoreScript(saved)}
-          onMessage={handleMessage}
-          onShouldStartLoadWithRequest={handleLink}
-          onOpenWindow={handleNewWindow}
-          setSupportMultipleWindows={true}
-          applicationNameForUserAgent="GoalFlashApp/1.0"
-          allowsBackForwardNavigationGestures={true}
-          pullToRefreshEnabled={true}
-          contentInsetAdjustmentBehavior="never"
-          domStorageEnabled={true}
-          javaScriptEnabled={true}
-          sharedCookiesEnabled={true}
-          cacheEnabled={true}
-          startInLoadingState={true}
-          renderError={offlineScreen}
-          // iOS sometimes shuts the page down in the background to
-          // save memory, which leaves a blank white screen. Reload it.
-          onContentProcessDidTerminate={function () {
-            if (web.current) web.current.reload();
-          }}
-        />
-      )}
-
-      {SHOW_BOTTOM_BANNER && adsReady && !bannerFailed ? (
-        <SafeAreaView style={styles.bannerArea}>
-          <View style={styles.bannerInner}>
-            <BannerAd
-              unitId={BANNER_ID}
-              size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER}
-              requestOptions={{
-                requestNonPersonalizedAdsOnly: !personalised,
-              }}
-              onAdFailedToLoad={function () { setBannerFailed(true); }}
-            />
-          </View>
-        </SafeAreaView>
-      ) : null}
-    </View>
-  );
+  addPage();
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: "#0B1E3D" },
-  bannerArea: { backgroundColor: "#0B1E3D" },
-  bannerInner: { alignItems: "center", paddingTop: 4 },
-  offline: {
-    flex: 1, backgroundColor: "#0B1E3D",
-    alignItems: "center", justifyContent: "center", padding: 30,
-  },
-  offlineHead: { color: "#FFFFFF", fontSize: 18, fontWeight: "600", marginBottom: 10 },
-  offlineText: { color: "#8FA6C4", fontSize: 14, textAlign: "center" },
+
+// ---------------------------------------------------------------
+// TABLES
+// ---------------------------------------------------------------
+let chosenLeague = MY_LEAGUE_ID_FALLBACK();
+
+function MY_LEAGUE_ID_FALLBACK() {
+  return LEAGUES.length > 0 ? LEAGUES[0].id : 0;
+}
+
+function drawPicker() {
+  const box = document.getElementById("pickerBox");
+
+  if (myLeagues.length === 0) {
+    box.innerHTML = '<div class="picker">No leagues followed</div>';
+    return;
+  }
+
+  if (!myLeagues.includes(chosenLeague)) chosenLeague = myLeagues[0];
+
+  let options = "";
+  for (const id of myLeagues) {
+    const selected = id === chosenLeague ? " selected" : "";
+    const name = leagueNames[id] || ("League " + id);
+    options += '<option value="' + id + '"' + selected + '>' + name + '</option>';
+  }
+
+  box.innerHTML = '<div class="picker"><select id="leaguePick">' + options + '</select></div>';
+
+  document.getElementById("leaguePick").onchange = function (event) {
+    chosenLeague = Number(event.target.value);
+    refresh();
+  };
+}
+
+function drawTable(rows) {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (rows.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No table for this league.<br><br>' +
+      'It may not be included in your plan.</div>';
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.className = "tableHead";
+  head.innerHTML =
+    '<span class="colPos">#</span><span class="colTeam">Team</span>' +
+    '<span class="colNum">P</span><span class="colNum">GD</span>' +
+    '<span class="colPts">Pts</span>';
+  list.appendChild(head);
+
+  for (const entry of rows) {
+    const row = document.createElement("div");
+    row.className = "tableRow";
+    row.innerHTML =
+      '<span class="colPos">' + entry.rank + '</span>' +
+      '<span class="colTeam">' +
+        '<img src="' + entry.team.logo + '" alt="">' +
+        '<span>' + entry.team.name + '</span>' +
+      '</span>' +
+      '<span class="colNum">' + entry.all.played + '</span>' +
+      '<span class="colNum">' + (entry.goalsDiff > 0 ? "+" : "") + entry.goalsDiff + '</span>' +
+      '<span class="colPts">' + entry.points + '</span>';
+    list.appendChild(row);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// LEAGUES SCREEN
+// ---------------------------------------------------------------
+let allLeagues = null;
+let liveCounts = {};
+let searchText = "";
+
+document.getElementById("searchInput").oninput = function (event) {
+  searchText = event.target.value.trim().toLowerCase();
+  drawLeagues();
+};
+
+function toggleFollow(league) {
+  const position = myLeagues.indexOf(league.id);
+  if (position === -1) {
+    myLeagues.push(league.id);
+    leagueNames[league.id] = league.name;
+  } else {
+    myLeagues.splice(position, 1);
+  }
+  saveLeagues();
+  drawPicker();
+  drawLeagues();
+}
+
+function drawLeagues() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (allLeagues === null) {
+    list.innerHTML = '<div class="empty">Loading leagues...</div>';
+    return;
+  }
+
+  let shown;
+  if (searchText === "") {
+    shown = allLeagues.filter(function (l) { return myLeagues.includes(l.id); });
+  } else {
+    shown = allLeagues.filter(function (l) {
+      return l.name.toLowerCase().includes(searchText) ||
+             displayCountryForLeague(l).toLowerCase().includes(searchText);
+    }).slice(0, 60);
+  }
+
+  if (shown.length === 0) {
+    list.innerHTML = '<div class="empty">Nothing found.<br><br>Try a country name.</div>';
+    return;
+  }
+
+  shown.sort(function (a, b) {
+    const countryA = displayCountryForLeague(a);
+    const countryB = displayCountryForLeague(b);
+    if (countryA !== countryB) return countryA.localeCompare(countryB);
+    return a.name.localeCompare(b.name);
+  });
+
+  let lastCountry = null;
+
+  for (const league of shown) {
+    const displayCountry = displayCountryForLeague(league);
+    if (displayCountry !== lastCountry) {
+      const heading = document.createElement("div");
+      heading.className = "countryRow";
+      heading.textContent = displayCountry;
+      list.appendChild(heading);
+      lastCountry = displayCountry;
+    }
+
+    const following = myLeagues.includes(league.id);
+    const count = liveCounts[league.id] || 0;
+
+    const row = document.createElement("div");
+    row.className = "leagueItem";
+    row.innerHTML =
+      '<img src="' + league.logo + '" alt="">' +
+      '<span class="nm">' + league.name + '</span>' +
+      (count > 0 ? '<span class="liveTag">' + count + ' live</span>' : '') +
+      '<span class="star' + (following ? ' on' : '') + '">&#9733;</span>';
+
+    row.onclick = function () { toggleFollow(league); };
+    list.appendChild(row);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// FAVOURITES
+//
+// Two lists: leagues the person follows, and clubs they follow.
+// Both are saved on the device and feed the Home screen.
+// ---------------------------------------------------------------
+let favLeagues = readSaved("favLeagues", []);
+let favTeams = readSaved("favTeams", []);
+
+function saveFavourites() {
+  markSaved();
+  if (typeof pushProgress === "function") pushProgress();
+  keep.setItem("favLeagues", JSON.stringify(favLeagues));
+  keep.setItem("favTeams", JSON.stringify(favTeams));
+}
+
+function isFavLeague(id) {
+  return favLeagues.some(function (l) { return l.id === id; });
+}
+
+function isFavTeam(id) {
+  return favTeams.some(function (t) { return t.id === id; });
+}
+
+function toggleFavLeague(league) {
+  if (isFavLeague(league.id)) {
+    favLeagues = favLeagues.filter(function (l) { return l.id !== league.id; });
+  } else {
+    favLeagues.push({
+      id: league.id, name: league.name,
+      country: league.country, logo: league.logo,
+    });
+  }
+  saveFavourites();
+}
+
+function toggleFavTeam(team, league) {
+  if (isFavTeam(team.id)) {
+    favTeams = favTeams.filter(function (t) { return t.id !== team.id; });
+  } else {
+    favTeams.push({
+      id: team.id, name: team.name, logo: team.logo,
+      leagueId: league ? league.id : null,
+      leagueName: league ? league.name : "",
+    });
+  }
+  saveFavourites();
+}
+
+
+// ---------------------------------------------------------------
+// THE LIVE TICKER
+//
+// Cycles through every match being played in the world, one at a
+// time, across the top of the screen. Uses the same cached data
+// the scores list uses, so it costs no extra requests.
+// ---------------------------------------------------------------
+let tickerMatches = [];
+let tickerAt = 0;
+
+function drawTickerLine() {
+  const inner = document.getElementById("tickerInner");
+
+  if (tickerMatches.length === 0) {
+    inner.innerHTML = '<span class="tickerQuiet">No matches being played</span>';
+    return;
+  }
+
+  // Wrap around to the start when we reach the end.
+  if (tickerAt >= tickerMatches.length) tickerAt = 0;
+  const match = tickerMatches[tickerAt];
+
+  const clock = match.minute !== null ? match.minute + "'" : match.short;
+  const hg = match.hg === null ? "-" : match.hg;
+  const ag = match.ag === null ? "-" : match.ag;
+
+  inner.innerHTML =
+    '<div class="tickerLine">' +
+      (match.homeLogo ? '<img src="' + match.homeLogo + '" alt="">' : '') +
+      '<span class="nm">' + match.home + '</span>' +
+      '<span class="sc">' + hg + '-' + ag + '</span>' +
+      '<span class="nm">' + match.away + '</span>' +
+      (match.awayLogo ? '<img src="' + match.awayLogo + '" alt="">' : '') +
+      '<span class="mn">' + clock + '</span>' +
+    '</div>';
+}
+
+// Fade out, swap the match, fade back in.
+function advanceTicker() {
+  if (tickerMatches.length < 2) return;
+
+  const inner = document.getElementById("tickerInner");
+  inner.classList.add("fade");
+
+  setTimeout(function () {
+    tickerAt = tickerAt + 1;
+    drawTickerLine();
+    inner.classList.remove("fade");
+  }, 350);
+}
+
+async function loadTicker() {
+  try {
+    const response = await fetch("/api/ticker");
+    const fresh = await response.json();
+
+    // A malformed answer should leave the ticker as it was rather
+    // than emptying it and throwing on the next draw.
+    if (!Array.isArray(fresh)) return;
+
+    // Keep our place in the list if the same games are still on.
+    const wasShowing = tickerMatches[tickerAt] ? tickerMatches[tickerAt].id : null;
+    tickerMatches = fresh;
+
+    if (wasShowing !== null) {
+      const stillThere = fresh.findIndex(function (m) { return m.id === wasShowing; });
+      tickerAt = stillThere === -1 ? 0 : stillThere;
+    }
+  } catch (error) {
+    // Leave whatever was there rather than blanking it.
+    return;
+  }
+  drawTickerLine();
+}
+
+loadTicker();
+setInterval(advanceTicker, 4000);   // next match every four seconds
+setInterval(loadTicker, 60000);     // refresh the list every minute
+
+
+// ---------------------------------------------------------------
+// THE COUNTRY DRAWER
+//
+// These sit at the top in this order. Everything else falls
+// in alphabetically underneath.
+// ---------------------------------------------------------------
+const PINNED = [
+  "Europe", "England", "Germany", "Scotland", "France",
+  "Italy", "Spain", "Portugal", "Netherlands", "USA"
+];
+
+// The API does not always use the name people expect.
+const ALSO_KNOWN_AS = {
+  "Netherlands": ["Holland"],
+  "USA": ["United States", "United States of America", "Usa"],
+};
+
+let openCountry = null;   // which country is expanded in the drawer
+
+
+// ===============================================================
+// LEAGUE RANKING
+//
+// The API hands over every competition it has, including youth,
+// reserve and amateur ones, in no particular order. These lists
+// decide what is shown and in what order.
+//
+// To change what appears for a country, edit its list below.
+// ===============================================================
+
+// Exact running order for the countries that matter most.
+// Each line is one tier. The words inside are alternative
+// spellings the API might use for that same tier.
+const LEAGUE_ORDER = {
+  // Continental UEFA competitions are grouped under a synthetic
+  // "Europe" entry in the country drawer. API-Football commonly
+  // reports these as World, so the display helper below moves only
+  // the major UEFA competitions into Europe.
+  "Europe": [
+    ["uefa champions league"],
+    ["uefa europa league"],
+    ["uefa europa conference league", "uefa conference league"],
+    ["uefa super cup"],
+    ["euro championship"],
+    ["uefa nations league"],
+    ["euro championship - qualification"],
+  ],
+  "England": [
+    ["premier league"], ["championship"], ["league one"],
+    ["league two"], ["national league"],
+  ],
+  "Germany":     [["bundesliga"], ["2. bundesliga", "2 bundesliga"], ["3. liga", "3 liga"]],
+  "Scotland":    [["premiership"], ["championship"], ["league one"], ["league two"]],
+  "France":      [["ligue 1"], ["ligue 2"], ["national 1", "championnat national"]],
+  "Italy":       [["serie a"], ["serie b"], ["serie c"]],
+  "Spain":       [["la liga", "primera division"], ["segunda division", "la liga 2"], ["primera federacion"]],
+  "Portugal":    [["primeira liga", "liga portugal"], ["liga portugal 2", "segunda liga", "liga 2"]],
+  "Netherlands": [["eredivisie"], ["eerste divisie"]],
+  "USA":         [["mls", "major league soccer"], ["usl championship"], ["usl league one"]],
+};
+
+// Women's leagues. Top two tiers only, shown below the men's.
+const WOMEN_ORDER = {
+  "England":     [["super league"], ["championship"]],
+  "Germany":     [["bundesliga"], ["2. bundesliga", "2 bundesliga"]],
+  "Scotland":    [["premier league"], ["championship"]],
+  "France":      [["division 1", "premiere ligue", "d1"], ["division 2", "d2"]],
+  "Italy":       [["serie a"], ["serie b"]],
+  "Spain":       [["liga f", "primera division"], ["segunda"]],
+  "Portugal":    [["campeonato nacional", "liga bpi"], ["segunda"]],
+  "Netherlands": [["eredivisie"], ["eerste divisie"]],
+  "USA":         [["nwsl", "national women's soccer league"], ["usl super league"]],
+};
+
+// Anything whose name contains one of these is dropped entirely.
+// This is where the amateur and youth competitions go.
+const NOT_WANTED = [
+  "u21", "u-21", "u23", "u-23", "u19", "u-19", "u18", "u-18",
+  "u17", "u-17", "u20", "u-20", "youth", "junior", "juvenil",
+  "reserve", "academy", "amateur", "primavera", "development",
+  "regionalliga", "oberliga", "landesliga", "kreisliga",
+  "bezirksliga", "verbandsliga", "county", "sunday",
+  "veteran", "futsal", "beach", "indoor", "friendly",
+  "trial", "test", "esport", "virtual", "simulated",
+  // Regional splits below the professional pyramid.
+  "national league north", "national league south",
+  "isthmian", "northern premier", "southern league",
+];
+
+const WOMENS_WORDS = [
+  "women", "woman", "feminine", "femenin", "feminin",
+  "frauen", "femminile", "damallsvenskan", "naisten",
+  "kvinner", "kvinnor", "nwsl", "w-league", "(w)",
+];
+
+// Rough tiers for every other country, since we cannot list
+// them all by hand. Earlier groups rank higher.
+const GENERIC_TIERS = [
+  ["premier", "primera", "serie a", "super league", "superliga",
+   "superligaen", "bundesliga", "eredivisie", "ligue 1", "liga 1",
+   "premiership", "first division", "division 1", "allsvenskan",
+   "eliteserien", "ekstraklasa", "primeira", "pro league", "a-league",
+   "veikkausliiga", "liga mx"],
+  ["serie b", "segunda", "2. bundesliga", "ligue 2", "championship",
+   "liga 2", "second division", "division 2", "superettan",
+   "eerste divisie"],
+  ["serie c", "3. liga", "league one", "liga 3", "third division",
+   "division 3"],
+  ["serie d", "league two", "division 4"],
+];
+
+// Returns a display region for competitions that span countries.
+// This keeps UEFA competitions together instead of burying them under
+// the API's generic "World" country label.
+function displayCountryForLeague(league) {
+  const name = ((league && league.name) || "").toLowerCase();
+  const europeTiers = LEAGUE_ORDER["Europe"] || [];
+
+  // Keep women's competitions out of the men's Europe shortcut for now;
+  // they continue to use the normal women's-league handling below.
+  if (WOMENS_WORDS.some(function (word) { return name.includes(word); })) {
+    return (league && league.country) || "Other";
+  }
+
+  for (const tier of europeTiers) {
+    if (tier.some(function (word) { return name.includes(word); })) return "Europe";
+  }
+
+  return (league && league.country) || "Other";
+}
+
+function isWomens(name) {
+  const lower = name.toLowerCase();
+  return WOMENS_WORDS.some(function (word) { return lower.includes(word); });
+}
+
+function isUnwanted(name) {
+  const lower = name.toLowerCase();
+  return NOT_WANTED.some(function (word) { return lower.includes(word); });
+}
+
+// Where a league sits in its country. Lower number means higher up.
+// Returns -1 when it should not be shown at all.
+function rankOf(league) {
+  const name = (league.name || "").toLowerCase();
+  const country = displayCountryForLeague(league);
+
+  if (isUnwanted(name)) return -1;
+
+  const women = isWomens(name);
+  const tiers = women ? WOMEN_ORDER[country] : LEAGUE_ORDER[country];
+
+  if (tiers) {
+    // Check every tier and keep the longest match, so a name like
+    // "2. Bundesliga" is not mistaken for plain "Bundesliga".
+    let best = -1;
+    let bestLength = 0;
+
+    for (let tier = 0; tier < tiers.length; tier++) {
+      for (const word of tiers[tier]) {
+        if (name.includes(word) && word.length > bestLength) {
+          best = tier;
+          bestLength = word.length;
+        }
+      }
+    }
+
+    if (best === -1) return -1;
+    // Women's leagues sort after all the men's ones.
+    return women ? 100 + best : best;
+  }
+
+  // Countries without a hand-written list.
+  for (let tier = 0; tier < GENERIC_TIERS.length; tier++) {
+    if (GENERIC_TIERS[tier].some(function (word) { return name.includes(word); })) {
+      if (women) return tier > 1 ? -1 : 100 + tier;
+      return tier;
+    }
+  }
+
+  return -1;
+}
+
+// Filters and sorts one country's competitions.
+function tidyLeagues(leagues) {
+  return leagues
+    .map(function (league) {
+      return { league: league, rank: rankOf(league) };
+    })
+    .filter(function (entry) { return entry.rank >= 0; })
+    .sort(function (a, b) {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.league.name.localeCompare(b.league.name);
+    })
+    .map(function (entry) { return entry.league; });
+}
+
+function matchesPinned(pinnedName, apiCountry) {
+  if (apiCountry === pinnedName) return true;
+  const others = ALSO_KNOWN_AS[pinnedName] || [];
+  return others.includes(apiCountry);
+}
+
+function openDrawer() {
+  document.getElementById("drawer").classList.add("open");
+  document.getElementById("shade").classList.add("open");
+  buildDrawer();
+}
+
+function closeDrawer() {
+  document.getElementById("drawer").classList.remove("open");
+  document.getElementById("shade").classList.remove("open");
+}
+
+document.getElementById("burger").onclick = async function () {
+  openDrawer();
+  if (allLeagues === null) {
+    await loadLeagues();
+    buildDrawer();
+  }
+};
+
+document.getElementById("drawerClose").onclick = closeDrawer;
+document.getElementById("shade").onclick = closeDrawer;
+
+// Groups every league under its country, pinned ones first.
+function countriesInOrder() {
+  const byCountry = {};
+
+  for (const league of allLeagues || []) {
+    const country = displayCountryForLeague(league);
+    if (!byCountry[country]) byCountry[country] = [];
+    byCountry[country].push(league);
+  }
+
+  // Drop the youth and amateur competitions, and put what is left
+  // in order. Countries with nothing worth showing disappear.
+  for (const country of Object.keys(byCountry)) {
+    byCountry[country] = tidyLeagues(byCountry[country]);
+    if (byCountry[country].length === 0) delete byCountry[country];
+  }
+
+  const names = Object.keys(byCountry);
+  const top = [];
+  const rest = [];
+
+  // Take the pinned ones out first, in the order given above.
+  for (const pinned of PINNED) {
+    const found = names.find(function (name) {
+      return matchesPinned(pinned, name);
+    });
+    if (found) top.push(found);
+  }
+
+  for (const name of names) {
+    if (!top.includes(name)) rest.push(name);
+  }
+
+  rest.sort(function (a, b) { return a.localeCompare(b); });
+
+  return { order: top.concat(rest), byCountry: byCountry, pinnedCount: top.length };
+}
+
+function buildDrawer() {
+  const body = document.getElementById("drawerBody");
+  body.innerHTML = "";
+
+  if (allLeagues === null) {
+    body.innerHTML = '<div class="empty">Loading...</div>';
+    return;
+  }
+
+  if (allLeagues.length === 0) {
+    body.innerHTML = '<div class="empty">No leagues available<br>on your plan.</div>';
+    return;
+  }
+
+  const grouped = countriesInOrder();
+  let index = 0;
+
+  for (const country of grouped.order) {
+    // Headings that separate the pinned countries from the rest.
+    if (index === 0) {
+      const hint = document.createElement("div");
+      hint.className = "drawerHint";
+      hint.textContent = "Top competitions & countries";
+      body.appendChild(hint);
+    }
+    if (index === grouped.pinnedCount && grouped.pinnedCount > 0) {
+      const hint = document.createElement("div");
+      hint.className = "drawerHint";
+      hint.textContent = "All countries";
+      body.appendChild(hint);
+    }
+    index++;
+
+    const leagues = grouped.byCountry[country];
+    const isOpen = openCountry === country;
+
+    const row = document.createElement("div");
+    row.className = "countryItem";
+    row.innerHTML =
+      (leagues[0].logo ? '<img src="' + leagues[0].logo + '" alt="">' : '<img alt="">') +
+      '<span class="cname">' + country + '</span>' +
+      '<span class="arrow">' + (isOpen ? "&#9660;" : "&#9654;") + '</span>';
+
+    row.onclick = function () {
+      // Tapping the open one closes it.
+      openCountry = isOpen ? null : country;
+      buildDrawer();
+    };
+    body.appendChild(row);
+
+    if (isOpen) {
+      // Already in rank order, so leave it alone.
+      for (const league of leagues) {
+        const child = document.createElement("div");
+        child.className = "leagueChild";
+        child.textContent = league.name;
+        child.onclick = function () {
+          closeDrawer();
+          openLeague(league);
+        };
+        body.appendChild(child);
+      }
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------
+// THE LEAGUE SCREEN
+// Table, fixtures, statistics and teams for one competition.
+// ---------------------------------------------------------------
+let openLeagueInfo = null;
+let leagueTab = "table";
+
+function openLeague(league) {
+  earn("table");
+  openLeagueInfo = league;
+  leagueTab = "table";
+  screen = "league";
+  document.getElementById("mainHeader").style.display = "none";
+  document.getElementById("matchHead").innerHTML = "";
+  refresh();
+}
+
+function closeLeague() {
+  openLeagueInfo = null;
+  document.getElementById("leagueHead").innerHTML = "";
+  document.getElementById("mainHeader").style.display = "block";
+  goTo("scores");
+}
+
+function drawLeagueHead() {
+  const head = document.getElementById("leagueHead");
+  const league = openLeagueInfo;
+
+  const tabs = [
+    ["table", "Table"],
+    ["fixtures", "Fixtures"],
+    ["stats", "Statistics"],
+    ["teams", "Teams"],
+  ];
+
+  let tabHtml = "";
+  for (const [key, label] of tabs) {
+    tabHtml += '<div class="lTab' + (leagueTab === key ? " on" : "") +
+               '" data-tab="' + key + '">' + label + '</div>';
+  }
+
+  head.innerHTML =
+    '<div class="leagueHead">' +
+      '<div class="leagueHeadTop">' +
+        '<span class="back" id="leagueBack">&#8592;</span>' +
+        (league.logo ? '<img src="' + league.logo + '" alt="">' : '') +
+        '<div class="txt">' +
+          '<div class="ln">' + league.name + '</div>' +
+          '<div class="cn">' + displayCountryForLeague(league) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="leagueTabs">' + tabHtml + '</div>' +
+    '</div>';
+
+  document.getElementById("leagueBack").onclick = closeLeague;
+
+  for (const tab of head.querySelectorAll(".lTab")) {
+    tab.onclick = function () {
+      leagueTab = this.getAttribute("data-tab");
+      if (leagueTab === "stats") tally("scorers");
+      if (leagueTab === "teams") tally("teams");
+      refresh();
+    };
+  }
+}
+
+function drawScorers(scorers) {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (scorers.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No scorer data for this league.<br><br>' +
+      'Often missing early in a season.</div>';
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.className = "drawerHint";
+  head.textContent = "Top scorers";
+  list.appendChild(head);
+
+  for (const scorer of scorers.slice(0, 30)) {
+    const row = document.createElement("div");
+    row.className = "scorerRow";
+    row.innerHTML =
+      '<span class="pl">' + (scorer.place || "-") + '</span>' +
+      '<span class="who">' +
+        '<div class="pn">' + scorer.name + '</div>' +
+        '<div class="tn">' + scorer.team + '</div>' +
+      '</span>' +
+      '<span class="gl">' + scorer.goals + '</span>';
+    list.appendChild(row);
+  }
+}
+
+function drawTeams(teams) {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (teams.length === 0) {
+    list.innerHTML = '<div class="empty">No teams listed for this league.</div>';
+    return;
+  }
+
+  teams.sort(function (a, b) { return a.name.localeCompare(b.name); });
+
+  for (const team of teams) {
+    const row = document.createElement("div");
+    row.className = "teamRowItem";
+    row.innerHTML =
+      '<img src="' + team.logo + '" alt="">' +
+      '<span>' + team.name + '</span>';
+    list.appendChild(row);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// THE FAVOURITES SCREEN
+//
+// Drills down: countries, then that country's leagues, then that
+// league's clubs. Stars on the leagues and the clubs.
+// ---------------------------------------------------------------
+let favView = "countries";     // countries | leagues | teams
+let favCountry = null;
+let favLeagueChosen = null;
+let favTeamList = [];
+
+function drawCrumbs() {
+  const bits = ['<span class="crumb" data-go="countries">Countries</span>'];
+  if (favCountry) {
+    bits.push("&rsaquo;");
+    bits.push('<span class="crumb" data-go="leagues">' + favCountry + '</span>');
+  }
+  if (favLeagueChosen) {
+    bits.push("&rsaquo;");
+    bits.push('<span>' + favLeagueChosen.name + '</span>');
+  }
+
+  const bar = document.createElement("div");
+  bar.className = "crumbs";
+  bar.innerHTML = bits.join(" ");
+
+  for (const crumb of bar.querySelectorAll(".crumb")) {
+    crumb.onclick = function () {
+      const target = this.getAttribute("data-go");
+      if (target === "countries") {
+        favView = "countries";
+        favCountry = null;
+        favLeagueChosen = null;
+      } else {
+        favView = "leagues";
+        favLeagueChosen = null;
+      }
+      refresh();
+    };
+  }
+  return bar;
+}
+
+function drawFavCountries() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  list.appendChild(drawCrumbs());
+
+  if (allLeagues === null || allLeagues.length === 0) {
+    list.innerHTML += '<div class="empty">Loading countries...</div>';
+    return;
+  }
+
+  const grouped = countriesInOrder();
+
+  for (const country of grouped.order) {
+    const leagues = grouped.byCountry[country];
+    const row = document.createElement("div");
+    row.className = "pickRow";
+    row.innerHTML =
+      (leagues[0].logo ? '<img src="' + leagues[0].logo + '" alt="">' : '<img alt="">') +
+      '<span class="pname">' + country + '</span>' +
+      '<span class="chev">&#9654;</span>';
+    row.onclick = function () {
+      favCountry = country;
+      favView = "leagues";
+      refresh();
+    };
+    list.appendChild(row);
+  }
+}
+
+function drawFavLeagues() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  list.appendChild(drawCrumbs());
+
+  const grouped = countriesInOrder();
+  const leagues = grouped.byCountry[favCountry] || [];
+
+  for (const league of leagues) {
+    const starred = isFavLeague(league.id);
+
+    const row = document.createElement("div");
+    row.className = "pickRow";
+    row.innerHTML =
+      (league.logo ? '<img src="' + league.logo + '" alt="">' : '<img alt="">') +
+      '<span class="pname">' + league.name + '</span>' +
+      '<span class="star' + (starred ? " on" : "") + '">&#9733;</span>' +
+      '<span class="chev">&#9654;</span>';
+
+    // The star saves the league. Tapping anywhere else opens its clubs.
+    row.querySelector(".star").onclick = function (event) {
+      event.stopPropagation();
+      toggleFavLeague(league);
+      refresh();
+    };
+    row.onclick = function () {
+      favLeagueChosen = league;
+      favView = "teams";
+      refresh();
+    };
+    list.appendChild(row);
+  }
+
+  if (leagues.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No leagues here.";
+    list.appendChild(empty);
+  }
+}
+
+function drawFavTeams() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  list.appendChild(drawCrumbs());
+
+  if (favTeamList.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.innerHTML = "No clubs listed for this league.";
+    list.appendChild(empty);
+    return;
+  }
+
+  const sorted = favTeamList.slice().sort(function (a, b) {
+    return a.name.localeCompare(b.name);
+  });
+
+  for (const team of sorted) {
+    const starred = isFavTeam(team.id);
+
+    const row = document.createElement("div");
+    row.className = "pickRow";
+    row.innerHTML =
+      '<img src="' + team.logo + '" alt="">' +
+      '<span class="pname">' + team.name + '</span>' +
+      '<span class="star' + (starred ? " on" : "") + '">&#9733;</span>';
+
+    row.onclick = function () {
+      toggleFavTeam(team, favLeagueChosen);
+      refresh();
+    };
+    list.appendChild(row);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// THE HOME SCREEN
+//
+// Clubs down the left, leagues down the right. Tables underneath.
+// With nothing followed, it fills up with games from the big
+// countries instead of sitting empty.
+// ---------------------------------------------------------------
+function miniMatchHtml(match) {
+  const state = stateOf(match);
+  let when;
+
+  if (state === "live") {
+    const minute = minuteOf(match);
+    if (match.fixture.status.short === "HT") {
+      when = "Half time";
+    } else if (minute === null) {
+      when = "LIVE";
+    } else {
+      when = (minuteIsEstimated(match) ? "~" : "") + minute + "' LIVE";
+    }
+  } else if (state === "finished") {
+    when = "Full time";
+  } else {
+    const kickoff = new Date(match.fixture.date);
+    when = isNaN(kickoff) ? "" :
+      kickoff.toLocaleDateString([], { weekday: "short", day: "numeric" }) + " " +
+      kickoff.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  const live = state === "live";
+  const isOn = alerts.includes(match.fixture.id);
+
+  return '<div class="miniMatch" data-id="' + match.fixture.id + '">' +
+    '<div class="miniTop">' +
+      '<span class="miniWhen' + (live ? " liveNow" : "") + '">' + when + '</span>' +
+      '<span class="bell miniBell' + (isOn ? " on" : "") + '">&#9733;</span>' +
+    '</div>' +
+    '<div class="miniTeam"><img src="' + match.teams.home.logo + '" alt="">' +
+      '<span>' + match.teams.home.name + '</span></div>' +
+    '<div class="miniTeam"><img src="' + match.teams.away.logo + '" alt="">' +
+      '<span>' + match.teams.away.name + '</span></div>' +
+  '</div>';
+}
+
+// The mini cards are built as plain text, so their bells are
+// wired up afterwards.
+function wireMiniBells() {
+  for (const card of document.querySelectorAll(".miniMatch")) {
+    const id = Number(card.getAttribute("data-id"));
+    const bell = card.querySelector(".miniBell");
+    if (!bell) continue;
+    bell.onclick = function (event) {
+      event.stopPropagation();
+      toggleAlert(id, bell);
+    };
+  }
+}
+
+// ---------------------------------------------------------------
+// THE FEATURED MATCH
+//
+// One game at the top of Home, drawn the way the match centre
+// draws it. Anything the person follows comes first; if none of
+// their games are on, the biggest match in the world stands in.
+// ---------------------------------------------------------------
+let featureList = [];      // live matches worth featuring, best first
+let featureAt = 0;         // which one is on screen
+let featureDetails = {};   // fixture id -> { at, match }, for scorers
+let featureTouched = false; // true once the person has swiped it
+
+// How much a competition is worth when nothing is being followed.
+// Leans on the same ranking the country drawer uses, so the World
+// Cup outranks a Latvian cup tie without a second list to keep.
+function competitionWeight(item) {
+  const leagueForRank = { name: item.league || "", country: item.country || "" };
+  const country = displayCountryForLeague(leagueForRank);
+  const tier = rankOf({ name: leagueForRank.name, country: country });
+
+  const pinnedAt = PINNED.findIndex(function (name) {
+    return matchesPinned(name, country);
+  });
+
+  // rankOf returns -1 for anything it would rather not show, and
+  // 100-and-up for women's competitions.
+  const tierScore = tier < 0 ? 40 : (tier >= 100 ? 20 + (tier - 100) : tier);
+  const countryScore = pinnedAt === -1 ? 12 : pinnedAt;
+
+  // The level of the competition counts for more than which
+  // country it is in, so La Liga outranks England's League One.
+  return 20 + (tierScore * 3) + countryScore;
+}
+
+// Lower is better. Anything under 20 is something they follow.
+function featureRank(item) {
+  if (alerts.includes(item.id)) return 0;
+
+  const theirs = favTeams.some(function (team) {
+    return team.id === item.homeId || team.id === item.awayId;
+  });
+  if (theirs) return 1;
+
+  const theirLeague = favLeagues.some(function (league) {
+    return league.id === item.leagueId;
+  });
+  if (theirLeague) return 2;
+
+  if (myLeagues.includes(item.leagueId)) return 3;
+
+  return competitionWeight(item);
+}
+
+// Everything being played, best first. The whole lot goes into the
+// feed now rather than a chosen few, because the person swipes
+// through it themselves - the order is a suggestion, not a limit.
+function buildFeature(live) {
+  const playing = (live || []).slice();
+
+  if (playing.length === 0) {
+    featureList = [];
+    featureAt = 0;
+    return;
+  }
+
+  const ranked = playing
+    .map(function (item) {
+      return { item: item, rank: featureRank(item) };
+    })
+    .sort(function (a, b) { return a.rank - b.rank; });
+
+  const followed = ranked.filter(function (entry) { return entry.rank < 20; });
+
+  // Their own matches take the top card and cycle between them.
+  // With none of theirs on, the biggest game in the world stands
+  // in - one card, sitting still, rather than a slideshow of
+  // matches nobody asked about.
+  const chosen = followed.length > 0 ? followed.slice(0, 4) : ranked.slice(0, 1);
+
+  const before = featureList[featureAt] ? featureList[featureAt].id : null;
+  featureList = chosen.map(function (entry) { return entry.item; });
+
+  const stillThere = featureList.findIndex(function (item) {
+    return item.id === before;
+  });
+  featureAt = stillThere === -1 ? 0 : stillThere;
+}
+
+// Goalscorers, which the ticker does not carry. Kept for a minute
+// and a half on the device, since they hardly ever change.
+async function featureDetail(id) {
+  const saved = featureDetails[id];
+  if (saved && Date.now() - saved.at < 90000) return saved.match;
+
+  try {
+    const match = await (await fetch("/api/match?id=" + id + "&light=1")).json();
+    if (match) featureDetails[id] = { at: Date.now(), match: match };
+    return match || (saved ? saved.match : null);
+  } catch (error) {
+    return saved ? saved.match : null;
+  }
+}
+
+// Surnames only, so two scorers fit on one line.
+function scorerName(name) {
+  const clean = String(name || "").trim();
+  if (clean.length <= 14) return clean;
+  const bits = clean.split(/\s+/);
+  return bits.length > 1 ? bits[bits.length - 1] : clean.slice(0, 13) + ".";
+}
+
+function featureGoalsHtml(match, item) {
+  if (!match || !Array.isArray(match.events) || match.events.length === 0) {
+    return '<div class="featQuiet">No goals yet</div>';
+  }
+
+  const home = [];
+  const away = [];
+
+  for (const event of match.events) {
+    const who = scorerName(event.player && event.player.name) || "Unknown";
+    const minute = event.time && event.time.elapsed ? event.time.elapsed + "'" : "";
+    const line = '<div>' + who + ' ' + minute + '</div>';
+
+    if (event.team && event.team.name === match.teams.home.name) {
+      home.push(line);
+    } else {
+      away.push(line);
+    }
+  }
+
+  // Four lines a side is what the card is built to hold. A fifth
+  // goal turns the last line into a count rather than making the
+  // card taller than its neighbours.
+  const trim = function (list) {
+    if (list.length <= 4) return list.join("");
+    const over = list.length - 3;
+    return list.slice(0, 3).join("") +
+      '<div class="featMore">+' + over + ' more</div>';
+  };
+
+  return '<div class="featGoals">' +
+    '<div class="featCol">&#9917; ' + (trim(home) || "<div></div>") + '</div>' +
+    '<div class="featCol right">' + (trim(away) || "<div></div>") + ' &#9917;</div>' +
+  '</div>';
+}
+
+// One card in the feed.
+function featureCard(item) {
+  const clock = item.minute !== null ? item.minute + "'" : (item.short || "LIVE");
+  const hg = item.hg === null ? "-" : item.hg;
+  const ag = item.ag === null ? "-" : item.ag;
+  const known = featureDetails[item.id];
+
+  return '<div class="feature" data-feature="' + item.id + '">' +
+    '<div class="featTop">' +
+      '<span class="featComp">' + (item.league || "") + '</span>' +
+      '<span class="featClock"><i class="featDot"></i>' + clock + '</span>' +
+    '</div>' +
+    '<div class="featScore">' +
+      '<div class="featSide">' +
+        '<img src="' + item.homeLogo + '" alt="">' +
+        '<div class="featName">' + item.home + '</div>' +
+      '</div>' +
+      '<div class="featNums">' + hg + ' - ' + ag + '</div>' +
+      '<div class="featSide">' +
+        '<img src="' + item.awayLogo + '" alt="">' +
+        '<div class="featName">' + item.away + '</div>' +
+      '</div>' +
+    '</div>' +
+    (known
+      ? featureGoalsHtml(known.match, item)
+      : '<div class="featQuiet">Loading the goals...</div>') +
+  '</div>';
+}
+
+// Draws the whole feed: every live match as a card on one track
+// that scrolls sideways, so it can be swiped rather than waited on.
+async function paintFeature() {
+  const box = document.getElementById("featureBox");
+  if (!box) return;
+
+  if (featureList.length === 0) {
+    box.innerHTML = "";
+    return;
+  }
+
+  if (featureAt >= featureList.length) featureAt = 0;
+
+  const dots = featureList.length > 1
+    ? '<div class="featDots">' + featureList.map(function (other, index) {
+        return '<i class="' + (index === featureAt ? "on" : "") +
+          '" data-go="' + index + '"></i>';
+      }).join("") + '</div>'
+    : "";
+
+  box.innerHTML =
+    '<div class="featTrack" id="featTrack">' +
+      featureList.map(featureCard).join("") +
+    '</div>' + dots;
+
+  const track = document.getElementById("featTrack");
+  if (!track) return;
+
+  for (const card of track.querySelectorAll(".feature")) {
+    const id = Number(card.getAttribute("data-feature"));
+    card.onclick = function () { tally("feature"); openMatch(id); };
+  }
+
+  // Tapping a dot jumps to that match.
+  for (const dot of box.querySelectorAll(".featDots i")) {
+    dot.onclick = function () {
+      featureAt = Number(this.getAttribute("data-go")) || 0;
+      scrollFeatureTo(featureAt);
+      markFeatureDots();
+      fillFeatureGoals(featureAt);
+    };
+  }
+
+  // A swipe is the person taking over, so the timer stops rather
+  // than yanking the card back from under their thumb.
+  track.onscroll = function () {
+    featureTouched = true;
+    const width = track.clientWidth || 1;
+    const at = Math.round(track.scrollLeft / width);
+    if (at !== featureAt && at >= 0 && at < featureList.length) {
+      featureAt = at;
+      markFeatureDots();
+      fillFeatureGoals(featureAt);
+    }
+  };
+
+  scrollFeatureTo(featureAt, true);
+  fillFeatureGoals(featureAt);
+}
+
+function scrollFeatureTo(index, instant) {
+  const track = document.getElementById("featTrack");
+  if (!track) return;
+
+  const left = index * (track.clientWidth || 0);
+  if (instant || !track.scrollTo) track.scrollLeft = left;
+  else track.scrollTo({ left: left, behavior: "smooth" });
+}
+
+function markFeatureDots() {
+  const box = document.getElementById("featureBox");
+  if (!box) return;
+
+  const dots = box.querySelectorAll(".featDots i");
+  for (let i = 0; i < dots.length; i++) {
+    dots[i].className = i === featureAt ? "on" : "";
+  }
+}
+
+// ---------------------------------------------------------------
+// LIVE NOW
+//
+// The same card as the one at the top, stacked down the page. The
+// featured card is whatever matters most to this person; this is
+// everything else being played.
+// ---------------------------------------------------------------
+const LIVE_LIST_MAX = 15;
+
+function drawLiveList(list, live) {
+  if (!live || live.length === 0) return;
+
+  // Whatever is already on the card above does not need repeating
+  // directly underneath it.
+  const onTop = {};
+  for (const item of featureList) onTop[item.id] = true;
+
+  const rest = live
+    .map(function (item) {
+      return { item: item, rank: featureRank(item) };
+    })
+    .sort(function (a, b) { return a.rank - b.rank; })
+    .map(function (entry) { return entry.item; })
+    .filter(function (item) { return !onTop[item.id]; })
+    .slice(0, LIVE_LIST_MAX);
+
+  if (rest.length === 0) return;
+
+  const heading = document.createElement("div");
+  heading.className = "boardHead";
+  heading.innerHTML = 'Live now <span class="liveCount">' +
+    live.length + '</span>';
+  list.appendChild(heading);
+
+  const stack = document.createElement("div");
+  stack.className = "liveStack";
+  // The advert above the featured match counts as the top one, and
+  // the featured cards count towards the spacing, so the rhythm of
+  // one advert every few matches carries on down the page.
+  stack.innerHTML = withAds(rest.map(featureCard),
+    { n: featureList.length, started: true });
+  list.appendChild(stack);
+
+  for (const card of stack.querySelectorAll(".feature")) {
+    const id = Number(card.getAttribute("data-feature"));
+    card.onclick = function () { tally("feature"); openMatch(id); };
+  }
+
+  activateAds(list);
+
+  // Scorers come in one at a time behind the list, so fifteen
+  // cards do not fire fifteen requests at once.
+  fillStackGoals(rest);
+}
+
+async function fillStackGoals(items) {
+  for (const item of items) {
+    // Somebody may have moved on before this gets round to them.
+    if (screen !== "home" || homeTab !== "live") return;
+
+    const match = await featureDetail(item.id);
+    if (!match) continue;
+
+    const card = document.querySelector('[data-feature="' + item.id + '"]');
+    if (!card) continue;
+
+    const quiet = card.querySelector(".featQuiet");
+    if (quiet) quiet.outerHTML = featureGoalsHtml(match, item);
+  }
+}
+
+// Fetches scorers for the card on screen and the one either side,
+// rather than all of them at once.
+async function fillFeatureGoals(index) {
+  const wanted = [index - 1, index, index + 1].filter(function (at) {
+    return at >= 0 && at < featureList.length;
+  });
+
+  for (const at of wanted) {
+    const item = featureList[at];
+    if (!item || featureDetails[item.id]) continue;
+
+    const match = await featureDetail(item.id);
+    if (!match) continue;
+
+    const card = document.querySelector('[data-feature="' + item.id + '"]');
+    if (!card) continue;
+
+    const quiet = card.querySelector(".featQuiet");
+    if (quiet) quiet.outerHTML = featureGoalsHtml(match, item);
+  }
+}
+
+
+// Move on to the next one every few seconds. A lone match, or a
+// stand-in when nothing followed is being played, just sits there.
+setInterval(function () {
+  if (screen !== "home" || homeTab !== "live") return;
+  if (featureList.length < 2) return;
+
+  // Once somebody has swiped, the feed is theirs to move.
+  if (featureTouched) return;
+
+  featureAt = (featureAt + 1) % featureList.length;
+  scrollFeatureTo(featureAt);
+  markFeatureDots();
+  fillFeatureGoals(featureAt);
+}, 7000);
+
+
+// ---------------------------------------------------------------
+// THE HOME SCREEN
+//
+// Three views under the bar: what is being played, the papers, and
+// whatever the person has starred.
+// ---------------------------------------------------------------
+let homeTab = "live";
+
+async function drawHome() {
+  const list = document.getElementById("list");
+  const updated = document.getElementById("updated");
+  list.innerHTML = "";
+  updated.textContent = "";
+
+  // Keep the sub-header in step, since Home can be reached from
+  // several places. Scoped to its own strip, or it would wipe the
+  // highlight off the XP tabs sitting in the same bar.
+  for (const tab of document.querySelectorAll("#subTabs .subTab")) {
+    tab.classList.toggle("on", tab.getAttribute("data-sub") === homeTab);
+  }
+
+  if (homeTab === "news") { await drawHomeNews(list); return; }
+  if (homeTab === "following") { await drawHomeFollowing(list); return; }
+  await drawHomeLive(list);
+}
+
+// ---- Live: your clubs and leagues, then whatever is on ----
+async function drawHomeLive(list) {
+  // The featured match goes in first so it sits at the very top,
+  // and gets filled once the live feed arrives.
+  const featureBox = document.createElement("div");
+  featureBox.id = "featureBox";
+  featureBox.className = "featureBoxPad";
+
+  // The first advert sits above the first match on the screen.
+  if (adsOn()) {
+    const topAd = document.createElement("div");
+    topAd.innerHTML = adHtml();
+    list.appendChild(topAd.firstChild);
+  }
+  list.appendChild(featureBox);
+
+  // Five slots each. Badges only, no names, so nothing collides.
+  const slots = function (items, kind) {
+    let html = '<div class="slotRow">';
+    for (let i = 0; i < 5; i++) {
+      const item = items[i];
+      if (item) {
+        const short = item.name.length > 11
+          ? item.name.slice(0, 10) + "." : item.name;
+        html += '<div class="slot" data-kind="' + kind + '" data-id="' + item.id + '">' +
+          '<img src="' + item.logo + '" alt="">' +
+          '<span class="slotName">' + short + '</span>' +
+        '</div>';
+      } else {
+        html += '<div class="slot slotEmpty" data-kind="add">+</div>';
+      }
+    }
+    return html + '</div>';
+  };
+
+  const board = document.createElement("div");
+  board.className = "board";
+  board.innerHTML =
+    '<div class="boardHead">Your clubs</div>' +
+    slots(favTeams.slice(0, 5), "club") +
+    '<div class="boardHead">Your leagues</div>' +
+    slots(favLeagues.slice(0, 5), "league");
+  list.appendChild(board);
+
+  for (const slot of board.querySelectorAll(".slot")) {
+    const kind = slot.getAttribute("data-kind");
+    const id = Number(slot.getAttribute("data-id"));
+
+    slot.onclick = function () {
+      if (kind === "add") {
+        favView = "countries";
+        goTo("favourites");
+        return;
+      }
+      if (kind === "club") {
+        const club = favTeams.find(function (t) { return t.id === id; });
+        if (club) openClub(club);
+        return;
+      }
+      // A league goes straight to its table.
+      const league = favLeagues.find(function (l) { return l.id === id; });
+      if (league) {
+        openLeague(league);
+        leagueTab = "table";
+        refresh();
+      }
+    };
+  }
+
+  if (favTeams.length === 0 && favLeagues.length === 0) {
+    const hint = document.createElement("div");
+    hint.className = "empty";
+    hint.innerHTML =
+      "Tap a plus to add your clubs and leagues.<br><br>" +
+      "Clubs open their fixtures, table and stats.<br>" +
+      "Leagues go straight to the table.";
+    list.appendChild(hint);
+  }
+
+  // ---- Live games, three across ----
+  // One request feeds both the card at the top and the grid here.
+  let live = [];
+  try {
+    live = await fetchJson("/api/ticker", 12);
+    if (!Array.isArray(live)) live = [];
+  } catch (error) {
+    live = [];
+  }
+
+  buildFeature(live);
+  await paintFeature();
+
+  // Everything being played, under the clubs and leagues board.
+  drawLiveList(list, live);
+
+}
+
+// ---- Following ----
+//
+// One pool of matches: everything starred, plus the next games of
+// every club followed. It is split by whether the game has kicked
+// off, so a match moves up the screen on its own the moment it
+// starts rather than waiting for anybody to tap anything.
+async function drawHomeFollowing(list) {
+  if (favTeams.length === 0 && alerts.length === 0) {
+    list.innerHTML =
+      '<div class="empty">Nothing followed yet.<br><br>' +
+      'Star a match, or add a club from Favourites, and it will ' +
+      'sit here with its score kept up to date.</div>';
+    return;
+  }
+
+  const loading = document.createElement("div");
+  loading.className = "empty";
+  loading.textContent = "Loading your matches...";
+  list.appendChild(loading);
+
+  // Live scores first, so anything being played shows the newest
+  // score and minute even if the club-season response is older.
+  let live = [];
+  try {
+    live = await (await fetch("/api/ticker")).json();
+  } catch (error) {
+    live = [];
+  }
+
+  const liveById = {};
+  for (const m of live) liveById[m.id] = m;
+
+  // ---- Gather ----
+  const pool = {};
+
+  for (const club of favTeams.slice(0, 5)) {
+    let season = [];
+    try {
+      season = await (await fetch("/api/team-season?team=" + club.id)).json();
+    } catch (error) {
+      continue;
+    }
+
+    const next = season
+      .filter(function (m) { return stateOf(m) !== "finished"; })
+      .sort(function (a, b) {
+        return new Date(a.fixture.date) - new Date(b.fixture.date);
+      })
+      .slice(0, 2);
+
+    for (const match of next) {
+      if (!pool[match.fixture.id]) {
+        pool[match.fixture.id] = { match: match, club: club };
+      }
+    }
+  }
+
+  for (const id of alerts.slice(0, 12)) {
+    if (pool[id]) continue;
+    try {
+      const match = await (await fetch("/api/match?id=" + id + "&light=1")).json();
+      if (match) pool[id] = { match: match, club: null };
+    } catch (error) {
+      // Skip that one.
+    }
+  }
+
+  list.innerHTML = "";
+
+  const everything = Object.keys(pool).map(function (key) { return pool[key]; });
+
+  if (everything.length === 0) {
+    list.innerHTML =
+      '<div class="empty">Could not load your matches.<br><br>' +
+      'Pull down to try again.</div>';
+    return;
+  }
+
+  // Make a display copy with the live ticker's newest score/minute.
+  // This keeps the dark fixture card accurate without mutating the
+  // season data kept elsewhere in the app.
+  const liveVersion = function (match) {
+    const feed = liveById[match.fixture.id];
+    if (!feed) return match;
+
+    return Object.assign({}, match, {
+      goals: Object.assign({}, match.goals, {
+        home: feed.hg,
+        away: feed.ag,
+      }),
+      fixture: Object.assign({}, match.fixture, {
+        status: Object.assign({}, match.fixture.status, {
+          elapsed: feed.minute,
+          short: feed.short || match.fixture.status.short,
+        }),
+      }),
+    });
+  };
+
+  // fixtureCard deliberately leaves its competition label blank on
+  // the Fixtures page because a group heading already names it. The
+  // Following page has no competition group, so put it back on each
+  // card here.
+  const followingCard = function (match) {
+    const country = displayCountryForLeague(match.league);
+    const competition = (country ? country + " - " : "") +
+      ((match.league && match.league.name) || "");
+
+    return fixtureCard(match).replace(
+      '<span class="featComp"></span>',
+      '<span class="featComp">' + competition + '</span>'
+    );
+  };
+
+  // Same card behaviour as Fixtures, except an unstar redraws the
+  // Following page immediately so a match that was only here because
+  // it was starred disappears straight away.
+  const wireFollowingCards = function (within) {
+    for (const card of within.querySelectorAll(".fixCard")) {
+      const id = Number(card.getAttribute("data-id"));
+      card.onclick = function () { openMatch(id); };
+
+      const star = card.querySelector(".fixStar");
+      if (star) {
+        star.onclick = function (event) {
+          event.stopPropagation();
+          toggleAlert(id, null);
+          drawHome();
+        };
+      }
+    }
+  };
+
+  const shown = everything.map(function (entry) {
+    return { entry: entry, match: liveVersion(entry.match) };
+  });
+
+  // Under way or already played on one side, still to come on the
+  // other. A match moves section automatically as its status changes.
+  const started = shown.filter(function (item) {
+    return stateOf(item.match) !== "upcoming";
+  });
+  const later = shown.filter(function (item) {
+    return stateOf(item.match) === "upcoming";
+  });
+
+  started.sort(function (a, b) { return matchSort(a.match, b.match); });
+  later.sort(function (a, b) {
+    return new Date(a.match.fixture.date) - new Date(b.match.fixture.date);
+  });
+
+  const drawSection = function (title, items, countLive) {
+    if (items.length === 0) return;
+
+    const heading = document.createElement("div");
+    heading.className = "boardHead";
+    heading.innerHTML = title + (countLive
+      ? ' <span class="liveCount">' + items.length + '</span>'
+      : '');
+    list.appendChild(heading);
+
+    const stack = document.createElement("div");
+    stack.className = "fixStack followingFixStack";
+    stack.innerHTML = withAds(items.map(function (item) {
+      return followingCard(item.match);
+    }), followingAds);
+
+    list.appendChild(stack);
+    wireFollowingCards(stack);
+    activateAds(stack);
+  };
+
+  // These are now exactly the same navy match cards used by the
+  // Fixtures screen and the main live-match presentation.
+  const followingAds = { n: 0, started: false };
+
+  drawSection("Following", started, true);
+  drawSection("Coming up", later, false);
+}
+
+// ---- News: headlines, linking out to whoever wrote them ----
+async function drawHomeNews(list) {
+  const loading = document.createElement("div");
+  loading.className = "empty";
+  loading.textContent = "Loading the headlines...";
+  list.appendChild(loading);
+
+  let items = [];
+  try {
+    items = await (await fetch("/api/news")).json();
+  } catch (error) {
+    items = [];
+  }
+
+  list.innerHTML = "";
+
+  if (!Array.isArray(items) || items.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No headlines right now.<br><br>' +
+      'Try again in a few minutes.</div>';
+    return;
+  }
+
+  // "14 minutes ago" reads better than a timestamp on a news list.
+  const howLongAgo = function (iso) {
+    if (!iso) return "";
+    const then = new Date(iso);
+    if (isNaN(then)) return "";
+
+    const minutes = Math.round((Date.now() - then.getTime()) / 60000);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return minutes + " min ago";
+
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return hours + (hours === 1 ? " hour ago" : " hours ago");
+
+    const days = Math.round(hours / 24);
+    return days + (days === 1 ? " day ago" : " days ago");
+  };
+
+  const safe = function (text) {
+    return String(text || "").replace(/[<>&"]/g, function (character) {
+      return { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[character];
+    });
+  };
+
+  // Counting from the full gap means the first advert goes above
+  // the first headline, then one after every few.
+  let newsSinceAd = ADS.every;
+
+  for (const item of items) {
+    if (adsOn() && newsSinceAd >= ADS.every) {
+      const ad = document.createElement("div");
+      ad.innerHTML = adHtml();
+      list.appendChild(ad.firstChild);
+      newsSinceAd = 0;
+    }
+    newsSinceAd++;
+
+    const row = document.createElement("a");
+    row.className = "newsRow";
+    row.href = item.link;
+    row.target = "_blank";
+    row.rel = "noopener noreferrer";
+    row.innerHTML =
+      (item.image
+        ? '<img class="newsThumb" src="' + safe(item.image) + '" alt="">'
+        : '') +
+      '<span class="newsBody">' +
+        '<span class="newsTitle">' + safe(item.title) + '</span>' +
+        '<span class="newsMeta">' + safe(item.source) +
+          (howLongAgo(item.at) ? ' &middot; ' + howLongAgo(item.at) : '') +
+        '</span>' +
+      '</span>';
+    list.appendChild(row);
+  }
+
+  const note = document.createElement("div");
+  note.className = "newsNote";
+  note.textContent =
+    "Headlines from their own feeds. Tapping one opens the full " +
+    "story on the site that wrote it.";
+  list.appendChild(note);
+  activateAds(list);
+}
+
+
+
+// Makes a three letter tag out of a club name, the way the
+// scoreboards do it. "Real Madrid" becomes RMA, "Celtic" CEL.
+const NAME_NOISE = [
+  "fc", "sc", "cf", "afc", "ac", "as", "sv", "cd", "ca", "sk",
+  "fk", "bk", "if", "sp", "ud", "rc", "us", "ss", "club", "de",
+];
+
+function shortName(name) {
+  const words = String(name || "")
+    .replace(/[.]/g, "")
+    .split(/\s+/)
+    .filter(function (word) {
+      return word && !NAME_NOISE.includes(word.toLowerCase());
+    });
+
+  if (words.length === 0) return "???";
+  if (words.length === 1) return words[0].slice(0, 3).toUpperCase();
+
+  // First letter of the first word, first two of the second.
+  return (words[0][0] + words[1].slice(0, 2)).toUpperCase();
+}
+
+
+// ---------------------------------------------------------------
+// THE DAILY SPIN
+//
+// One free spin a day. Rewards are deliberately modest so nobody
+// can build up anything worth much.
+// ---------------------------------------------------------------
+const SPIN_PRIZES = [
+  { chance: 34, kind: "xp",     amount: 25,  text: "+25 XP" },
+  { chance: 24, kind: "xp",     amount: 50,  text: "+50 XP" },
+  { chance: 16, kind: "coins",  amount: 15,  text: "+15 coins" },
+  { chance: 12, kind: "boost",  amount: 2, hours: 1, text: "Double XP for an hour" },
+  { chance: 8,  kind: "xp",     amount: 100, text: "+100 XP" },
+  { chance: 4,  kind: "boost",  amount: 2, hours: 24, text: "Double XP for a day" },
+  { chance: 2,  kind: "shield", amount: 1,  text: "Relegation shield" },
+];
+
+function pickPrize() {
+  const total = SPIN_PRIZES.reduce(function (sum, p) { return sum + p.chance; }, 0);
+  let roll = Math.random() * total;
+  for (const prize of SPIN_PRIZES) {
+    roll -= prize.chance;
+    if (roll <= 0) return prize;
+  }
+  return SPIN_PRIZES[0];
+}
+
+function spinUsedToday() {
+  return keep.getItem("lastSpin") === todayKey;
+}
+
+function takeSpin() {
+  const prize = pickPrize();
+
+  if (prize.kind === "xp") {
+    creditXp("spin", prize.amount);
+  } else if (prize.kind === "coins") {
+    coins = coins + prize.amount;
+  } else if (prize.kind === "boost") {
+    boostSize = prize.amount;
+    boostUntil = Date.now() + prize.hours * 3600000;
+  } else if (prize.kind === "shield") {
+    // Only one at a time, so they cannot be stockpiled.
+    shields = Math.min(1, shields + 1);
+  }
+
+  keep.setItem("lastSpin", todayKey);
+  tally("spin");
+  saveXpState();
+  drawProgress();
+  return prize;
+}
+
+
+// ---------------------------------------------------------------
+// THE XP LEAGUE SCREEN
+// ---------------------------------------------------------------
+// ---------------------------------------------------------------
+// THE FIVE-A-SIDE TEAM
+//
+// A squad picked from Premier League players. The shape of the
+// team is the list below, so changing it is one edit rather than
+// a hunt through the drawing code.
+//
+// NOTE ON THE COUNT: six slots, because that is the line-up asked
+// for - a keeper, two at the back, two in the middle and one up
+// front. A true five-a-side is five. Drop a line from this list
+// and everything else follows.
+// ---------------------------------------------------------------
+const FIVE_A_SIDE = [
+  { slot: "gk",  label: "Goalkeeper", position: "GK",  line: 3 },
+  { slot: "df1", label: "Defender",   position: "DEF", line: 2 },
+  { slot: "df2", label: "Defender",   position: "DEF", line: 2 },
+  { slot: "mf1", label: "Midfield",   position: "MID", line: 1 },
+  { slot: "mf2", label: "Midfield",   position: "MID", line: 1 },
+  { slot: "st",  label: "Striker",    position: "ST",  line: 0 },
+];
+
+// Every Premier League player, straight from the official Fantasy
+// Premier League data. Loaded once and kept for the session.
+let PL_PLAYERS = [];
+let fplMeta = {
+  loaded: false, loading: false, error: "",
+  currentEvent: null, previousEvent: null,
+};
+
+async function loadFplPlayers() {
+  if (fplMeta.loaded || fplMeta.loading) return;
+  fplMeta.loading = true;
+
+  try {
+    const data = await (await fetch("/api/fpl-players")).json();
+    PL_PLAYERS = Array.isArray(data.players) ? data.players : [];
+    fplMeta.currentEvent = data.currentEvent || null;
+    fplMeta.previousEvent = data.previousEvent || null;
+    fplMeta.error = data.error ||
+      (PL_PLAYERS.length === 0 ? "No players came back" : "");
+  } catch (error) {
+    fplMeta.error = "Could not reach the player list";
+  }
+
+  fplMeta.loading = false;
+  fplMeta.loaded = true;
+}
+
+// Redraws the XP page if it is still the thing on screen.
+function refreshXpIfShowing() {
+  if (screen === "xp") drawXpScreen();
+}
+
+let fiveASide = readSaved("fiveASide", {});
+let fivePicking = null;   // which slot is being filled, if any
+let openPlayerId = null;  // whose statistics are being read
+
+// ---------------------------------------------------------------
+// THE WEDNESDAY LOCK
+//
+// The squad you had at midnight on Wednesday is the one that
+// scores that week. You can still change your picks whenever you
+// like - the changes simply wait for the next Wednesday. That way
+// nobody can pick a hat-trick scorer on Sunday afternoon.
+// ---------------------------------------------------------------
+const XP_PER_FPL_POINT = 15;
+
+// ---------------------------------------------------------------
+// THE BUDGET
+//
+// Six players priced at Fantasy Premier League's own valuations.
+// The cheapest legal squad costs about 25.5m and the most
+// expensive about 65m.
+//
+// At 38m you get one premium and one mid-priced player, and the
+// rest has to come from the bargain end. Two premiums cannot be
+// made to fit at any price. It is a tight cap on purpose - the
+// whole point is that nobody can just buy the best six.
+// ---------------------------------------------------------------
+const SQUAD_BUDGET = 38;
+
+function money(amount) {
+  return "\u00a3" + (Number(amount) || 0).toFixed(1) + "m";
+}
+
+function squadCost() {
+  let total = 0;
+  for (const spot of FIVE_A_SIDE) {
+    const player = playerInSlot(spot.slot);
+    if (player) total += Number(player.price) || 0;
+  }
+  return total;
+}
+
+// The cheapest player available in a position, used to hold money
+// back for the places still to be filled.
+function cheapestFor(position) {
+  let lowest = null;
+  for (const player of PL_PLAYERS) {
+    if (player.position !== position) continue;
+    const price = Number(player.price) || 0;
+    if (lowest === null || price < lowest) lowest = price;
+  }
+  return lowest === null ? 4 : lowest;
+}
+
+// What can be spent on one place without stranding the others. A
+// striker that eats the whole budget is no use if it leaves
+// nothing for a goalkeeper.
+function affordableFor(slot) {
+  let committed = 0;
+
+  for (const spot of FIVE_A_SIDE) {
+    if (spot.slot === slot) continue;
+    const player = playerInSlot(spot.slot);
+    committed += player
+      ? (Number(player.price) || 0)
+      : cheapestFor(spot.position);
+  }
+
+  return SQUAD_BUDGET - committed;
+}
+
+// A squad can be impossible to finish without ever going over the
+// cap: five expensive players and an empty place that nothing
+// affordable can fill. That is just as much a dead end, and it is
+// exactly what happens to an existing squad when the cap is cut.
+function squadStuck() {
+  if (overBudget()) return true;
+
+  for (const spot of FIVE_A_SIDE) {
+    if (playerInSlot(spot.slot)) continue;
+    if (cheapestFor(spot.position) > affordableFor(spot.slot) + 0.001) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function overBudget() {
+  // Prices drift during a season, so a squad picked legally can
+  // creep over. We never force a change - only new picks are
+  // checked - but it is worth saying so.
+  return squadCost() > SQUAD_BUDGET + 0.001;
+}
+
+// The Wednesday that the week containing this date began.
+function squadCycleKey(when) {
+  const day = new Date(when);
+  day.setHours(0, 0, 0, 0);
+  day.setDate(day.getDate() - ((day.getDay() - 3 + 7) % 7));
+  return isoDate(day);
+}
+
+// ---------------------------------------------------------------
+// THE CHANGE WINDOW
+//
+// Squads can only be altered between midnight on Wednesday and
+// midnight on Saturday - so all of Wednesday, Thursday and Friday.
+// One change a week: taking a player out uses it. Putting someone
+// into an empty place is always free, because otherwise a new
+// squad could never be built.
+// ---------------------------------------------------------------
+const CHANGES_PER_WEEK = 1;
+
+function inChangeWindow(when) {
+  const day = (when || new Date()).getDay();
+  return day === 3 || day === 4 || day === 5;   // Wed, Thu, Fri
+}
+
+// Midnight at the start of the next given weekday.
+function nextWeekday(target) {
+  const day = new Date();
+  day.setHours(0, 0, 0, 0);
+  day.setDate(day.getDate() + (((target - day.getDay()) + 7) % 7 || 7));
+  return day;
+}
+
+function windowOpensOn() { return nextWeekday(3); }
+function windowClosesOn() { return nextWeekday(6); }
+
+function dayName(date) {
+  return date.toLocaleDateString([], {
+    weekday: "long", day: "numeric", month: "short",
+  });
+}
+
+let squadChanges = readSaved("squadChanges", null);
+
+// How many changes are left this week, resetting each Wednesday.
+function changesLeft() {
+  const cycle = squadCycleKey(new Date());
+  if (!squadChanges || squadChanges.cycle !== cycle) {
+    squadChanges = { cycle: cycle, used: 0 };
+    keep.setItem("squadChanges", JSON.stringify(squadChanges));
+  }
+  return Math.max(0, CHANGES_PER_WEEK - (Number(squadChanges.used) || 0));
+}
+
+// Taking a player out, or swapping one for another, both count.
+//
+// One exception: a squad that has drifted over the cap on rising
+// prices can always be edited, whatever day it is and whether or
+// not the weekly change has been used. Otherwise someone could be
+// stuck over the limit with no way to fix it. This cannot be
+// gamed, because the only route over the cap is a price rise -
+// nobody can pick their way there.
+function canChangeSquad() {
+  if (squadStuck()) return true;
+  return inChangeWindow() && changesLeft() > 0;
+}
+
+// Changes made to escape a stuck squad are free, and there is no
+// limit on them - it can take more than one removal to get back
+// inside the cap, and charging for the first would leave someone
+// worse off than before they started.
+function fixingOverspend() {
+  return squadStuck();
+}
+
+function useSquadChange() {
+  changesLeft();                       // makes sure the week is current
+  squadChanges.used = (Number(squadChanges.used) || 0) + 1;
+  keep.setItem("squadChanges", JSON.stringify(squadChanges));
+  if (typeof pushProgress === "function") pushProgress();
+}
+
+// The one line that explains the rule, wherever the squad is shown.
+function changeRuleText() {
+  // Over the cap, none of the usual restrictions apply.
+  if (overBudget()) {
+    return {
+      open: true,
+      line: "Over the " + money(SQUAD_BUDGET) + " cap",
+      detail: "Your squad is above the limit. Take players out until " +
+        "it is back under - any day, as many as it takes, and none " +
+        "of it uses your change for the week.",
+    };
+  }
+
+  // Under the cap, but with too little left to fill an empty place.
+  if (squadStuck()) {
+    return {
+      open: true,
+      line: money(Math.max(0, SQUAD_BUDGET - squadCost())) +
+        " left is not enough to fill your team",
+      detail: "Nobody available fits in the money you have spare. " +
+        "Take out whoever you like until it does - any day, as many " +
+        "as it takes, and it will not use your change for the week.",
+    };
+  }
+
+  if (!inChangeWindow()) {
+    return {
+      open: false,
+      line: "Squad locked until " + dayName(windowOpensOn()),
+      detail: "Changes can only be made between midnight Wednesday " +
+        "and midnight Saturday. You get one change a week.",
+    };
+  }
+
+  if (changesLeft() === 0) {
+    return {
+      open: false,
+      line: "Your change for this week is used",
+      detail: "You can still fill any empty place. The next change " +
+        "becomes available on " + dayName(windowOpensOn()) + ".",
+    };
+  }
+
+  return {
+    open: true,
+    line: "One change available until " + dayName(windowClosesOn()),
+    detail: "Taking a player out uses your change for the week. " +
+      "Filling an empty place is free.",
+  };
+}
+
+let squadHistory = readSaved("squadHistory", {});
+let paidEvents = readSaved("paidEvents", []);
+let lastSettlement = readSaved("lastSettlement", null);
+
+function saveSquadLock() {
+  // Two months of weeks is more than enough to settle against.
+  const cycles = Object.keys(squadHistory).sort();
+  while (cycles.length > 8) delete squadHistory[cycles.shift()];
+
+  keep.setItem("squadHistory", JSON.stringify(squadHistory));
+  keep.setItem("paidEvents", JSON.stringify(paidEvents));
+  keep.setItem("lastSettlement", JSON.stringify(lastSettlement));
+  if (typeof pushProgress === "function") pushProgress();
+}
+
+// While the window is open the picks can still move, so the frozen
+// copy follows them. The moment it shuts, whatever is there stands
+// for the rest of the week - and nothing can edit it anyway.
+function ensureSquadLocked() {
+  const cycle = squadCycleKey(new Date());
+  if (!inChangeWindow() && squadHistory[cycle]) return;
+
+  squadHistory[cycle] = Object.assign({}, fiveASide);
+  saveSquadLock();
+}
+
+// Takes a player out. Only inside the window, only once a week.
+function removeFromSquad(slot) {
+  if (!canChangeSquad()) return false;
+  if (!fiveASide[slot]) return false;
+
+  // Getting back under the cap should not cost the weekly change.
+  const rescue = fixingOverspend();
+
+  delete fiveASide[slot];
+  if (!rescue) useSquadChange();
+
+  saveFiveASide();
+  ensureSquadLocked();
+  return true;
+}
+
+function lockedPicks() {
+  return squadHistory[squadCycleKey(new Date())] || {};
+}
+
+// Pays out any finished gameweek that has not been paid yet, using
+// whichever squad was locked in for the week that gameweek fell in.
+async function settleGameweeks() {
+  if (!fplMeta.loaded) await loadFplPlayers();
+
+  const candidates = [fplMeta.previousEvent, fplMeta.currentEvent]
+    .filter(function (id) { return id && paidEvents.indexOf(id) === -1; });
+
+  for (const eventId of candidates) {
+    let event;
+    try {
+      event = await (await fetch("/api/fpl-event?id=" + eventId)).json();
+    } catch (error) {
+      continue;
+    }
+
+    // Bonus points land late, so wait until the week is signed off.
+    if (!event || !event.finished || !event.dataChecked) continue;
+
+    const picks = squadHistory[squadCycleKey(event.deadline || new Date())] || {};
+
+    let points = 0;
+    for (const spot of FIVE_A_SIDE) {
+      const id = picks[spot.slot];
+      if (id) points += Number(event.points[String(id)]) || 0;
+    }
+
+    paidEvents.push(eventId);
+
+    if (points > 0) {
+      const given = awardSixASide(points * XP_PER_FPL_POINT);
+      lastSettlement = { event: eventId, points: points, xp: given };
+    } else {
+      lastSettlement = { event: eventId, points: 0, xp: 0 };
+    }
+
+    saveSquadLock();
+  }
+}
+
+function saveFiveASide() {
+  keep.setItem("fiveASide", JSON.stringify(fiveASide));
+  if (typeof pushProgress === "function") pushProgress();
+}
+
+function playerById(id) {
+  return PL_PLAYERS.find(function (p) { return String(p.id) === String(id); }) || null;
+}
+
+function playerInSlot(slot) {
+  return fiveASide[slot] ? playerById(fiveASide[slot]) : null;
+}
+
+// XP this squad has actually paid out, which is the only number
+// the player has really earned. Points a player scored before you
+// picked them are not yours - settlement pays for one gameweek at
+// a time, and only for whoever was in the team that week.
+function sixASideXpEarned() {
+  return Number(xpSources.sixaside) || 0;
+}
+
+function sixASidePointsEarned() {
+  return Math.round(sixASideXpEarned() / XP_PER_FPL_POINT);
+}
+
+// What the six have scored across the whole season between them.
+// Useful for judging a pick, but it is not money in the bank -
+// never show it as though it were.
+function fiveASidePoints() {
+  let total = 0;
+  for (const spot of FIVE_A_SIDE) {
+    const player = playerInSlot(spot.slot);
+    if (player) total += Number(player.points) || 0;
+  }
+  return total;
+}
+
+function fiveASideFilled() {
+  return FIVE_A_SIDE.filter(function (spot) {
+    return Boolean(playerInSlot(spot.slot));
+  }).length;
+}
+
+// The one place the change rule is written, so both the pitch and
+// the strip on the XP page say exactly the same thing.
+function changeRuleBanner() {
+  const rule = changeRuleText();
+
+  const bar = document.createElement("div");
+  bar.className = "lockBar" + (rule.open ? "" : " lockShut");
+  bar.innerHTML =
+    '<div class="lockLine">' +
+      '<span class="lockDot"></span>' + rule.line +
+    '</div>' +
+    '<div class="lockPaid">' + rule.detail + '</div>' +
+    (lastSettlement && lastSettlement.xp > 0
+      ? '<div class="lockPaid">Gameweek ' + lastSettlement.event + ': ' +
+        lastSettlement.points + ' pts paid as ' +
+        lastSettlement.xp.toLocaleString() + ' XP.</div>'
+      : '<div class="lockPaid">Each Fantasy point is worth ' +
+        XP_PER_FPL_POINT + ' XP, paid when the gameweek is settled.</div>');
+  return bar;
+}
+
+// The green squad-value bar, used above the players in both places.
+function budgetBarElement() {
+  const spent = squadCost();
+  const share = Math.min(100, (spent / SQUAD_BUDGET) * 100);
+
+  const bar = document.createElement("div");
+  bar.className = "budgetBar" + (overBudget() ? " budgetOver" : "");
+  bar.innerHTML =
+    '<div class="budgetTop">' +
+      '<span class="budgetSpent">' + money(spent) + '</span>' +
+      '<span class="budgetCap">of ' + money(SQUAD_BUDGET) + ' squad value</span>' +
+    '</div>' +
+    '<div class="budgetTrack">' +
+      '<div class="budgetFill" style="width:' + share.toFixed(1) + '%"></div>' +
+    '</div>' +
+    '<div class="budgetLeft">' +
+      (overBudget()
+        ? "Prices have risen and this squad is now over the cap. " +
+          "It still scores - but a new pick has to bring you back under."
+        : money(Math.max(0, SQUAD_BUDGET - spent)) + " left to spend") +
+    '</div>';
+  return bar;
+}
+
+// ---- The squad laid out on a pitch ----
+function drawFiveASideTab(list) {
+  if (fivePicking) { drawPlayerChooser(list); return; }
+
+  const filled = fiveASideFilled();
+
+  const total = document.createElement("div");
+  total.className = "fiveTotal";
+  total.innerHTML =
+    '<span class="fiveTotalWho">' +
+      '<div class="fiveTotalHead">Your 6-a-side team</div>' +
+      '<div class="fiveTotalSub">' + filled + ' of ' + FIVE_A_SIDE.length +
+        ' picked' +
+        (filled > 0
+          ? ' &middot; ' + fiveASidePoints().toLocaleString() +
+            ' season pts between them'
+          : '') +
+      '</div>' +
+    '</span>' +
+    '<span class="fiveTotalRight">' +
+      '<div class="fiveTotalNum">' + sixASideXpEarned().toLocaleString() + '</div>' +
+      '<div class="fiveTotalLabel">XP earned</div>' +
+    '</span>';
+  list.appendChild(total);
+
+  // ---- Squad value ----
+  list.appendChild(budgetBarElement());
+
+  // The rule, stated plainly, right above the players.
+  list.appendChild(changeRuleBanner());
+
+  const pitch = document.createElement("div");
+  pitch.className = "fivePitch";
+
+  // Striker at the top, keeper at the bottom.
+  const linesOut = [0, 1, 2, 3];
+  const mayChange = canChangeSquad();
+  let html = "";
+
+  for (const lineNumber of linesOut) {
+    const inLine = FIVE_A_SIDE.filter(function (spot) {
+      return spot.line === lineNumber;
+    });
+    if (inLine.length === 0) continue;
+
+    html += '<div class="fiveRow">';
+    for (const spot of inLine) {
+      const player = playerInSlot(spot.slot);
+      html +=
+        '<div class="fiveSlot" data-slot="' + spot.slot + '">' +
+          (player
+            ? '<span class="fiveMinus' + (mayChange ? "" : " off") +
+              '" data-remove="' + spot.slot + '">&minus;</span>'
+            : '') +
+          '<div class="fiveShirt' + (player ? " filled" : "") + '">' +
+            (player
+              ? (player.photo
+                  ? '<img src="' + player.photo + '" alt="">'
+                  : '<span class="fiveInitial">' +
+                      player.name.slice(0, 1).toUpperCase() + '</span>')
+              : "+") +
+          '</div>' +
+          '<div class="fivePos">' + spot.position + '</div>' +
+          '<div class="fiveWho">' + (player ? player.name : "Empty") + '</div>' +
+          (player
+            ? '<div class="fiveCost">' + money(player.price) + '</div>'
+            : '') +
+        '</div>';
+    }
+    html += '</div>';
+  }
+
+  pitch.innerHTML = html;
+  list.appendChild(pitch);
+
+  for (const slot of pitch.querySelectorAll(".fiveSlot")) {
+    slot.onclick = function () {
+      fivePicking = this.getAttribute("data-slot");
+      drawXpScreen();
+    };
+  }
+
+  // The minus sits on top of the shirt, so it has to swallow the tap.
+  for (const minus of pitch.querySelectorAll(".fiveMinus")) {
+    minus.onclick = function (event) {
+      event.stopPropagation();
+      if (removeFromSquad(this.getAttribute("data-remove"))) drawXpScreen();
+    };
+  }
+
+  const note = document.createElement("div");
+  note.className = "extras";
+  note.innerHTML = PL_PLAYERS.length === 0
+    ? "No players loaded yet. Once the Premier League player list " +
+      "is in, tap any shirt to pick from it."
+    : "Tap the minus on a shirt to take that player out, or an empty " +
+      "shirt to fill the place.";
+  list.appendChild(note);
+}
+
+// ---- Choosing a player for one slot ----
+function drawPlayerChooser(list) {
+  const spot = FIVE_A_SIDE.find(function (s) { return s.slot === fivePicking; });
+  if (!spot) { fivePicking = null; return; }
+
+  const head = document.createElement("div");
+  head.className = "boxHead";
+  head.textContent = "Choose a " + spot.label.toLowerCase();
+  list.appendChild(head);
+
+  if (!fplMeta.loaded) {
+    const wait = document.createElement("div");
+    wait.className = "empty";
+    wait.textContent = "Loading Premier League players...";
+    list.appendChild(wait);
+    loadFplPlayers().then(refreshXpIfShowing);
+    return;
+  }
+
+  const eligible = PL_PLAYERS.filter(function (player) {
+    return player.position === spot.position;
+  });
+
+  if (eligible.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.innerHTML =
+      "No " + spot.label.toLowerCase() + "s available.<br><br>" +
+      (fplMeta.error || "Try again shortly.");
+    list.appendChild(empty);
+    return;
+  }
+
+  // Best first, so the obvious pick is at the top.
+  eligible.sort(function (a, b) {
+    return (Number(b.points) || 0) - (Number(a.points) || 0);
+  });
+
+  const taken = {};
+  for (const other of FIVE_A_SIDE) {
+    if (other.slot !== spot.slot && fiveASide[other.slot]) {
+      taken[String(fiveASide[other.slot])] = true;
+    }
+  }
+
+  // Putting someone into an empty place is always allowed. Taking
+  // over an occupied one is a change, and follows the same rule as
+  // the minus button.
+  const occupied = Boolean(fiveASide[spot.slot]);
+  const mayChange = !occupied || canChangeSquad();
+
+  if (!mayChange) {
+    const rule = changeRuleText();
+    const shut = document.createElement("div");
+    shut.className = "chooserShut";
+    shut.innerHTML =
+      '<div class="chooserShutHead">' + rule.line + '</div>' +
+      '<div class="chooserShutNote">' + rule.detail + '</div>';
+    list.appendChild(shut);
+  }
+
+  // How much this one place can take without leaving the rest of
+  // the team unaffordable.
+  //
+  // Over the cap, that sum comes out negative and would block
+  // everybody. What matters then is only that the change moves you
+  // in the right direction, so the test becomes "cheaper than
+  // whoever is there now".
+  // "Cheaper than who is there" only makes sense when somebody is
+  // there, and only when the squad is actually over the cap. Being
+  // stuck with an empty place is fixed by removing someone else,
+  // so this slot keeps the ordinary budget rule.
+  const sitting = playerInSlot(spot.slot);
+  const rescuing = overBudget() && Boolean(sitting);
+  const ceiling = rescuing
+    ? (Number(sitting.price) || 0) - 0.1
+    : affordableFor(spot.slot);
+
+  const budget = document.createElement("div");
+  budget.className = "chooserBudget" + (rescuing ? " chooserOver" : "");
+  budget.innerHTML =
+    '<span>' + money(squadCost()) + ' of ' + money(SQUAD_BUDGET) + ' spent</span>' +
+    '<span class="chooserMax">' +
+      (rescuing
+        ? "cheaper than " + money(sitting.price) + " only"
+        : "up to " + money(Math.max(0, ceiling)) + " for this place") +
+    '</span>';
+  list.appendChild(budget);
+
+  for (const player of eligible) {
+    const already = taken[String(player.id)];
+    const here = String(fiveASide[spot.slot]) === String(player.id);
+    const price = Number(player.price) || 0;
+    const tooDear = !here && price > ceiling + 0.001;
+    const dearLabel = rescuing ? " &middot; not cheaper" : " &middot; over your budget";
+    const blocked = already || tooDear || !mayChange;
+
+    const row = document.createElement("div");
+    row.className = "playerRow" + (blocked ? " playerTaken" : "");
+    row.innerHTML =
+      (player.photo
+        ? '<img class="playerFace" src="' + player.photo + '" alt="">'
+        : '<span class="noFace">' + player.name.slice(0, 1).toUpperCase() + '</span>') +
+      '<span class="playerWho">' +
+        '<span class="playerName">' + player.name + '</span>' +
+        '<span class="playerTeam">' + (player.team || "") +
+          (already ? " &middot; already picked" : "") +
+          (tooDear && !already ? dearLabel : "") + '</span>' +
+      '</span>' +
+      '<span class="playerCost">' + money(price) + '</span>' +
+      '<span class="playerPts">' + (Number(player.points) || 0) + '</span>' +
+      '<span class="playerTick">' + (here ? "&#10003;" : "") + '</span>';
+
+    if (!blocked) {
+      row.onclick = function () {
+        // Taking over an occupied place spends the weekly change,
+        // unless the swap is only there to get back under the cap.
+        if (occupied && !rescuing &&
+            String(fiveASide[spot.slot]) !== String(player.id)) {
+          useSquadChange();
+        }
+        fiveASide[spot.slot] = player.id;
+        saveFiveASide();
+        ensureSquadLocked();
+        tally("fivea");
+        fivePicking = null;
+        drawXpScreen();
+      };
+    }
+    list.appendChild(row);
+  }
+
+  if (fiveASide[spot.slot] && mayChange) {
+    const clear = document.createElement("div");
+    clear.className = "setRow setTap setDanger";
+    clear.innerHTML = '<span class="setLabel">Take this player out</span>' +
+      '<span class="setRight">uses your change</span>';
+    clear.onclick = function () {
+      if (removeFromSquad(spot.slot)) {
+        fivePicking = null;
+        drawXpScreen();
+      }
+    };
+    list.appendChild(clear);
+  }
+}
+
+// ---- Player statistics ----
+// ---- Player statistics ----
+// Position, face, name, last week and the season so far. Tapping
+// a row opens everything else there is on them.
+function drawPlayerStatsTab(list) {
+  if (openPlayerId) { drawPlayerDetail(list); return; }
+
+  if (!fplMeta.loaded) {
+    list.innerHTML = '<div class="empty">Loading Premier League players...</div>';
+    loadFplPlayers().then(refreshXpIfShowing);
+    return;
+  }
+
+  if (PL_PLAYERS.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No players available.<br><br>' +
+      (fplMeta.error || "Try again shortly.") +
+      '<br><br>Open /api/fpl-raw to see what came back.</div>';
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.className = "plHead";
+  head.innerHTML =
+    '<span class="plPosHead">Pos</span>' +
+    '<span class="plFaceHead"></span>' +
+    '<span class="plWho">Player</span>' +
+    '<span class="plNum">Last</span>' +
+    '<span class="plNum">Season</span>' +
+    '<span class="plNum plValue">Value</span>';
+  list.appendChild(head);
+
+  for (const player of PL_PLAYERS) {
+    list.appendChild(playerRowElement(player));
+  }
+
+  const note = document.createElement("div");
+  note.className = "newsNote";
+  note.textContent = "Points and statistics from the official " +
+    "Fantasy Premier League game.";
+  list.appendChild(note);
+}
+
+// One row of the players list. Also used by the squad chooser.
+function playerRowElement(player) {
+  const row = document.createElement("div");
+  row.className = "plRow";
+  row.innerHTML =
+    '<span class="plPos ' + (player.position || "").toLowerCase() + '">' +
+      (player.position || "-") + '</span>' +
+    (player.photo
+      ? '<img class="plFace" src="' + player.photo + '" alt="">'
+      : '<span class="plFace"></span>') +
+    '<span class="plWho">' +
+      '<span class="plName">' + player.name + '</span>' +
+      '<span class="plTeam">' + (player.teamShort || player.team || "") + '</span>' +
+    '</span>' +
+    '<span class="plNum">' + player.lastWeek + '</span>' +
+    '<span class="plNum total">' + player.points + '</span>' +
+    '<span class="plNum plValue">' + money(player.price) + '</span>';
+
+  row.onclick = function () {
+    openPlayerId = player.id;
+    drawXpScreen();
+  };
+  return row;
+}
+
+// ---- Everything known about one player ----
+function drawPlayerDetail(list) {
+  const player = playerById(openPlayerId);
+  if (!player) { openPlayerId = null; drawPlayerStatsTab(list); return; }
+
+  const hero = document.createElement("div");
+  hero.className = "plHero";
+  hero.innerHTML =
+    (player.photo
+      ? '<img class="plHeroFace" src="' + player.photo + '" alt="">'
+      : '<span class="plHeroFace"></span>') +
+    '<span class="plHeroWho">' +
+      '<span class="plHeroName">' + (player.fullName || player.name) + '</span>' +
+      '<span class="plHeroTeam">' +
+        (player.teamBadge ? '<img src="' + player.teamBadge + '" alt="">' : '') +
+        (player.team || "") +
+      '</span>' +
+      '<span class="plHeroPos">' + (player.position || "") + '</span>' +
+    '</span>';
+  list.appendChild(hero);
+
+  // Anything about an injury or a suspension goes straight up top.
+  if (player.news) {
+    const news = document.createElement("div");
+    news.className = "plNews";
+    news.textContent = player.news;
+    list.appendChild(news);
+  }
+
+  const section = function (title, cells) {
+    const heading = document.createElement("div");
+    heading.className = "boxHead";
+    heading.textContent = title;
+    list.appendChild(heading);
+
+    const grid = document.createElement("div");
+    grid.className = "profGrid";
+    grid.innerHTML = cells.map(function (cell) {
+      return '<div class="profCell"><b>' + cell[1] + '</b>' +
+        '<span>' + cell[0] + '</span></div>';
+    }).join("");
+    list.appendChild(grid);
+  };
+
+  section("Points", [
+    ["Season total", player.points],
+    ["Last week", player.lastWeek],
+    ["Form", player.form],
+    ["Per game", player.ppg],
+    ["Bonus", player.bonus],
+    ["Bonus rank pts", player.bps],
+  ]);
+
+  section("Attack", [
+    ["Goals", player.goals],
+    ["Assists", player.assists],
+    ["Expected goals", player.xG],
+    ["Expected assists", player.xA],
+    ["ICT index", player.ict],
+    ["Pens missed", player.penMissed],
+  ]);
+
+  const defence = [
+    ["Clean sheets", player.cleanSheets],
+    ["Conceded", player.conceded],
+    ["Own goals", player.ownGoals],
+  ];
+  if (player.position === "GK") {
+    defence.push(["Saves", player.saves]);
+    defence.push(["Pens saved", player.penSaved]);
+  }
+  section("Defence", defence);
+
+  section("Discipline and time", [
+    ["Yellow cards", player.yellow],
+    ["Red cards", player.red],
+    ["Minutes", (Number(player.minutes) || 0).toLocaleString()],
+    ["Starts", player.starts],
+  ]);
+
+  section("In the game", [
+    ["Price", "\u00a3" + player.price.toFixed(1) + "m"],
+    ["Picked by", player.selectedBy + "%"],
+    // What they would have paid you last week, not what they have
+    // banked all season - none of that would come with them.
+    ["XP last week", (player.lastWeek * XP_PER_FPL_POINT).toLocaleString()],
+  ]);
+
+  // Straight into the squad, if there is room for them.
+  const spot = FIVE_A_SIDE.find(function (s) {
+    return s.position === player.position && !fiveASide[s.slot];
+  });
+
+  if (spot) {
+    const add = document.createElement("div");
+    add.className = "setRow setTap";
+    add.innerHTML = '<span class="setLabel">Put in your 6-a-side as ' +
+      spot.label.toLowerCase() + '</span><span class="setRight">&rsaquo;</span>';
+    add.onclick = function () {
+      // Only offered for an empty place, so this is always free.
+      fiveASide[spot.slot] = player.id;
+      saveFiveASide();
+      ensureSquadLocked();
+      tally("fivea");
+      openPlayerId = null;
+      xpTab = "five";
+      drawXpScreen();
+    };
+    list.appendChild(add);
+  }
+}
+
+// The compact strip that sits under the daily spin.
+function drawFiveASideStrip(list) {
+  const head = document.createElement("div");
+  head.className = "boxHead";
+  head.innerHTML = 'Your 6-a-side team ' +
+    '<span class="liveCount">' + sixASideXpEarned().toLocaleString() +
+    ' XP earned</span>';
+  list.appendChild(head);
+
+  // What the squad is worth, above the players.
+  list.appendChild(budgetBarElement());
+
+  // And the rule about when it can be changed.
+  list.appendChild(changeRuleBanner());
+
+  const mayChange = canChangeSquad();
+
+  const strip = document.createElement("div");
+  strip.className = "fiveStrip";
+  strip.innerHTML = FIVE_A_SIDE.map(function (spot) {
+    const player = playerInSlot(spot.slot);
+    return '<div class="fiveMini" data-slot="' + spot.slot + '">' +
+      (player
+        ? '<span class="fiveMiniMinus' + (mayChange ? "" : " off") +
+          '" data-remove="' + spot.slot + '">&minus;</span>'
+        : '') +
+      '<div class="fiveMiniDisc' + (player ? " filled" : "") + '">' +
+        (player
+          ? (player.photo
+              ? '<img src="' + player.photo + '" alt="">'
+              : player.name.slice(0, 1).toUpperCase())
+          : "+") +
+      '</div>' +
+      '<div class="fiveMiniPos">' + spot.position + '</div>' +
+    '</div>';
+  }).join("");
+  list.appendChild(strip);
+
+  for (const mini of strip.querySelectorAll(".fiveMini")) {
+    mini.onclick = function () {
+      fivePicking = this.getAttribute("data-slot");
+      xpTab = "five";
+      drawXpScreen();
+    };
+  }
+
+  for (const minus of strip.querySelectorAll(".fiveMiniMinus")) {
+    minus.onclick = function (event) {
+      event.stopPropagation();
+      if (removeFromSquad(this.getAttribute("data-remove"))) drawXpScreen();
+    };
+  }
+}
+
+
+// ---------------------------------------------------------------
+// THE XP SCREEN
+// Three tabs: the squad, the league, and who is worth picking.
+// ---------------------------------------------------------------
+// "home" is the XP page itself. The three named tabs are drilled
+// into from the bar and the back arrow returns here.
+let xpTab = "home";
+
+function drawXpScreen() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  // The tabs are up in the bar with the rest of the chrome, so all
+  // that is needed here is keeping them in step.
+  for (const tab of document.querySelectorAll("#xpTabs .subTab")) {
+    tab.classList.toggle("on", tab.getAttribute("data-xp") === xpTab);
+  }
+
+  if (xpTab === "five") { drawFiveASideTab(list); return; }
+  if (xpTab === "players") { drawPlayerStatsTab(list); return; }
+  if (xpTab === "league") { drawXpLeagueTab(list); return; }
+  drawXpOverview(list);
+}
+
+// ---- The XP page itself ----
+// Who you are, the spin, your squad and how XP is earned. The
+// league table lives on its own tab, reached from the bar.
+function drawXpOverview(list) {
+  const level = levelNow();
+  const division = divisionFor(level);
+  const intoLevel = xp % 1000;
+
+  // ---- Who you are ----
+  // The ring carries the same crest as the badge in the bar, on
+  // white with a gold rim so it can actually be made out.
+  const ringClub = badgeClub || favTeams[0] || null;
+
+  const card = document.createElement("div");
+  card.className = "profCard";
+  card.innerHTML =
+    '<div class="profTop">' +
+      '<div class="profRing' + (ringClub && ringClub.logo ? " hasCrest" : "") + '">' +
+        (ringClub && ringClub.logo
+          ? '<img src="' + ringClub.logo + '" alt="">'
+          : '<span>' + level + '</span>') +
+        '<span class="profRingTag">' + level + '</span>' +
+      '</div>' +
+      '<div class="profWho">' +
+        '<div class="profDiv">' + division.name + '</div>' +
+        '<div class="profSub">Level ' + level + ' &middot; ' + xp.toLocaleString() + ' XP total</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="profBar"><div class="profFill" style="width:' + (intoLevel / 10) + '%"></div></div>' +
+    '<div class="profBarText">' + intoLevel + ' / 1000 to level ' + (level + 1) + '</div>' +
+    '<div class="profStats">' +
+      '<div><b>' + streak + '</b><span>day streak</span></div>' +
+      '<div><b>' + coins + '</b><span>coins</span></div>' +
+      '<div><b>' + shields + '</b><span>shields</span></div>' +
+    '</div>' +
+    (boostActive()
+      ? '<div class="boostFlag">' + boostSize + '\u00d7 XP active</div>' : "");
+  list.appendChild(card);
+
+  // ---- Daily spin ----
+  // A simple eight-segment wheel, drawn rather than an image.
+  const wheelSvg = (function () {
+    let wedges = "";
+    for (let i = 0; i < 8; i++) {
+      const a1 = (i * 45 - 90) * Math.PI / 180;
+      const a2 = ((i + 1) * 45 - 90) * Math.PI / 180;
+      const x1 = 50 + 44 * Math.cos(a1);
+      const y1 = 50 + 44 * Math.sin(a1);
+      const x2 = 50 + 44 * Math.cos(a2);
+      const y2 = 50 + 44 * Math.sin(a2);
+      wedges += '<path d="M50 50 L' + x1.toFixed(1) + ' ' + y1.toFixed(1) +
+        ' A44 44 0 0 1 ' + x2.toFixed(1) + ' ' + y2.toFixed(1) + ' Z" fill="' +
+        (i % 2 ? "#1E6FD9" : "#DCE9FB") + '"/>';
+    }
+    return '<svg class="spinWheel" viewBox="0 0 100 100" role="img">' +
+      '<title>Daily spin wheel</title>' + wedges +
+      '<circle cx="50" cy="50" r="44" fill="none" stroke="#0B1E3D" stroke-width="3"/>' +
+      '<circle cx="50" cy="50" r="7" fill="#fff" stroke="#0B1E3D" stroke-width="2.5"/>' +
+      '<path d="M50 2 L45 12 L55 12 Z" fill="#0B1E3D"/>' +
+    '</svg>';
+  })();
+
+  const spinBox = document.createElement("div");
+  spinBox.className = "spinBox";
+  spinBox.innerHTML = wheelSvg + (spinUsedToday()
+    ? '<div class="spinRight">' +
+        '<div class="spinHead">Daily spin</div>' +
+        '<div class="spinDone">Come back tomorrow for another spin.</div>' +
+        '<button class="spinBtn" disabled style="margin-top:10px">Spun today &#10003;</button>' +
+      '</div>'
+    : '<div class="spinRight">' +
+        '<div class="spinHead">Daily spin</div>' +
+        '<div class="spinSub">One free spin every day.</div>' +
+        '<button class="spinBtn" id="spinBtn">Spin</button>' +
+      '</div>');
+  list.appendChild(spinBox);
+
+  const button = document.getElementById("spinBtn");
+  if (button) {
+    button.onclick = function () {
+      button.disabled = true;
+      button.textContent = "...";
+
+      // A brief flicker through the prizes before it settles.
+      let ticks = 0;
+      const rolling = setInterval(function () {
+        button.textContent = SPIN_PRIZES[ticks % SPIN_PRIZES.length].text;
+        ticks++;
+        if (ticks > 12) {
+          clearInterval(rolling);
+          const prize = takeSpin();
+          spinBox.innerHTML = wheelSvg +
+            '<div class="spinRight">' +
+              '<div class="spinHead">Daily spin</div>' +
+              '<div class="spinWon">' + prize.text + '</div>' +
+              '<div class="spinDone">Come back tomorrow.</div>' +
+            '</div>';
+        }
+      }, 90);
+    };
+  }
+
+  // ---- The five-a-side team ----
+  drawFiveASideStrip(list);
+
+  // ---- How to earn ----
+  const earnBox = document.createElement("div");
+  earnBox.className = "listBox";
+  let earnRows = '<div class="boxHead">Earning XP today</div>';
+  for (const key of Object.keys(EARNINGS)) {
+    const rule = EARNINGS[key];
+    const used = dailyCounts[key] || 0;
+    const done = rule.once && used >= 1;
+    const icons = {
+      daily: "&#128241;", match: "&#9917;", club: "&#128085;",
+      table: "&#9776;", streak: "&#128197;",
+    };
+    earnRows +=
+      '<div class="earnRow' + (done ? " earnDone" : "") + '">' +
+        '<span class="earnIcon">' + (icons[key] || "&#9917;") + '</span>' +
+        '<span class="earnLabel">' + rule.label + '</span>' +
+        '<span class="earnCap">' +
+          (used > 0 ? used + " today" : "") +
+        '</span>' +
+        '<span class="earnXp">+' + rule.xp + '</span>' +
+      '</div>';
+  }
+  earnBox.innerHTML = earnRows;
+  list.appendChild(earnBox);
+
+  // ---- The ladder ----
+  const ladder = document.createElement("div");
+  ladder.className = "listBox";
+  let rungs = '<div class="boxHead">Divisions</div>';
+
+  for (let i = DIVISIONS.length - 1; i >= 0; i--) {
+    const step = DIVISIONS[i];
+    const here = step.name === division.name;
+    const reached = level >= step.from;
+    rungs +=
+      '<div class="rung' + (here ? " rungNow" : "") + (reached ? "" : " rungLocked") + '">' +
+        '<span class="rungNum">' + (i + 1) + '</span>' +
+        '<span class="rungName">' + step.name + '</span>' +
+        '<span class="rungReq">' + (step.from === 0 ? "Start" : "Level " + step.from) + '</span>' +
+      '</div>';
+  }
+  ladder.innerHTML = rungs;
+  list.appendChild(ladder);
+
+  const note = document.createElement("div");
+  note.className = "extras";
+  note.innerHTML =
+    "Six-a-side points do not feed the weekly league yet - that " +
+    "waits on the scoring rules and the player list.";
+  list.appendChild(note);
+}
+
+
+// ---- Where your XP actually came from ----
+// Five named sources, plus a catch-all so the parts always add up
+// to the total on the card.
+const XP_SPLIT = [
+  ["challenges", "Challenges", "&#127919;"],
+  ["matches",    "Watching matches", "&#9917;"],
+  ["sixaside",   "Your 6-a-side team", "&#128085;"],
+  ["spin",       "Daily spin", "&#127920;"],
+  ["favourites", "Your favourite teams", "&#11088;"],
+];
+
+function drawXpSplit(list) {
+  const head = document.createElement("div");
+  head.className = "boxHead";
+  head.textContent = "Where your XP came from";
+  list.appendChild(head);
+
+  const rows = XP_SPLIT.map(function (entry) {
+    return {
+      key: entry[0], label: entry[1], icon: entry[2],
+      amount: Number(xpSources[entry[0]]) || 0,
+    };
+  });
+
+  const leftover = Number(xpSources.other) || 0;
+  if (leftover > 0) {
+    rows.push({
+      key: "other", label: "Everything else", icon: "&#128241;",
+      amount: leftover,
+    });
+  }
+
+  const total = rows.reduce(function (sum, row) { return sum + row.amount; }, 0);
+
+  const box = document.createElement("div");
+  box.className = "listBox";
+
+  box.innerHTML = rows.map(function (row) {
+    const share = total === 0 ? 0 : (row.amount / total) * 100;
+    return '<div class="splitRow">' +
+      '<span class="earnIcon">' + row.icon + '</span>' +
+      '<span class="splitBody">' +
+        '<span class="splitTop">' +
+          '<span class="splitLabel">' + row.label + '</span>' +
+          '<span class="splitXp">' + row.amount.toLocaleString() + '</span>' +
+        '</span>' +
+        '<span class="splitBar">' +
+          '<span class="splitFill" style="width:' + share.toFixed(1) + '%"></span>' +
+        '</span>' +
+      '</span>' +
+    '</div>';
+  }).join("") +
+  '<div class="splitTotal">' +
+    '<span>Total</span><span>' + total.toLocaleString() + ' XP</span>' +
+  '</div>';
+
+  list.appendChild(box);
+
+  // A bare zero against the squad needs explaining, since nothing
+  // a player scored before you picked them ever comes with them.
+  if (sixASideXpEarned() === 0 && fiveASideFilled() > 0) {
+    const waiting = document.createElement("div");
+    waiting.className = "extras";
+    waiting.innerHTML =
+      "Your 6-a-side squad has not paid out yet. Only points your " +
+      "players score while they are in your team become XP - " +
+      "anything they scored earlier in the season stays behind.";
+    list.appendChild(waiting);
+  }
+}
+
+// Awards 6-a-side points into the XP total. Nothing calls this
+// yet - wire it up once the scoring rules are settled and the
+// breakdown above starts filling in on its own.
+function awardSixASide(points) {
+  const given = creditXp("sixaside", Number(points) || 0);
+  if (given > 0) saveXpState();
+  return given;
+}
+
+
+// ---- The league table, and nothing else ----
+function drawXpLeagueTab(list) {
+  if (!signedIn()) {
+    // A session that has already failed should say so rather than
+    // pretending to still be working on it.
+    list.innerHTML = sessionError
+      ? '<div class="empty">The weekly league is not available.' +
+        '<br><br>' + sessionError +
+        '<br><br>Everything else in the app still works, and your ' +
+        'progress is safe on this device.</div>'
+      : '<div class="empty">Setting up your league place...</div>';
+
+    if (!sessionError) {
+      startSession().then(function () {
+        if (screen === "xp" && xpTab === "league") drawXpScreen();
+      });
+    }
+
+    drawXpSplit(list);
+    return;
+  }
+
+  // ---- This week's league ----
+  {
+    const leagueBox = document.createElement("div");
+    leagueBox.className = "listBox";
+    leagueBox.innerHTML = '<div class="boxHead">This week</div>' +
+      '<div class="colEmpty">Loading your league...</div>';
+    list.appendChild(leagueBox);
+
+    (async function () {
+      let data;
+      try {
+        const response = await fetch("/api/league", {
+          headers: { "Authorization": "Bearer " + authToken },
+        });
+        data = await response.json();
+      } catch (error) {
+        leagueBox.innerHTML = '<div class="boxHead">This week</div>' +
+          '<div class="colEmpty">Could not load the league.</div>';
+        return;
+      }
+
+      // A malformed answer should not take the whole screen down.
+      if (data.error || !Array.isArray(data.table)) {
+        leagueBox.innerHTML = '<div class="boxHead">This week</div>' +
+          '<div class="colEmpty">' +
+            (data.error || "Could not load the league.") + '</div>';
+        return;
+      }
+
+      const divName = DIVISIONS[Math.max(0, data.division - 1)].name;
+      const ends = new Date(data.weekEnds);
+      const hoursLeft = Math.max(0, Math.round((ends - Date.now()) / 3600000));
+      const timeLeft = hoursLeft > 48
+        ? Math.round(hoursLeft / 24) + " days left"
+        : hoursLeft + " hours left";
+
+      let html =
+        '<div class="boxHead">' + divName + ' division ' +
+          '<span class="leagueTime">' + timeLeft + '</span>' +
+        '</div>';
+
+      // Tell them what happened last week, once.
+      if (data.lastResult && data.lastResult.moved !== "stayed") {
+        const up = data.lastResult.moved === "promoted";
+        html += '<div class="movedBox ' + (up ? "up" : "down") + '">' +
+          (up ? "Promoted" : "Relegated") + ' &middot; finished ' +
+          data.lastResult.position + ' of ' + data.lastResult.outOf +
+          ' with ' + data.lastResult.earned + ' XP' +
+        '</div>';
+      }
+
+      if (data.table.length <= 1) {
+        html += '<div class="colEmpty">You are the first one here. ' +
+          'More people will join this group as they sign up.</div>';
+      }
+
+      for (const row of data.table) {
+        const zone = row.position <= data.promoteAt ? "up"
+          : (row.position > data.table.length - data.relegateAt &&
+             data.table.length >= 8 ? "down" : "");
+
+        html +=
+          '<div class="lgRow ' + zone + (row.you ? " lgYou" : "") +
+            (row.pace ? " lgPace" : "") + '">' +
+            '<span class="lgPos">' + row.position + '</span>' +
+            '<span class="lgAvatar">' +
+              (row.name ? row.name.slice(0, 1).toUpperCase() : "?") +
+            '</span>' +
+            '<span class="lgName">' + row.name + (row.you ? " (you)" : "") + '</span>' +
+            (row.pace ? '<span class="lgPaceTag">pace</span>' : '') +
+            '<span class="lgXp">' + row.earned.toLocaleString() + '</span>' +
+          '</div>';
+      }
+
+      html += '<div class="lgKey">' +
+        '<span><i class="upDot"></i>Promotion</span>' +
+        '<span><i class="downDot"></i>Relegation</span>' +
+      '</div>';
+
+      // Say what they are. A target you know is a target still
+      // pulls; one you catch out does not.
+      if (data.table.some(function (row) { return row.pace; })) {
+        html += '<div class="lgPaceNote">Rows marked <b>pace</b> are ' +
+          'scores to chase, not other players. They make way as more ' +
+          'people join your group.</div>';
+      }
+
+      // Setting a name is free once. Changing it after that is a
+      // paid feature, and the server decides - not this screen.
+      if (data.canRename) {
+        html += '<div class="nameRow">' +
+          '<input class="nameField" id="lgName" maxlength="18" ' +
+            'placeholder="Your name in the league" value="' +
+            (data.name || "") + '">' +
+          '<button class="nameBtn" id="lgNameBtn">Save</button>' +
+        '</div>' +
+        '<div class="nameNote" id="lgNameNote">' +
+          (data.name
+            ? "You can change this once more for free."
+            : "Choose carefully - you can set this once for free.") +
+        '</div>';
+      } else {
+        html += '<div class="nameLocked">' +
+          '<div class="nameLockedTop">' +
+            '<span class="nameLockedWho">' + (data.name || "Player") + '</span>' +
+            '<span class="nameLockedTag">Locked</span>' +
+          '</div>' +
+          '<div class="nameNote">You have used your free name change. ' +
+            'Change it whenever you like with a subscription.</div>' +
+          '<button class="nameBtn" id="lgProBtn">See subscription</button>' +
+        '</div>';
+      }
+
+      leagueBox.innerHTML = html;
+
+      const proButton = document.getElementById("lgProBtn");
+      if (proButton) {
+        proButton.onclick = function () {
+          const note = proButton.parentNode.querySelector(".nameNote");
+          note.textContent = "Subscriptions are not switched on yet. " +
+            "They arrive with the phone app.";
+        };
+      }
+
+      const nameButton = document.getElementById("lgNameBtn");
+      if (nameButton) {
+        nameButton.onclick = async function () {
+          const name = document.getElementById("lgName").value.trim();
+          const note = document.getElementById("lgNameNote");
+          if (!name) return;
+
+          nameButton.disabled = true;
+
+          let answer;
+          try {
+            answer = await (await fetch("/api/league", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + authToken,
+              },
+              body: JSON.stringify({ name: name }),
+            })).json();
+          } catch (error) {
+            answer = { message: "Could not reach the server." };
+          }
+
+          nameButton.disabled = false;
+
+          if (answer && answer.error === "nameLocked") {
+            note.textContent = answer.message;
+            return;
+          }
+          drawXpScreen();
+        };
+      }
+    })();
+  }
+
+  drawXpSplit(list);
+}
+
+
+// ---------------------------------------------------------------
+// SIGNING IN, AND KEEPING PROGRESS SAFE
+//
+// Everything still works signed out - it just lives on this device.
+// Signing in copies it to the server so it follows the person
+// around and survives a cleared browser.
+// ---------------------------------------------------------------
+function signedIn() {
+  return Boolean(authToken);
+}
+
+// ---------------------------------------------------------------
+// THE SESSION
+//
+// There is no sign-in screen. The app asks the server for an
+// anonymous session the first time it runs and hangs on to it.
+// Nothing about the person is collected.
+//
+// The refresh token is the important one. Access tokens last about
+// an hour, and for an anonymous account there is no email to sign
+// back in with - lose the session and the account is gone for
+// good. So an expired token is always renewed, never discarded.
+// ---------------------------------------------------------------
+let sessionStarting = null;
+let sessionError = "";
+
+function keepSession(result) {
+  authToken = result.token || "";
+  authRefresh = result.refresh || authRefresh;
+  keep.setItem("authToken", authToken);
+  keep.setItem("authRefresh", authRefresh);
+}
+
+async function startSession() {
+  if (sessionStarting) return sessionStarting;
+
+  sessionStarting = (async function () {
+    try {
+      const result = await (await fetch("/api/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh: authRefresh }),
+      })).json();
+
+      if (result.error) {
+        sessionError = result.error;
+      } else {
+        sessionError = "";
+        keepSession(result);
+      }
+    } catch (error) {
+      sessionError = "Could not reach the server.";
+    }
+    sessionStarting = null;
+  })();
+
+  return sessionStarting;
+}
+
+// Renews an expired session rather than throwing it away. Returns
+// true if there is a usable token afterwards.
+async function renewSession() {
+  if (!authRefresh) return false;
+  await startSession();
+  return Boolean(authToken);
+}
+
+// Everything worth keeping, in one lump.
+// When this device last changed anything. Without it there is no
+// way to tell a fresh copy from a stale one, and the two get
+// resolved by XP alone - which is equal most of the time.
+function markSaved() {
+  keep.setItem("savedAt", String(Date.now()));
+}
+
+function savedHere() {
+  return Number(keep.getItem("savedAt")) || 0;
+}
+
+function gatherProgress() {
+  return {
+    savedAt: Date.now(),
+    // Which provider the football ids below belong to. Without
+    // this, a saved copy from the old provider would come back
+    // down on the next sync and undo the clear-out above.
+    provider: "api-football",
+    xp: xp,
+    coins: coins,
+    streak: streak,
+    shields: shields,
+    alerts: alerts,
+    favTeams: favTeams,
+    favLeagues: favLeagues,
+    dailyCounts: dailyCounts,
+    weekCounts: weekCounts,
+    monthCounts: monthCounts,
+    seasonCounts: seasonCounts,
+    fiveASide: fiveASide,
+    claimed: claimed,
+    lastOpen: keep.getItem("lastOpen") || "",
+    lastSpin: keep.getItem("lastSpin") || "",
+    xpHistory: xpHistory,
+    xpSources: xpSources,
+    squadHistory: squadHistory,
+    squadChanges: squadChanges,
+    paidEvents: paidEvents,
+    weekStartXp: weekStartXp,
+    bestDivision: bestDivision,
+    badgeClub: badgeClub,
+  };
+}
+
+function applyProgress(data) {
+  if (!data) return;
+
+  // Whichever side has more XP wins, so signing in on a fresh
+  // phone does not wipe a long-standing account, and signing in
+  // after playing offline does not lose that either.
+  const theirs = Number(data.xp) || 0;
+  const mine = xp;
+
+  if (theirs >= mine) {
+    xp = theirs;
+    coins = Number(data.coins) || 0;
+    streak = Number(data.streak) || 0;
+    shields = Number(data.shields) || 0;
+    // Football ids are only worth restoring if they were saved
+    // against this provider. Anything older points at other clubs
+    // entirely, so it is left behind rather than reinstated.
+    // The server copy is only allowed to win if it is genuinely
+    // newer than what is on this phone. XP is equal most of the
+    // time, so deciding on XP alone let an older, empty copy
+    // overwrite choices that had just been made - which is why
+    // they had to be picked again the next day.
+    const newer = (Number(data.savedAt) || 0) > savedHere();
+
+    if (data.provider === "api-football") {
+      const preferTheirs = function (theirs, mine) {
+        if (!Array.isArray(theirs)) return mine;
+        if (newer) return theirs;
+        // Not newer: only worth taking if we have nothing.
+        return mine.length === 0 ? theirs : mine;
+      };
+
+      alerts = preferTheirs(data.alerts, alerts);
+      favTeams = preferTheirs(data.favTeams, favTeams);
+      favLeagues = preferTheirs(data.favLeagues, favLeagues);
+
+      if (data.badgeClub && (newer || !badgeClub)) badgeClub = data.badgeClub;
+    }
+    if (data.claimed) claimed = data.claimed;
+    if (data.dailyCounts && data.dailyCounts.day === todayKey) {
+      dailyCounts = data.dailyCounts;
+    }
+    if (data.weekCounts && data.weekCounts.week === thisWeek) {
+      weekCounts = data.weekCounts;
+    }
+    if (data.monthCounts && data.monthCounts.month === thisMonth) {
+      monthCounts = data.monthCounts;
+    }
+    // The squad needs the same protection as the clubs. Without it
+    // a day-old empty copy from the server would clear a team that
+    // had just been picked.
+    if (data.fiveASide) {
+      const mineIsEmpty = Object.keys(fiveASide || {}).length === 0;
+      if (newer || mineIsEmpty) {
+        fiveASide = data.fiveASide;
+        keep.setItem("fiveASide", JSON.stringify(fiveASide));
+      }
+    }
+
+    // Locked squads are merged rather than replaced. Each week is
+    // its own entry, so nothing is lost either way, and a stale
+    // copy cannot erase a week this phone recorded.
+    if (data.squadHistory) {
+      for (const cycle of Object.keys(data.squadHistory)) {
+        if (newer || !squadHistory[cycle]) {
+          squadHistory[cycle] = data.squadHistory[cycle];
+        }
+      }
+    }
+
+    // Never un-pay a gameweek. Taking a shorter list from the
+    // server would let the same week pay out twice.
+    if (Array.isArray(data.paidEvents)) {
+      for (const event of data.paidEvents) {
+        if (paidEvents.indexOf(event) === -1) paidEvents.push(event);
+      }
+    }
+    // Whichever side has used more of the weekly allowance wins,
+    // so a change made on one phone cannot be undone by opening
+    // the app on another.
+    if (data.squadChanges && data.squadChanges.cycle) {
+      const mineUsed = (squadChanges && squadChanges.cycle === data.squadChanges.cycle)
+        ? (Number(squadChanges.used) || 0) : -1;
+
+      if (Number(data.squadChanges.used) > mineUsed) {
+        squadChanges = data.squadChanges;
+        keep.setItem("squadChanges", JSON.stringify(squadChanges));
+      }
+    }
+    if (data.seasonCounts && data.seasonCounts.season === thisSeason) {
+      seasonCounts = data.seasonCounts;
+    }
+    if (data.lastOpen) keep.setItem("lastOpen", data.lastOpen);
+    if (data.lastSpin) keep.setItem("lastSpin", data.lastSpin);
+    if (Array.isArray(data.xpHistory)) xpHistory = data.xpHistory;
+    if (data.xpSources && newer) {
+      xpSources = data.xpSources;
+      keep.setItem("xpSources", JSON.stringify(xpSources));
+    }
+    if (typeof data.weekStartXp === "number") weekStartXp = data.weekStartXp;
+    if (data.bestDivision) bestDivision = data.bestDivision;
+    saveHistory();
+  }
+
+  saveXpState();
+  saveCounters();
+  saveFavourites();
+  saveProgress();
+  drawProgress();
+}
+
+// Pushes progress up. Quietly does nothing when signed out.
+let savePending = null;
+// Sends whatever is pending right now, without waiting out the
+// delay. Used when the app is about to go away.
+function flushProgress() {
+  if (!signedIn() || !savePending) return;
+
+  clearTimeout(savePending);
+  savePending = null;
+
+  try {
+    // keepalive lets the request outlive the page, which a normal
+    // fetch does not - closing the app mid-flight would otherwise
+    // lose the change.
+    fetch("/api/progress", {
+      method: "POST",
+      keepalive: true,
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + authToken,
+      },
+      body: JSON.stringify({ data: gatherProgress() }),
+    });
+  } catch (error) {
+    // Nothing useful to do at this point.
+  }
+}
+
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState === "hidden") {
+    flushProgress();
+    // The app is going into the background, and iOS may close it
+    // without warning. Back up now rather than in a moment.
+    if (nativeBackupTimer) sendNativeBackup();
+  }
+});
+window.addEventListener("pagehide", flushProgress);
+
+function pushProgress() {
+  if (!signedIn()) return;
+
+  // Wait a moment in case several things change at once. Two
+  // seconds is nothing on screen, but it was long enough to lose a
+  // change if the app was closed straight after making it - hence
+  // the flush above.
+  clearTimeout(savePending);
+  savePending = setTimeout(async function () {
+    const send = async function () {
+      return fetch("/api/progress", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + authToken,
+        },
+        body: JSON.stringify({ data: gatherProgress() }),
+      });
+    };
+
+    try {
+      const response = await send();
+      // A stale token means renew and try once more, never give up
+      // on the data.
+      if (response.status === 401 && await renewSession()) await send();
+    } catch (error) {
+      // Offline. It will go up next time something changes.
+    }
+
+    savePending = null;
+  }, 2000);
+}
+
+async function pullProgress() {
+  if (!signedIn()) return;
+  try {
+    const response = await fetch("/api/progress", {
+      headers: { "Authorization": "Bearer " + authToken },
+    });
+    // Never sign out here. For an anonymous account that would
+    // throw away the only way back in.
+    if (response.status === 401) {
+      const renewed = await renewSession();
+      if (!renewed) return;
+      const second = await fetch("/api/progress", {
+        headers: { "Authorization": "Bearer " + authToken },
+      });
+      if (second.status === 401) return;
+      applyProgress((await second.json()).data);
+      return;
+    }
+
+    const result = await response.json();
+    applyProgress(result.data);
+  } catch (error) {
+    // Offline. Carry on with what is on the device.
+  }
+}
+
+// Only used when an account is deliberately deleted. There is no
+// sign-out button any more, because there is nothing to sign into.
+function signOut() {
+  authToken = "";
+  authRefresh = "";
+  keep.removeItem("authToken");
+  keep.removeItem("authRefresh");
+  keep.removeItem("authEmail");
+}
+
+
+
+
+// ---------------------------------------------------------------
+// THE PROFILE SCREEN
+//
+// Reached by tapping the badge in the top right.
+// ---------------------------------------------------------------
+let leagueSnapshot = null;   // filled in whenever the league loads
+
+// Things worth showing off, worked out from what we already track.
+function trophiesEarned() {
+  const won = [];
+  const level = levelNow();
+  const best = Math.max(bestDivision, divisionNumber());
+
+  if (level >= 5)  won.push({ icon: "&#127941;", text: "Reached level 5" });
+  if (level >= 15) won.push({ icon: "&#127941;", text: "Reached level 15" });
+  if (level >= 30) won.push({ icon: "&#127942;", text: "Reached level 30" });
+  if (streak >= 7)  won.push({ icon: "&#128293;", text: "Seven day streak" });
+  if (streak >= 30) won.push({ icon: "&#128293;", text: "Thirty day streak" });
+  if (best >= 4) won.push({ icon: "&#9889;", text: "Reached " + DIVISIONS[best - 1].name });
+  if ((seasonCounts.match || 0) >= 100) won.push({ icon: "&#9917;", text: "100 matches followed" });
+  if (xpHistory.length >= 10) won.push({ icon: "&#128197;", text: "Ten weeks played" });
+
+  return won;
+}
+
+function divisionNumber() {
+  return leagueSnapshot ? leagueSnapshot.division : 1;
+}
+
+function drawProfile() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  const level = levelNow();
+  const division = DIVISIONS[Math.max(0, divisionNumber() - 1)];
+  const club = badgeClub || favTeams[0] || null;
+
+  // ---- Who they are ----
+  const head = document.createElement("div");
+  head.className = "profHead";
+  head.innerHTML =
+    '<div class="profCrest">' +
+      (club
+        ? '<img src="' + club.logo + '" alt="">'
+        : '<span class="profLevelBig">' + level + '</span>') +
+      '<span class="profLevelTag">' + level + '</span>' +
+    '</div>' +
+    '<div class="profNameBox">' +
+      '<div class="profNick">' + (leagueSnapshot && leagueSnapshot.name
+        ? leagueSnapshot.name : "Set your name") + '</div>' +
+      '<div class="profUnder">' + division.name + ' division' +
+        (leagueSnapshot && leagueSnapshot.position
+          ? ' &middot; ' + leagueSnapshot.position + ' this week' : "") +
+      '</div>' +
+      (club ? '<div class="profClub">' + club.name + '</div>' : "") +
+    '</div>';
+  list.appendChild(head);
+
+  // ---- The numbers ----
+  const weeks = xpHistory.slice();
+  const thisWeekXp = Math.max(0, xp - weekStartXp);
+  const lastWeekXp = weeks.length > 0 ? weeks[weeks.length - 1].xp : 0;
+  const best = weeks.reduce(function (top, w) {
+    return Math.max(top, w.xp);
+  }, thisWeekXp);
+  const average = weeks.length > 0
+    ? Math.round(weeks.reduce(function (sum, w) { return sum + w.xp; }, 0) / weeks.length)
+    : thisWeekXp;
+
+  const stats = [
+    ["This week", thisWeekXp],
+    ["Last week", lastWeekXp],
+    ["Best week", best],
+    ["Weekly average", average],
+    ["Lifetime XP", xp],
+    ["Weeks played", weeks.length + 1],
+  ];
+
+  const statBox = document.createElement("div");
+  statBox.className = "profGrid";
+  statBox.innerHTML = stats.map(function (pair) {
+    return '<div class="profCell">' +
+      '<b>' + pair[1].toLocaleString() + '</b>' +
+      '<span>' + pair[0] + '</span>' +
+    '</div>';
+  }).join("");
+  list.appendChild(statBox);
+
+  const divBox = document.createElement("div");
+  divBox.className = "profGrid two";
+  divBox.innerHTML =
+    '<div class="profCell"><b>' + division.name + '</b><span>Division now</span></div>' +
+    '<div class="profCell"><b>' +
+      DIVISIONS[Math.max(0, Math.max(bestDivision, divisionNumber()) - 1)].name +
+    '</b><span>Best reached</span></div>';
+  list.appendChild(divBox);
+
+  // ---- The graph ----
+  const shown = weeks.slice(-10).concat([{ week: thisWeek, xp: thisWeekXp }]);
+
+  const graphBox = document.createElement("div");
+  graphBox.className = "vizBox";
+
+  if (shown.length < 2) {
+    graphBox.innerHTML =
+      '<div class="vizHead"><span>XP by week</span></div>' +
+      '<div class="colEmpty">The graph fills in as the weeks go by.</div>';
+  } else {
+    const W = 320;
+    const H = 110;
+    const top = Math.max.apply(null, shown.map(function (w) { return w.xp; })) || 1;
+    const step = W / shown.length;
+
+    let bars = "";
+    let labels = "";
+    for (let i = 0; i < shown.length; i++) {
+      const value = shown[i].xp;
+      const height = Math.max(2, (value / top) * (H - 26));
+      const x = i * step + 3;
+      const last = i === shown.length - 1;
+      bars += '<rect x="' + x.toFixed(1) + '" y="' + (H - 18 - height).toFixed(1) +
+        '" width="' + (step - 6).toFixed(1) + '" height="' + height.toFixed(1) +
+        '" rx="2" fill="' + (last ? "#F5A623" : "#1E6FD9") + '"/>';
+      labels += '<text x="' + (x + (step - 6) / 2).toFixed(1) + '" y="' + (H - 5) +
+        '" text-anchor="middle" font-size="8" fill="#9CA3AF">' +
+        (last ? "now" : (i + 1)) + '</text>';
+    }
+
+    graphBox.innerHTML =
+      '<div class="vizHead"><span>XP by week</span>' +
+        '<span class="vizKey">best ' + top.toLocaleString() + '</span></div>' +
+      '<div class="vizInner">' +
+        '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
+          '<title>XP earned each week</title>' + bars + labels +
+        '</svg>' +
+      '</div>';
+  }
+  list.appendChild(graphBox);
+
+  // ---- Trophies ----
+  const won = trophiesEarned();
+  const trophyHead = document.createElement("div");
+  trophyHead.className = "boxHead";
+  trophyHead.textContent = "Trophies";
+  list.appendChild(trophyHead);
+
+  const trophyBox = document.createElement("div");
+  trophyBox.className = "trophyWrap";
+  trophyBox.innerHTML = won.length === 0
+    ? '<div class="colEmpty">Nothing won yet. Keep playing.</div>'
+    : won.map(function (t) {
+        return '<div class="trophy"><span>' + t.icon + '</span>' + t.text + '</div>';
+      }).join("");
+  list.appendChild(trophyBox);
+
+  // ---- Which badge shows in the bar ----
+  if (favTeams.length > 0) {
+    const pickHead = document.createElement("div");
+    pickHead.className = "boxHead";
+    pickHead.textContent = "Badge in the top bar";
+    list.appendChild(pickHead);
+
+    const picker = document.createElement("div");
+    picker.className = "badgePick";
+    picker.innerHTML =
+      '<div class="pickOne' + (badgeClub ? "" : " on") + '" data-id="none">' +
+        '<span class="pickLevel">' + level + '</span>' +
+      '</div>' +
+      favTeams.slice(0, 5).map(function (team) {
+        return '<div class="pickOne' +
+          (badgeClub && badgeClub.id === team.id ? " on" : "") +
+          '" data-id="' + team.id + '">' +
+          '<img src="' + team.logo + '" alt="' + team.name + '">' +
+        '</div>';
+      }).join("");
+    list.appendChild(picker);
+
+    for (const option of picker.querySelectorAll(".pickOne")) {
+      option.onclick = function () {
+        const id = this.getAttribute("data-id");
+        badgeClub = id === "none"
+          ? null
+          : favTeams.find(function (t) { return String(t.id) === id; }) || null;
+        saveHistory();
+        pushProgress();
+        drawProgress();
+        drawProfile();
+      };
+    }
+  }
+
+  // ---- What they follow ----
+  const followHead = document.createElement("div");
+  followHead.className = "boxHead";
+  followHead.textContent = "Follows";
+  list.appendChild(followHead);
+
+  const follows = document.createElement("div");
+  follows.className = "trophyWrap";
+  follows.innerHTML =
+    favTeams.map(function (t) {
+      return '<div class="chipItem"><img src="' + t.logo + '" alt="">' + t.name + '</div>';
+    }).join("") +
+    favLeagues.map(function (l) {
+      return '<div class="chipItem"><img src="' + l.logo + '" alt="">' + l.name + '</div>';
+    }).join("");
+  if (favTeams.length === 0 && favLeagues.length === 0) {
+    follows.innerHTML = '<div class="colEmpty">Nothing followed yet.</div>';
+  }
+  list.appendChild(follows);
+
+  // ---- Recently starred matches ----
+  const recentHead = document.createElement("div");
+  recentHead.className = "boxHead";
+  recentHead.textContent = "Recently starred";
+  list.appendChild(recentHead);
+
+  const recentBox = document.createElement("div");
+  recentBox.innerHTML = alerts.length === 0
+    ? '<div class="colEmpty">No matches starred yet.</div>'
+    : '<div class="colEmpty">Loading...</div>';
+  list.appendChild(recentBox);
+
+  if (alerts.length > 0) {
+    (async function () {
+      const wanted = alerts.slice(-5).reverse();
+      let rows = "";
+
+      for (const id of wanted) {
+        try {
+          const match = await (await fetch("/api/match?id=" + id + "&light=1")).json();
+          if (!match) continue;
+          const hg = match.goals.home === null ? "-" : match.goals.home;
+          const ag = match.goals.away === null ? "-" : match.goals.away;
+          rows += '<div class="recentRow">' +
+            '<span class="recentStar">&#9733;</span>' +
+            '<img src="' + match.teams.home.logo + '" alt="">' +
+            '<span class="recentName">' + match.teams.home.name + '</span>' +
+            '<span class="recentScore">' + hg + ' - ' + ag + '</span>' +
+            '<span class="recentName right">' + match.teams.away.name + '</span>' +
+            '<img src="' + match.teams.away.logo + '" alt="">' +
+          '</div>';
+        } catch (error) {
+          // Skip that one.
+        }
+      }
+
+      recentBox.innerHTML = rows || '<div class="colEmpty">Could not load them.</div>';
+    })();
+  }
+}
+
+
+// ---------------------------------------------------------------
+// SETTINGS
+// ---------------------------------------------------------------
+function drawSettings() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  const section = function (title) {
+    const head = document.createElement("div");
+    head.className = "boxHead";
+    head.textContent = title;
+    list.appendChild(head);
+  };
+
+  const row = function (label, right, onTap) {
+    const item = document.createElement("div");
+    item.className = "setRow" + (onTap ? " setTap" : "");
+    item.innerHTML =
+      '<span class="setLabel">' + label + '</span>' +
+      '<span class="setRight">' + (right || "") + '</span>';
+    if (onTap) item.onclick = onTap;
+    list.appendChild(item);
+    return item;
+  };
+
+  // ---- Account ----
+  section("Account");
+  if (signedIn()) {
+    row("Your progress", "Saved");
+
+    const accountNote = document.createElement("div");
+    accountNote.className = "setNote";
+    accountNote.textContent =
+      "There is no sign-in and no email address. Your progress is " +
+      "kept against an anonymous account tied to this device.";
+    list.appendChild(accountNote);
+
+    // Both app stores require this to be reachable in the app, not
+    // by emailing someone. Two taps, because it cannot be undone.
+    const deleteRow = row("Delete account", "&rsaquo;", async function () {
+      if (deleteRow.getAttribute("data-armed") !== "yes") {
+        deleteRow.setAttribute("data-armed", "yes");
+        deleteRow.querySelector(".setLabel").textContent =
+          "Tap again to delete permanently";
+        deleteRow.querySelector(".setRight").textContent = "";
+        deleteRow.classList.add("setDanger");
+        return;
+      }
+
+      deleteRow.querySelector(".setLabel").textContent = "Deleting...";
+
+      let result;
+      try {
+        result = await (await fetch("/api/account/delete", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + authToken },
+        })).json();
+      } catch (error) {
+        result = { error: "Could not reach the server" };
+      }
+
+      if (result.error) {
+        deleteRow.removeAttribute("data-armed");
+        deleteRow.querySelector(".setLabel").textContent = "Delete account";
+        deleteRow.querySelector(".setRight").textContent = result.error;
+        return;
+      }
+
+      // Gone from the server, so clear the phone as well.
+      signOut();
+      keep.clear();
+      location.reload();
+    });
+
+    const deleteNote = document.createElement("div");
+    deleteNote.className = "setNote";
+    deleteNote.textContent =
+      "Deleting your account removes all saved progress from our " +
+      "servers straight away. It cannot be undone.";
+    list.appendChild(deleteNote);
+  } else {
+    row("Setting up", "&rsaquo;", function () { startSession(); });
+    const note = document.createElement("div");
+    note.className = "setNote";
+    note.textContent =
+      "No session yet, so progress is only on this device. It will " +
+      "sort itself out next time you are online.";
+    list.appendChild(note);
+  }
+
+  // ---- Alerts ----
+  section("Alerts");
+  const permission = (typeof Notification === "undefined")
+    ? "Not supported"
+    : (Notification.permission === "granted" ? "On"
+       : Notification.permission === "denied" ? "Blocked" : "Off");
+
+  row("Goal notifications", permission, async function () {
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission === "default") {
+      await askForNotifications();
+      drawSettings();
+    }
+  });
+  row("Matches followed", String(alerts.length));
+
+  const alertNote = document.createElement("div");
+  alertNote.className = "setNote";
+  alertNote.textContent =
+    "Alerts arrive while the app is open. Background alerts come with the phone app.";
+  list.appendChild(alertNote);
+
+  // ---- What you follow ----
+  section("Following");
+  row("Clubs", String(favTeams.length), function () {
+    favView = "countries";
+    goTo("favourites");
+  });
+  row("Leagues", String(favLeagues.length), function () {
+    favView = "countries";
+    goTo("favourites");
+  });
+
+  // ---- Legal ----
+  section("About");
+  row("Privacy policy", "&rsaquo;", function () {
+    window.open("/privacy", "_blank");
+  });
+  row("Support", "&rsaquo;", function () {
+    window.open("/support", "_blank");
+  });
+  row("Football data", "api-football.com");
+  row("Commentary", "Events plus minute-by-minute stats");
+
+  // Kickoff times are converted on the device, so it helps to be
+  // able to see what the device believes.
+  const zone = (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || "unknown";
+  row("Your timezone", zone);
+  row("Your clock", new Date().toLocaleString([], {
+    hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
+  }));
+  row("Version", "1.0");
+  row("Build", "2026-09-29-backup-a");
+
+  // ---- Clearing up ----
+  section("Data");
+  const clearRow = row("Clear this device", "&rsaquo;", function () {
+    if (clearRow.getAttribute("data-armed") === "yes") {
+      keep.clear();
+      location.reload();
+      return;
+    }
+    clearRow.setAttribute("data-armed", "yes");
+    clearRow.querySelector(".setLabel").textContent = "Tap again to confirm";
+    clearRow.querySelector(".setRight").textContent = "";
+    clearRow.classList.add("setDanger");
+  });
+
+  const clearNote = document.createElement("div");
+  clearNote.className = "setNote";
+  clearNote.textContent = signedIn()
+    ? "This wipes the app on this phone, including the anonymous " +
+      "account that links it to your saved progress. There is no " +
+      "sign-in to get it back, so only do this if you mean to start again."
+    : "This wipes everything. Without an account there is no way to get it back.";
+  list.appendChild(clearNote);
+}
+
+
+// ---------------------------------------------------------------
+// CHALLENGES
+//
+// Four groups. Dailies reset at midnight, weeklies on Monday, and
+// the season goals run until June. The season ones are set high
+// enough that only someone using the app most days will finish
+// them, but low enough that they will finish them before May.
+// ---------------------------------------------------------------
+const CHALLENGES = [
+  // ---- Every day. Small, quick, all of them doable in a sitting.
+  { id: "d1", group: "daily", text: "Open the app",
+    target: 1,  xp: 10, read: function () { return dailyCounts.daily || 0; } },
+  { id: "d2", group: "daily", text: "Take your daily spin",
+    target: 1,  xp: 15, read: function () { return dailyCounts.spin || 0; } },
+  { id: "d3", group: "daily", text: "Check one of your clubs",
+    target: 1,  xp: 15, read: function () { return dailyCounts.club || 0; } },
+  { id: "d4", group: "daily", text: "Read the news",
+    target: 1,  xp: 15, read: function () { return dailyCounts.news || 0; } },
+  { id: "d5", group: "daily", text: "Star a match to follow",
+    target: 1,  xp: 15, read: function () { return dailyCounts.star || 0; } },
+  { id: "d6", group: "daily", text: "Look at 3 match centres",
+    target: 3,  xp: 20, read: function () { return dailyCounts.match || 0; } },
+  { id: "d7", group: "daily", text: "Look at 2 league tables",
+    target: 2,  xp: 20, read: function () { return dailyCounts.table || 0; } },
+  { id: "d8", group: "daily", text: "Open a commentary feed",
+    target: 1,  xp: 20, read: function () { return dailyCounts.comm || 0; } },
+  { id: "d9", group: "daily", text: "Study 2 line-ups",
+    target: 2,  xp: 25, read: function () { return dailyCounts.lineup || 0; } },
+  { id: "d10", group: "daily", text: "Look at 8 match centres",
+    target: 8,  xp: 40, read: function () { return dailyCounts.match || 0; } },
+
+  // ---- This week, the gentle ones.
+  { id: "we1", group: "weekEasy", text: "Visit on 3 different days",
+    target: 3,  xp: 60, read: function () { return (weekCounts.days || []).length; } },
+  { id: "we2", group: "weekEasy", text: "Look at 15 match centres",
+    target: 15, xp: 60, read: function () { return weekCounts.match || 0; } },
+  { id: "we3", group: "weekEasy", text: "Star 3 matches to follow",
+    target: 3,  xp: 50, read: function () { return weekCounts.star || 0; } },
+  { id: "we4", group: "weekEasy", text: "Look at 5 league tables",
+    target: 5,  xp: 50, read: function () { return weekCounts.table || 0; } },
+  { id: "we5", group: "weekEasy", text: "Check your clubs 5 times",
+    target: 5,  xp: 50, read: function () { return weekCounts.club || 0; } },
+  { id: "we6", group: "weekEasy", text: "Take 3 daily spins",
+    target: 3,  xp: 50, read: function () { return weekCounts.spin || 0; } },
+  { id: "we7", group: "weekEasy", text: "Open the news 5 times",
+    target: 5,  xp: 40, read: function () { return weekCounts.news || 0; } },
+  { id: "we8", group: "weekEasy", text: "Study 5 line-ups",
+    target: 5,  xp: 55, read: function () { return weekCounts.lineup || 0; } },
+  { id: "we9", group: "weekEasy", text: "Follow 3 commentary feeds",
+    target: 3,  xp: 50, read: function () { return weekCounts.comm || 0; } },
+  { id: "we10", group: "weekEasy", text: "Open the featured match 5 times",
+    target: 5,  xp: 40, read: function () { return weekCounts.feature || 0; } },
+
+  // ---- This week, the ones that take real effort.
+  { id: "wh1", group: "weekHard", text: "Visit every day this week",
+    target: 7,   xp: 220, read: function () { return (weekCounts.days || []).length; } },
+  { id: "wh2", group: "weekHard", text: "Look at 60 match centres",
+    target: 60,  xp: 200, read: function () { return weekCounts.match || 0; } },
+  { id: "wh3", group: "weekHard", text: "Check your clubs 20 times",
+    target: 20,  xp: 175, read: function () { return weekCounts.club || 0; } },
+  { id: "wh4", group: "weekHard", text: "Look at 25 league tables",
+    target: 25,  xp: 175, read: function () { return weekCounts.table || 0; } },
+  { id: "wh5", group: "weekHard", text: "Star 15 matches",
+    target: 15,  xp: 175, read: function () { return weekCounts.star || 0; } },
+  { id: "wh6", group: "weekHard", text: "Spin every day this week",
+    target: 7,   xp: 200, read: function () { return weekCounts.spin || 0; } },
+  { id: "wh7", group: "weekHard", text: "Study 30 line-ups",
+    target: 30,  xp: 200, read: function () { return weekCounts.lineup || 0; } },
+  { id: "wh8", group: "weekHard", text: "Read 25 sets of match stats",
+    target: 25,  xp: 175, read: function () { return weekCounts.mstats || 0; } },
+  { id: "wh9", group: "weekHard", text: "Follow 20 commentary feeds",
+    target: 20,  xp: 200, read: function () { return weekCounts.comm || 0; } },
+  { id: "wh10", group: "weekHard", text: "Look at 10 top scorer lists",
+    target: 10,  xp: 150, read: function () { return weekCounts.scorers || 0; } },
+
+  // ---- The month. Long enough that these need keeping up with.
+  { id: "m1", group: "month", text: "Visit on 20 days",
+    target: 20,  xp: 500, read: function () { return (monthCounts.days || []).length; } },
+  { id: "m2", group: "month", text: "Look at 250 match centres",
+    target: 250, xp: 600, read: function () { return monthCounts.match || 0; } },
+  { id: "m3", group: "month", text: "Star 60 matches",
+    target: 60,  xp: 450, read: function () { return monthCounts.star || 0; } },
+  { id: "m4", group: "month", text: "Take 25 daily spins",
+    target: 25,  xp: 400, read: function () { return monthCounts.spin || 0; } },
+  { id: "m5", group: "month", text: "Look at 100 league tables",
+    target: 100, xp: 450, read: function () { return monthCounts.table || 0; } },
+  { id: "m6", group: "month", text: "Check your clubs 80 times",
+    target: 80,  xp: 400, read: function () { return monthCounts.club || 0; } },
+  { id: "m7", group: "month", text: "Study 120 line-ups",
+    target: 120, xp: 500, read: function () { return monthCounts.lineup || 0; } },
+  { id: "m8", group: "month", text: "Open the news 40 times",
+    target: 40,  xp: 300, read: function () { return monthCounts.news || 0; } },
+  { id: "m9", group: "month", text: "Follow 80 commentary feeds",
+    target: 80,  xp: 500, read: function () { return monthCounts.comm || 0; } },
+  { id: "m10", group: "month", text: "Reach a 20 day streak",
+    target: 20,  xp: 700, read: function () { return streak; } },
+
+  // ---- The whole season.
+  { id: "s1", group: "season", text: "Visit on 150 days",
+    target: 150,  xp: 2500, read: function () { return seasonCounts.days || 0; } },
+  { id: "s2", group: "season", text: "Look at 1,000 match centres",
+    target: 1000, xp: 3000, read: function () { return seasonCounts.match || 0; } },
+  { id: "s3", group: "season", text: "Reach a 60 day streak",
+    target: 60,   xp: 2500, read: function () { return streak; } },
+  { id: "s4", group: "season", text: "Follow 250 matches",
+    target: 250,  xp: 2000, read: function () { return seasonCounts.star || 0; } },
+  { id: "s5", group: "season", text: "Reach level 30",
+    target: 30,   xp: 3500, read: function () { return levelNow(); } },
+  { id: "s6", group: "season", text: "Take 120 daily spins",
+    target: 120,  xp: 2000, read: function () { return seasonCounts.spin || 0; } },
+  { id: "s7", group: "season", text: "Study 500 line-ups",
+    target: 500,  xp: 2500, read: function () { return seasonCounts.lineup || 0; } },
+  { id: "s8", group: "season", text: "Read 400 sets of match stats",
+    target: 400,  xp: 2200, read: function () { return seasonCounts.mstats || 0; } },
+  { id: "s9", group: "season", text: "Follow 300 commentary feeds",
+    target: 300,  xp: 2500, read: function () { return seasonCounts.comm || 0; } },
+  { id: "s10", group: "season", text: "Reach level 60",
+    target: 60,   xp: 4000, read: function () { return levelNow(); } },
+];
+
+// A symbol for each challenge, so the list is easier to scan.
+const CHALLENGE_ICONS = {
+  d1: "&#128241;", d2: "&#127920;", d3: "&#128085;", d4: "&#128240;",
+  d5: "&#9733;", d6: "&#9917;", d7: "&#9776;", d8: "&#128172;",
+  d9: "&#128101;", d10: "&#9917;",
+
+  we1: "&#128197;", we2: "&#9917;", we3: "&#9733;", we4: "&#9776;",
+  we5: "&#128085;", we6: "&#127920;", we7: "&#128240;", we8: "&#128101;",
+  we9: "&#128172;", we10: "&#11088;",
+
+  wh1: "&#128197;", wh2: "&#9917;", wh3: "&#128085;", wh4: "&#9776;",
+  wh5: "&#9733;", wh6: "&#127920;", wh7: "&#128101;", wh8: "&#128200;",
+  wh9: "&#128172;", wh10: "&#127942;",
+
+  m1: "&#128197;", m2: "&#9917;", m3: "&#9733;", m4: "&#127920;",
+  m5: "&#9776;", m6: "&#128085;", m7: "&#128101;", m8: "&#128240;",
+  m9: "&#128172;", m10: "&#128293;",
+
+  s1: "&#128197;", s2: "&#9917;", s3: "&#128293;", s4: "&#9733;",
+  s5: "&#9889;", s6: "&#127920;", s7: "&#128101;", s8: "&#128200;",
+  s9: "&#128172;", s10: "&#128142;",
+};
+
+// The period a challenge belongs to, so dailies can come round again.
+function periodOf(group) {
+  if (group === "daily") return todayKey;
+  if (group === "month") return thisMonth;
+  if (group === "season") return thisSeason;
+  return thisWeek;
+}
+
+function claimKey(challenge) {
+  return challenge.id + "|" + periodOf(challenge.group);
+}
+
+function isClaimed(challenge) {
+  return Boolean(claimed[claimKey(challenge)]);
+}
+
+function claim(challenge) {
+  if (isClaimed(challenge)) return;
+  if (challenge.read() < challenge.target) return;
+
+  claimed[claimKey(challenge)] = true;
+  creditXp("challenges", challenge.xp * currentMultiplier());
+  saveXpState();
+  saveCounters();
+  drawProgress();
+}
+
+function drawChallenges() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  const groups = [
+    ["daily",    "Today",            "Resets at midnight"],
+    ["weekEasy", "This week",        "Resets Monday"],
+    ["weekHard", "This week - hard", "Resets Monday"],
+    ["month",    "This month",       "Resets on the 1st"],
+    ["season",   "Season " + thisSeason, "Runs until June"],
+  ];
+
+  for (const [key, title, note] of groups) {
+    const mine = CHALLENGES.filter(function (c) { return c.group === key; });
+    const done = mine.filter(function (c) { return isClaimed(c); }).length;
+
+    const head = document.createElement("div");
+    head.className = "chGroup";
+    head.innerHTML =
+      '<span class="chTitle">' + title + '</span>' +
+      '<span class="chNote">' + done + ' / ' + mine.length + ' &middot; ' + note + '</span>';
+    list.appendChild(head);
+
+    for (const challenge of mine) {
+      const at = Math.min(challenge.read(), challenge.target);
+      const ready = at >= challenge.target;
+      const taken = isClaimed(challenge);
+      const pct = (at / challenge.target) * 100;
+
+      const row = document.createElement("div");
+      row.className = "chRow" + (taken ? " chTaken" : "");
+      row.innerHTML =
+        '<div class="chIcon">' + (CHALLENGE_ICONS[challenge.id] || "&#9917;") + '</div>' +
+        '<div class="chBody">' +
+          '<div class="chTop">' +
+            '<span class="chText">' + challenge.text + '</span>' +
+            '<span class="chXp">+' + challenge.xp + '</span>' +
+          '</div>' +
+          '<div class="chBar"><div class="chFill" style="width:' + pct + '%"></div></div>' +
+          '<div class="chBottom">' +
+            '<span class="chCount">' + at.toLocaleString() + ' / ' +
+              challenge.target.toLocaleString() + '</span>' +
+            (taken
+              ? '<span class="chDone">Claimed</span>'
+              : (ready
+                  ? '<button class="chClaim">Claim</button>'
+                  : '<span class="chTodo">In progress</span>')) +
+          '</div>' +
+        '</div>';
+
+      const button = row.querySelector(".chClaim");
+      if (button) {
+        button.onclick = function () {
+          claim(challenge);
+          drawChallenges();
+        };
+      }
+
+      list.appendChild(row);
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------
+// THE CLUB SCREEN
+// Fixtures, table and player stats for one club.
+// ---------------------------------------------------------------
+let openClubInfo = null;
+let clubTab = "fixtures";
+
+// Set when a club page is opened from a match, so the back arrow
+// knows to return to the match rather than dumping you on Home.
+let clubReturnFixture = null;
+
+function openClub(club) {
+  earn("club");
+  openClubInfo = club;
+  clubTab = "fixtures";
+  screen = "club";
+  document.getElementById("mainHeader").style.display = "none";
+  document.getElementById("leagueHead").innerHTML = "";
+  document.getElementById("matchHead").innerHTML = "";
+  refresh();
+}
+
+function closeClub() {
+  const backToMatch = clubReturnFixture;
+  clubReturnFixture = null;
+  openClubInfo = null;
+  document.getElementById("leagueHead").innerHTML = "";
+
+  if (backToMatch) {
+    openMatch(backToMatch);
+    // Leaving from the match should go where the match came from,
+    // not back into this club page.
+    previousScreen = "home";
+    return;
+  }
+
+  document.getElementById("mainHeader").style.display = "block";
+  goTo("home");
+}
+
+function drawClubHead() {
+  const head = document.getElementById("leagueHead");
+  const club = openClubInfo;
+
+  const tabs = [["fixtures", "Fixtures"], ["table", "Table"], ["stats", "Stats"]];
+  let tabHtml = "";
+  for (const [key, label] of tabs) {
+    tabHtml += '<div class="lTab' + (clubTab === key ? " on" : "") +
+      '" data-tab="' + key + '">' + label + '</div>';
+  }
+
+  head.innerHTML =
+    '<div class="leagueHead">' +
+      '<div class="leagueHeadTop">' +
+        '<span class="back" id="clubBack">&#8592;</span>' +
+        '<img src="' + club.logo + '" alt="">' +
+        '<div class="txt">' +
+          '<div class="ln">' + club.name + '</div>' +
+          '<div class="cn">' + (club.leagueName || "") + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="leagueTabs">' + tabHtml + '</div>' +
+    '</div>';
+
+  document.getElementById("clubBack").onclick = closeClub;
+  for (const tab of head.querySelectorAll(".lTab")) {
+    tab.onclick = function () {
+      clubTab = this.getAttribute("data-tab");
+      refresh();
+    };
+  }
+}
+
+// Goals, assists and bookings for a squad.
+function drawClubStats(players) {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  const played = players.filter(function (p) {
+    return p.goals > 0 || p.assists > 0 || p.yellow > 0 || p.red > 0;
+  });
+
+  if (played.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No player stats yet.<br><br>' +
+      'These build up as the season goes on.</div>';
+    return;
+  }
+
+  // Most involved first.
+  played.sort(function (a, b) {
+    const scoreA = a.goals * 3 + a.assists * 2;
+    const scoreB = b.goals * 3 + b.assists * 2;
+    if (scoreA !== scoreB) return scoreB - scoreA;
+    return (b.yellow + b.red) - (a.yellow + a.red);
+  });
+
+  const head = document.createElement("div");
+  head.className = "statHead";
+  head.innerHTML =
+    '<span class="shPlayer">Player</span>' +
+    '<span class="shNum">Gls</span>' +
+    '<span class="shNum">Ast</span>' +
+    '<span class="shNum">Yel</span>' +
+    '<span class="shNum">Red</span>';
+  list.appendChild(head);
+
+  for (const player of played) {
+    const row = document.createElement("div");
+    row.className = "statRow";
+    row.innerHTML =
+      '<span class="shPlayer">' +
+        (player.image
+          ? '<img src="' + player.image + '" alt="">'
+          : '<span class="noFace">' + (player.number || "") + '</span>') +
+        '<span class="pName">' + player.name + '</span>' +
+      '</span>' +
+      '<span class="shNum strong">' + player.goals + '</span>' +
+      '<span class="shNum">' + player.assists + '</span>' +
+      '<span class="shNum ' + (player.yellow > 0 ? "yel" : "") + '">' + player.yellow + '</span>' +
+      '<span class="shNum ' + (player.red > 0 ? "red" : "") + '">' + player.red + '</span>';
+    list.appendChild(row);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// SINGLE MATCH
+// ---------------------------------------------------------------
+let openFixtureId = null;
+let matchTab = "summary";
+let previousScreen = "scores";
+
+function openMatch(fixtureId) {
+  earn("match");
+  previousScreen = screen;
+  openFixtureId = fixtureId;
+  matchTab = "summary";
+  screen = "match";
+  document.getElementById("mainHeader").style.display = "none";
+  refresh();
+}
+
+function closeMatch() {
+  openFixtureId = null;
+  document.getElementById("mainHeader").style.display = "block";
+  document.getElementById("matchHead").innerHTML = "";
+  goTo(previousScreen);
+}
+
+function drawMatch(match) {
+  const head = document.getElementById("matchHead");
+  const list = document.getElementById("list");
+
+  const homeGoals = match.goals.home === null ? "-" : match.goals.home;
+  const awayGoals = match.goals.away === null ? "-" : match.goals.away;
+
+  let clock = match.fixture.status.elapsed !== null
+    ? match.fixture.status.elapsed + "'"
+    : match.fixture.status.long;
+
+  head.innerHTML =
+    '<div class="matchHead">' +
+      '<div class="matchTop">' +
+        '<span class="back" id="backBtn">&#8592;</span>' +
+        '<span class="comp">' + match.league.name + '</span>' +
+        '<span style="width:20px"></span>' +
+      '</div>' +
+      '<div class="scoreLine">' +
+        '<div class="side" id="sideHome">' +
+          '<img src="' + match.teams.home.logo + '" alt="">' +
+          '<div>' + match.teams.home.name + '</div>' +
+        '</div>' +
+        '<div class="bigScore">' +
+          '<div class="nums">' + homeGoals + ' - ' + awayGoals + '</div>' +
+          '<div class="clock">' + clock + '</div>' +
+        '</div>' +
+        '<div class="side" id="sideAway">' +
+          '<img src="' + match.teams.away.logo + '" alt="">' +
+          '<div>' + match.teams.away.name + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="tabs">' +
+      '<div class="tab' + (matchTab === "summary" ? " on" : "") + '" id="tabSummary">Summary</div>' +
+      '<div class="tab' + (matchTab === "comm" ? " on" : "") + '" id="tabComm">Commentary</div>' +
+      '<div class="tab' + (matchTab === "pitch" ? " on" : "") + '" id="tabPitch">Line-ups</div>' +
+      '<div class="tab' + (matchTab === "stats" ? " on" : "") + '" id="tabStats">Stats</div>' +
+    '</div>' +
+    '<div class="tabs tabsUnder">' +
+      '<div class="tab' + (matchTab === "facts" ? " on" : "") + '" id="tabFacts">Facts</div>' +
+      '<div class="tab' + (matchTab === "news" ? " on" : "") + '" id="tabNews">News</div>' +
+    '</div>';
+
+  document.getElementById("backBtn").onclick = closeMatch;
+
+  // Tapping either club opens its own page, and the back arrow
+  // there brings you straight back to this match.
+  const wireSide = function (elementId, which) {
+    const side = document.getElementById(elementId);
+    const team = match.teams[which];
+    if (!side || !team || !team.id) return;
+
+    side.classList.add("tappable");
+    side.onclick = function () {
+      clubReturnFixture = match.fixture.id;
+      openClub({
+        id: team.id,
+        name: team.name,
+        logo: team.logo,
+        leagueId: match.league.id,
+        leagueName: match.league.name,
+      });
+    };
+  };
+  wireSide("sideHome", "home");
+  wireSide("sideAway", "away");
+  document.getElementById("tabSummary").onclick = function () { matchTab = "summary"; drawMatch(match); };
+  document.getElementById("tabComm").onclick = function () {
+    matchTab = "comm"; tally("comm"); drawMatch(match);
+  };
+  document.getElementById("tabPitch").onclick = function () {
+    matchTab = "pitch"; tally("lineup"); drawMatch(match);
+  };
+  document.getElementById("tabStats").onclick = function () {
+    matchTab = "stats"; tally("mstats"); drawMatch(match);
+  };
+  document.getElementById("tabFacts").onclick = function () {
+    matchTab = "facts"; tally("facts"); drawMatch(match);
+  };
+  document.getElementById("tabNews").onclick = function () {
+    matchTab = "news"; tally("preview"); drawMatch(match);
+  };
+
+  list.innerHTML = "";
+
+  if (matchTab === "summary") {
+    const goals = match.events || [];
+    if (goals.length === 0) {
+      list.innerHTML = '<div class="empty">No goals yet.</div>';
+      return;
+    }
+    for (const event of goals) {
+      const row = document.createElement("div");
+      row.className = "event";
+      row.innerHTML =
+        '<span class="evMin">' + event.time.elapsed + "'" + '</span>' +
+        '<span class="evIcon">&#9917;</span>' +
+        '<span class="evName">' + (event.player.name || "Unknown") + '</span>' +
+        '<span class="evTeam">' + event.team.name + '</span>';
+      list.appendChild(row);
+    }
+    return;
+  }
+
+  if (matchTab === "comm") {
+    const feed = match.commentary || [];
+
+    // ---- Momentum, worked out from the commentary ----
+    // Each kind of moment is worth a different amount, added up in
+    // five minute blocks. Home counts up, away counts down.
+    const WORTH = {
+      goal: 6, danger: 3, corner: 2, shot: 3,
+      attack: 1, penalty: 4, possession: 0.4, freekick: 0.5,
+    };
+
+    const blocks = new Array(19).fill(0);   // 0-5, 5-10 ... up to 95
+    let anyMomentum = false;
+
+    for (const moment of feed) {
+      if (!moment.side) continue;
+      const worth = WORTH[moment.kind];
+      if (!worth) continue;
+      const block = Math.min(18, Math.floor(moment.minute / 5));
+      blocks[block] += moment.side === "home" ? worth : -worth;
+      anyMomentum = true;
+    }
+
+    if (anyMomentum) {
+      // Scale so the tallest bar fills the space.
+      let biggest = 1;
+      for (const value of blocks) biggest = Math.max(biggest, Math.abs(value));
+
+      const W = 340;
+      const H = 64;
+      const mid = H / 2;
+      const barW = W / blocks.length;
+
+      let bars = "";
+      for (let i = 0; i < blocks.length; i++) {
+        const value = blocks[i];
+        if (value === 0) continue;
+        const height = Math.max(2, (Math.abs(value) / biggest) * (mid - 4));
+        const x = i * barW + 2;
+        const y = value > 0 ? mid - height : mid;
+        bars += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) +
+          '" width="' + (barW - 4).toFixed(1) + '" height="' + height.toFixed(1) +
+          '" fill="' + (value > 0 ? "#185FA5" : "#EF9F27") + '" rx="1"/>';
+      }
+
+      const box = document.createElement("div");
+      box.className = "vizBox";
+      box.innerHTML =
+        '<div class="vizHead">' +
+          '<span>Momentum</span>' +
+          '<span class="vizKey">' +
+            '<i style="background:#185FA5"></i>' + match.teams.home.name +
+            '<i style="background:#EF9F27;margin-left:10px"></i>' + match.teams.away.name +
+          '</span>' +
+        '</div>' +
+        '<div class="vizInner">' +
+          '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
+            '<line x1="0" y1="' + mid + '" x2="' + W + '" y2="' + mid +
+              '" stroke="#DDD" stroke-width="1"/>' + bars +
+          '</svg>' +
+        '</div>';
+      list.appendChild(box);
+    }
+
+    // ---- Timeline of the big moments ----
+    const bigOnes = feed.filter(function (m) {
+      return m.kind === "goal" || m.kind === "red" || m.kind === "yellow";
+    });
+
+    if (bigOnes.length > 0 || stateOf(match) !== "upcoming") {
+      const W = 340;
+      const H = 46;
+      const played = minuteOf(match) === null ? 90 : Math.min(90, minuteOf(match));
+      const at = function (minute) { return 8 + (Math.min(95, minute) / 95) * (W - 16); };
+
+      let marks = "";
+      let lastLabelX = -100;
+
+      // Earliest first, so labels can be spaced from left to right.
+      const ordered = bigOnes.slice().sort(function (a, b) {
+        return a.minute - b.minute;
+      });
+
+      for (const moment of ordered) {
+        const x = at(moment.minute);
+
+        if (moment.kind === "goal") {
+          marks += '<circle cx="' + x.toFixed(1) + '" cy="20" r="5.5" ' +
+            'fill="#EF9F27" stroke="#fff" stroke-width="1.5"/>';
+
+          // Only label it if there is room since the last one.
+          if (x - lastLabelX > 18) {
+            marks += '<text x="' + x.toFixed(1) + '" y="40" text-anchor="middle" ' +
+              'font-size="9" fill="#888">' + moment.minute + "'" + '</text>';
+            lastLabelX = x;
+          }
+        } else {
+          marks += '<rect x="' + (x - 1.75).toFixed(1) + '" y="14" width="3.5" height="12" rx="1" fill="' +
+            (moment.kind === "red" ? "#E24B4A" : "#BA7517") + '"/>';
+        }
+      }
+
+      const box = document.createElement("div");
+      box.className = "vizBox";
+      box.innerHTML =
+        '<div class="vizHead"><span>Timeline</span></div>' +
+        '<div class="vizInner">' +
+          '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
+            '<rect x="8" y="17" width="' + (W - 16) + '" height="6" rx="3" fill="#E4E4E0"/>' +
+            '<rect x="8" y="17" width="' + ((played / 95) * (W - 16)).toFixed(1) +
+              '" height="6" rx="3" fill="#185FA5"/>' +
+            marks +
+          '</svg>' +
+        '</div>';
+      list.appendChild(box);
+    }
+
+    if (feed.length <= 1) {
+      list.innerHTML =
+        '<div class="empty">Nothing has happened yet.<br><br>' +
+        'Goals, cards and substitutions appear here as they go in.</div>';
+      return;
+    }
+
+    const icons = {
+      goal: "&#9917;", yellow: "&#129000;", red: "&#128308;",
+      sub: "&#8646;", start: "&#9654;", end: "&#9209;",
+      corner: "&#9971;", attack: "&#8599;", freekick: "&#9678;",
+      throw: "&#8646;", offside: "&#9873;", penalty: "&#9899;",
+      shot: "&#10162;", danger: "&#10071;", note: "&#8226;",
+      possession: "&#9679;", goalkick: "&#9678;", save: "&#129508;",
+    };
+
+    const heading = document.createElement("div");
+    heading.className = "drawerHint";
+    heading.innerHTML = match.hasLiveCommentary
+      ? 'Live commentary <span class="liveTag2">updates each minute</span>'
+      : "Match events";
+    list.appendChild(heading);
+
+    // Newest at the top, the way commentary normally reads.
+    for (const moment of feed.slice().reverse()) {
+      const row = document.createElement("div");
+      // Lines worked out from the statistics sit a shade quieter
+      // than the goals and cards the provider states outright.
+      row.className = "commRow " + moment.kind + (moment.derived ? " commDerived" : "");
+      row.innerHTML =
+        '<div class="commMin">' +
+          (moment.clock ? moment.clock : (moment.minute > 0 ? moment.minute + "'" : "")) +
+        '</div>' +
+        '<div class="commIcon">' + (icons[moment.kind] || "&#8226;") + '</div>' +
+        '<div class="commText">' + moment.text + '</div>';
+      list.appendChild(row);
+    }
+    return;
+  }
+
+  if (matchTab === "pitch") {
+    const pitch = match.pitch;
+
+    if (!pitch || (!pitch.home.keeper && !pitch.away.keeper)) {
+      list.innerHTML =
+        '<div class="empty">Line-ups not available.<br><br>' +
+        'They usually appear about an hour before kick off.</div>';
+      return;
+    }
+
+    // Anyone who scored gets a ball on their badge.
+    const scorers = {};
+    for (const event of (match.events || [])) {
+      if (event.player && event.player.name) {
+        scorers[event.player.name.trim()] = true;
+      }
+    }
+
+    const W = 340;
+    const H = 470;
+    let svg =
+      '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" role="img">' +
+      '<title>Line-ups on the pitch</title>' +
+      '<desc>Both starting elevens laid out in their formations.</desc>' +
+      '<rect x="0" y="0" width="' + W + '" height="' + H + '" rx="6" fill="#2F6410"/>' +
+      '<g stroke="#C0DD97" stroke-width="1.4" fill="none" opacity="0.5">' +
+        '<rect x="8" y="8" width="' + (W - 16) + '" height="' + (H - 16) + '"/>' +
+        '<line x1="8" y1="' + (H / 2) + '" x2="' + (W - 8) + '" y2="' + (H / 2) + '"/>' +
+        '<circle cx="' + (W / 2) + '" cy="' + (H / 2) + '" r="42"/>' +
+        '<rect x="' + (W / 2 - 78) + '" y="8" width="156" height="52"/>' +
+        '<rect x="' + (W / 2 - 78) + '" y="' + (H - 60) + '" width="156" height="52"/>' +
+      '</g>';
+
+    // One player badge: photo if we have it, shirt number if not.
+    const badge = function (player, x, y, colour, textColour) {
+      const safeName = player.name.replace(/[<>&]/g, "");
+      // Surnames only, so they fit between the rows.
+      const bits = safeName.split(" ");
+      let shortName = bits.length > 1 ? bits[bits.length - 1] : safeName;
+      if (shortName.length > 10) shortName = shortName.slice(0, 9) + ".";
+      const clipId = "clip" + Math.abs(x * 1000 + y);
+
+      let inner;
+      if (player.image) {
+        inner =
+          '<clipPath id="' + clipId + '"><circle cx="' + x + '" cy="' + y + '" r="16"/></clipPath>' +
+          '<image href="' + player.image + '" x="' + (x - 16) + '" y="' + (y - 16) +
+          '" width="32" height="32" clip-path="url(#' + clipId + ')" preserveAspectRatio="xMidYMid slice"/>' +
+          '<circle cx="' + x + '" cy="' + y + '" r="16" fill="none" stroke="' + colour + '" stroke-width="2.5"/>';
+      } else {
+        inner =
+          '<circle cx="' + x + '" cy="' + y + '" r="16" fill="' + colour + '" stroke="#fff" stroke-width="2"/>' +
+          '<text x="' + x + '" y="' + (y + 4) + '" text-anchor="middle" font-size="12" ' +
+          'font-weight="600" fill="' + textColour + '">' + (player.number || "") + '</text>';
+      }
+
+      const scored = scorers[safeName] ? ' &#9917;' : '';
+
+      return inner +
+        '<text x="' + x + '" y="' + (y + 27) + '" text-anchor="middle" font-size="8.5" ' +
+        'fill="#FFFFFF" stroke="#1B3D08" stroke-width="2.5" paint-order="stroke" ' +
+        'font-weight="600">' + shortName + scored + '</text>';
+    };
+
+    // Home fills the top half, away the bottom.
+    const placeSide = function (side, topDown, colour, textColour) {
+      let out = "";
+      const bands = side.rows.length + 1;
+      const half = H / 2;
+
+      for (let r = 0; r <= side.rows.length; r++) {
+        const players = r === 0 ? [side.keeper] : side.rows[r - 1];
+        if (!players || players.length === 0 || !players[0]) continue;
+
+        const step = half / (bands + 0.4);
+        const y = topDown
+          ? 34 + r * step
+          : H - 34 - r * step;
+
+        for (let i = 0; i < players.length; i++) {
+          const x = (W / (players.length + 1)) * (i + 1);
+          out += badge(players[i], Math.round(x), Math.round(y), colour, textColour);
+        }
+      }
+      return out;
+    };
+
+    svg += placeSide(pitch.home, true, "#185FA5", "#FFFFFF");
+    svg += placeSide(pitch.away, false, "#EF9F27", "#412402");
+    svg += '</svg>';
+
+    const wrap = document.createElement("div");
+    wrap.className = "pitchWrap";
+    wrap.innerHTML =
+      '<div class="pitchNote">' +
+        '<span><b>' + match.teams.home.name + '</b> ' + (match.formations.home || "") + '</span>' +
+        '<span>' + (match.formations.away || "") + ' <b>' + match.teams.away.name + '</b></span>' +
+      '</div>' + svg;
+    list.appendChild(wrap);
+
+    // Full team sheets, side by side under the pitch.
+    const sheetOf = function (side) {
+      const all = [];
+      if (side.keeper) all.push(side.keeper);
+      for (const row of side.rows) for (const p of row) all.push(p);
+      return all;
+    };
+
+    // Who came off and who came on, so the sheet can mark them.
+    const cameOff = {};
+    const cameOn = {};
+    for (const moment of (match.commentary || [])) {
+      if (moment.kind !== "sub") continue;
+      const bits = String(moment.text).split(":");
+      const detail = bits.length > 1 ? bits[1] : moment.text;
+      const pair = detail.split(/\||,| in,| out/);
+      if (pair[0]) cameOff[pair[0].trim()] = moment.minute;
+      if (pair[1]) cameOn[pair[1].trim()] = moment.minute;
+    }
+
+    const listOut = function (players, onBench) {
+      if (players.length === 0) {
+        return '<div class="sheetRow sheetNone">None listed</div>';
+      }
+      return players.map(function (p) {
+        const clean = p.name.trim();
+        const scored = scorers[clean] ? ' <span class="sheetGoal">&#9917;</span>' : "";
+
+        let mark = "";
+        if (!onBench && cameOff[clean] !== undefined) {
+          mark = '<span class="subMark off">&#9660;</span>';
+        } else if (onBench && cameOn[clean] !== undefined) {
+          mark = '<span class="subMark on">&#9650;</span>';
+        }
+
+        return '<div class="sheetRow' + (onBench ? " benchRow" : "") + '">' +
+          '<span class="sheetNum">' + (p.number || "") + '</span>' +
+          '<span class="sheetName">' + p.name + scored + '</span>' +
+          mark +
+        '</div>';
+      }).join("");
+    };
+
+    const columnFor = function (side, team, which) {
+      let html =
+        '<div class="sheetHead ' + which + '">' + team + '</div>' +
+        listOut(sheetOf(side), false);
+
+      html += '<div class="sheetSub">Substitutes</div>' +
+              listOut(side.bench || [], true);
+
+      if (side.coach) {
+        html += '<div class="sheetSub">Manager</div>' +
+                '<div class="sheetRow"><span class="sheetNum"></span>' +
+                '<span class="sheetName">' + side.coach + '</span></div>';
+      }
+
+      if ((side.missing || []).length > 0) {
+        html += '<div class="sheetSub">Unavailable</div>' +
+          side.missing.map(function (n) {
+            return '<div class="sheetRow benchRow"><span class="sheetNum"></span>' +
+              '<span class="sheetName">' + n + '</span></div>';
+          }).join("");
+      }
+
+      return '<div class="sheetCol">' + html + '</div>';
+    };
+
+    const sheets = document.createElement("div");
+    sheets.className = "sheets";
+    sheets.innerHTML =
+      columnFor(pitch.home, match.teams.home.name, "home") +
+      columnFor(pitch.away, match.teams.away.name, "away");
+    list.appendChild(sheets);
+
+    const extras = match.extras || {};
+    if (extras.stadium || extras.referee) {
+      const info = document.createElement("div");
+      info.className = "extras";
+      info.innerHTML =
+        (extras.stadium ? "Ground: " + extras.stadium + "<br>" : "") +
+        (extras.referee ? "Referee: " + extras.referee : "");
+      list.appendChild(info);
+    }
+    return;
+  }
+
+  if (matchTab === "facts" || matchTab === "news") {
+    drawMatchExtra(match, list);
+    return;
+  }
+
+  // Stats. This API sends one flat list with a home and away value
+  // on each row, rather than a separate list per team.
+  const stats = match.statistics || [];
+
+  if (stats.length === 0) {
+    list.innerHTML =
+      '<div class="empty">No stats for this match.<br><br>' +
+      'Often only available for bigger games.</div>';
+    return;
+  }
+
+  const box = document.createElement("div");
+  box.className = "statBox";
+
+  for (const item of stats) {
+    const homeValue = item.home === undefined ? "0" : item.home;
+    const awayValue = item.away === undefined ? "0" : item.away;
+
+    const homeNum = Number(String(homeValue).replace("%", "")) || 0;
+    const awayNum = Number(String(awayValue).replace("%", "")) || 0;
+    const total = homeNum + awayNum;
+    const homeWidth = total === 0 ? 50 : (homeNum / total) * 100;
+
+    const stat = document.createElement("div");
+    stat.className = "stat";
+    stat.innerHTML =
+      '<div class="statTop">' +
+        '<span class="statVal">' + homeValue + '</span>' +
+        '<span class="statName">' + (item.type || "") + '</span>' +
+        '<span class="statVal">' + awayValue + '</span>' +
+      '</div>' +
+      '<div class="statBar">' +
+        '<div class="statHome" style="width:' + homeWidth + '%"></div>' +
+        '<div class="statAway" style="width:' + (100 - homeWidth) + '%"></div>' +
+      '</div>';
+    box.appendChild(stat);
+  }
+
+  list.appendChild(box);
+}
+
+
+// ---------------------------------------------------------------
+// FACTS AND NEWS
+//
+// Both tabs run off one fetch, kept for the session so flicking
+// between them costs nothing.
+// ---------------------------------------------------------------
+let matchExtras = {};   // fixture id -> { at, data }
+
+async function loadMatchExtra(fixtureId) {
+  const saved = matchExtras[fixtureId];
+  if (saved && Date.now() - saved.at < 900000) return saved.data;
+
+  try {
+    const data = await (await fetch("/api/match-extra?id=" + fixtureId)).json();
+    matchExtras[fixtureId] = { at: Date.now(), data: data };
+    return data;
+  } catch (error) {
+    return saved ? saved.data : null;
+  }
+}
+
+function drawMatchExtra(match, list) {
+  const known = matchExtras[match.fixture.id];
+
+  if (!known) {
+    list.innerHTML = '<div class="empty">Loading...</div>';
+    loadMatchExtra(match.fixture.id).then(function () {
+      if (screen === "match" && (matchTab === "facts" || matchTab === "news")) {
+        drawMatch(match);
+      }
+    });
+    return;
+  }
+
+  if (matchTab === "facts") drawFactsTab(match, known.data, list);
+  else drawNewsTab(match, known.data, list);
+}
+
+// A row of label and value, the shape both tabs are built from.
+function factRow(label, value) {
+  if (value === null || value === undefined || value === "") return "";
+  return '<div class="factRow">' +
+    '<span class="factLabel">' + label + '</span>' +
+    '<span class="factValue">' + value + '</span>' +
+  '</div>';
+}
+
+function sectionHead(list, title) {
+  const head = document.createElement("div");
+  head.className = "boxHead";
+  head.textContent = title;
+  list.appendChild(head);
+}
+
+// Turns "WWDLW" into coloured pills, newest last.
+function formPills(form) {
+  if (!form) return "";
+  return '<span class="formRow">' + String(form).split("").map(function (letter) {
+    const kind = letter === "W" ? "win" : (letter === "D" ? "draw" : "loss");
+    return '<span class="formPill ' + kind + '">' + letter + '</span>';
+  }).join("") + '</span>';
+}
+
+// ---- Facts ----
+function drawFactsTab(match, extra, list) {
+  const kickoff = new Date(match.fixture.date);
+  const extras = match.extras || {};
+
+  sectionHead(list, "The match");
+  const details = document.createElement("div");
+  details.className = "factBox";
+  details.innerHTML =
+    factRow("Competition", match.league.name) +
+    factRow("Country", displayCountryForLeague(match.league)) +
+    factRow("Round", extras.round) +
+    factRow("Kick off", isNaN(kickoff) ? "" :
+      kickoff.toLocaleString([], {
+        weekday: "long", day: "numeric", month: "long",
+        hour: "2-digit", minute: "2-digit",
+      })) +
+    factRow("Ground", extras.stadium) +
+    factRow("Referee", extras.referee);
+  list.appendChild(details);
+
+  // ---- Head to head ----
+  const h2h = extra && extra.h2h;
+  if (h2h && h2h.played > 0) {
+    sectionHead(list, "Head to head");
+
+    const box = document.createElement("div");
+    box.className = "factBox";
+    box.innerHTML =
+      '<div class="h2hCounts">' +
+        '<span class="h2hSide">' +
+          '<b>' + h2h.homeWins + '</b><span>' + match.teams.home.name + '</span>' +
+        '</span>' +
+        '<span class="h2hSide"><b>' + h2h.draws + '</b><span>Drawn</span></span>' +
+        '<span class="h2hSide">' +
+          '<b>' + h2h.awayWins + '</b><span>' + match.teams.away.name + '</span>' +
+        '</span>' +
+      '</div>' +
+      '<div class="h2hNote">Last ' + h2h.played + ' meetings</div>';
+    list.appendChild(box);
+
+    for (const game of h2h.recent) {
+      const when = new Date(game.date);
+      const row = document.createElement("div");
+      row.className = "h2hRow";
+      row.innerHTML =
+        '<span class="h2hWhen">' + (isNaN(when) ? "" :
+          when.toLocaleDateString([], { day: "numeric", month: "short", year: "2-digit" })) +
+        '</span>' +
+        '<span class="h2hGame">' + game.home + ' ' + game.score + ' ' + game.away + '</span>';
+      list.appendChild(row);
+    }
+  }
+
+  // ---- Season so far ----
+  const guess = extra && extra.prediction;
+  if (guess) {
+    sectionHead(list, "This season");
+
+    const table = document.createElement("div");
+    table.className = "factBox";
+
+    const line = function (label, home, away) {
+      return '<div class="compareRow">' +
+        '<span class="compareHome">' + home + '</span>' +
+        '<span class="compareLabel">' + label + '</span>' +
+        '<span class="compareAway">' + away + '</span>' +
+      '</div>';
+    };
+
+    table.innerHTML =
+      '<div class="compareRow compareHead">' +
+        '<span class="compareHome">' + match.teams.home.name + '</span>' +
+        '<span class="compareLabel"></span>' +
+        '<span class="compareAway">' + match.teams.away.name + '</span>' +
+      '</div>' +
+      line("Played", guess.home.played, guess.away.played) +
+      line("Won", guess.home.won, guess.away.won) +
+      line("Drawn", guess.home.drawn, guess.away.drawn) +
+      line("Lost", guess.home.lost, guess.away.lost) +
+      line("Scored", guess.home.scored, guess.away.scored) +
+      line("Conceded", guess.home.conceded, guess.away.conceded) +
+      line("Clean sheets", guess.home.cleanSheets, guess.away.cleanSheets) +
+      line("Failed to score", guess.home.blanks, guess.away.blanks) +
+      line("Form", formPills(guess.home.form.slice(-5)),
+                   formPills(guess.away.form.slice(-5)));
+    list.appendChild(table);
+  }
+
+  // ---- Match statistics, once there are any ----
+  const stats = match.statistics || [];
+  if (stats.length > 0) {
+    sectionHead(list, "Match statistics");
+
+    const box = document.createElement("div");
+    box.className = "statBox";
+
+    for (const item of stats) {
+      const homeValue = item.home === undefined ? "0" : item.home;
+      const awayValue = item.away === undefined ? "0" : item.away;
+      const homeNum = Number(String(homeValue).replace("%", "")) || 0;
+      const awayNum = Number(String(awayValue).replace("%", "")) || 0;
+      const total = homeNum + awayNum;
+      const width = total === 0 ? 50 : (homeNum / total) * 100;
+
+      const stat = document.createElement("div");
+      stat.className = "stat";
+      stat.innerHTML =
+        '<div class="statTop">' +
+          '<span class="statVal">' + homeValue + '</span>' +
+          '<span class="statName">' + (item.type || "") + '</span>' +
+          '<span class="statVal">' + awayValue + '</span>' +
+        '</div>' +
+        '<div class="statBar">' +
+          '<div class="statHome" style="width:' + width + '%"></div>' +
+          '<div class="statAway" style="width:' + (100 - width) + '%"></div>' +
+        '</div>';
+      box.appendChild(stat);
+    }
+    list.appendChild(box);
+  }
+
+  // The details above are always worth showing, so this adds a note
+  // rather than wiping them - an earlier version replaced the lot
+  // with an empty message and threw away the useful part.
+  if (!h2h && !guess && stats.length === 0) {
+    const note = document.createElement("div");
+    note.className = "extras";
+    note.textContent =
+      "Head to head, form and match statistics are not published for " +
+      "this fixture yet. They usually fill in closer to kick off.";
+    list.appendChild(note);
+  }
+}
+
+// ---- News ----
+// Every sentence below is built from figures the provider gave us.
+// Nothing here is invented, and nothing is claimed that the data
+// does not actually say.
+function previewSentences(match, extra) {
+  const guess = extra && extra.prediction;
+  if (!guess) return [];
+
+  const lines = [];
+  const home = guess.home;
+  const away = guess.away;
+  const homeName = match.teams.home.name;
+  const awayName = match.teams.away.name;
+
+  const record = function (side, name) {
+    if (!side.played) return "";
+    return name + " have won " + side.won + " of " + side.played +
+      ", scoring " + side.scored + " and conceding " + side.conceded + ".";
+  };
+
+  if (record(home, homeName)) lines.push(record(home, homeName));
+  if (record(away, awayName)) lines.push(record(away, awayName));
+
+  // Recent form, in words rather than letters.
+  const runOf = function (side, name) {
+    const form = String(side.last5Form || side.form || "").slice(-5);
+    if (!form) return "";
+    const wins = (form.match(/W/g) || []).length;
+    const draws = (form.match(/D/g) || []).length;
+    const losses = (form.match(/L/g) || []).length;
+    return name + " come in on " + wins + " win" + (wins === 1 ? "" : "s") +
+      ", " + draws + " draw" + (draws === 1 ? "" : "s") + " and " +
+      losses + " defeat" + (losses === 1 ? "" : "s") + " from their last " +
+      form.length + ".";
+  };
+
+  if (runOf(home, homeName)) lines.push(runOf(home, homeName));
+  if (runOf(away, awayName)) lines.push(runOf(away, awayName));
+
+  // Where each side is stronger, straight from the comparison.
+  const compare = guess.comparison || {};
+  const gap = function (key, label) {
+    const pair = compare[key];
+    if (!pair) return "";
+    const h = Number(String(pair.home || "").replace("%", ""));
+    const a = Number(String(pair.away || "").replace("%", ""));
+    if (!h && !a) return "";
+    if (Math.abs(h - a) < 10) return "";
+    return (h > a ? homeName : awayName) + " rate higher on " + label +
+      " (" + Math.max(h, a) + "% against " + Math.min(h, a) + "%).";
+  };
+
+  for (const [key, label] of [["att", "attack"], ["def", "defence"], ["form", "form"]]) {
+    const line = gap(key, label);
+    if (line) lines.push(line);
+  }
+
+  // Clean sheets and blanks are the clearest read on both ends.
+  if (home.cleanSheets || away.cleanSheets) {
+    lines.push(homeName + " have kept " + home.cleanSheets +
+      " clean sheet" + (home.cleanSheets === 1 ? "" : "s") + " to " +
+      awayName + "'s " + away.cleanSheets + ".");
+  }
+  if (home.blanks || away.blanks) {
+    lines.push(homeName + " have failed to score " + home.blanks +
+      " time" + (home.blanks === 1 ? "" : "s") + ", " + awayName + " " +
+      away.blanks + ".");
+  }
+
+  return lines;
+}
+
+function drawNewsTab(match, extra, list) {
+  const guess = extra && extra.prediction;
+  const injuries = (extra && extra.injuries) || { home: [], away: [] };
+  const played = stateOf(match) !== "upcoming";
+
+  // ---- What happened, or what to expect ----
+  sectionHead(list, played ? "The match" : "Before kick off");
+
+  const lines = previewSentences(match, extra);
+  const summary = document.createElement("div");
+  summary.className = "newsBox";
+
+  if (played) {
+    const scorers = (match.events || []).map(function (e) {
+      return e.player.name + " " + e.time.elapsed + "'";
+    });
+
+    summary.innerHTML =
+      '<p>' + match.teams.home.name + ' ' +
+        (match.goals.home === null ? "-" : match.goals.home) + '-' +
+        (match.goals.away === null ? "-" : match.goals.away) + ' ' +
+        match.teams.away.name +
+        (match.fixture.status.short === "FT" ? ", full time." : ", in play.") + '</p>' +
+      (scorers.length > 0
+        ? '<p>Scorers: ' + scorers.join(", ") + '.</p>'
+        : '<p>No goals yet.</p>') +
+      lines.map(function (line) { return '<p>' + line + '</p>'; }).join("");
+  } else if (lines.length > 0) {
+    summary.innerHTML = lines.map(function (line) {
+      return '<p>' + line + '</p>';
+    }).join("");
+  } else {
+    summary.innerHTML =
+      '<p>Nothing published for this match yet. Form and team news ' +
+      'usually arrive a day or two before kick off.</p>';
+  }
+  list.appendChild(summary);
+
+  // ---- Form guide ----
+  if (guess) {
+    sectionHead(list, "Form");
+    const form = document.createElement("div");
+    form.className = "factBox";
+    form.innerHTML =
+      '<div class="formLine">' +
+        '<span class="formWho">' + match.teams.home.name + '</span>' +
+        formPills(String(guess.home.form).slice(-5)) +
+      '</div>' +
+      '<div class="formLine">' +
+        '<span class="formWho">' + match.teams.away.name + '</span>' +
+        formPills(String(guess.away.form).slice(-5)) +
+      '</div>';
+    list.appendChild(form);
+  }
+
+  // ---- Who is missing ----
+  sectionHead(list, "Team news");
+
+  const missingBox = document.createElement("div");
+  missingBox.className = "factBox";
+
+  const sideOut = function (side, name) {
+    if (side.length === 0) {
+      return '<div class="outSide">' +
+        '<div class="outWho">' + name + '</div>' +
+        '<div class="outNone">Nobody listed as unavailable</div>' +
+      '</div>';
+    }
+    return '<div class="outSide">' +
+      '<div class="outWho">' + name + '</div>' +
+      side.map(function (player) {
+        return '<div class="outRow">' +
+          '<span class="outName">' + player.name + '</span>' +
+          '<span class="outWhy">' + (player.reason || player.type || "") + '</span>' +
+        '</div>';
+      }).join("") +
+    '</div>';
+  };
+
+  missingBox.innerHTML =
+    sideOut(injuries.home, match.teams.home.name) +
+    sideOut(injuries.away, match.teams.away.name);
+  list.appendChild(missingBox);
+
+  // ---- Line-ups, once they are out ----
+  if (match.pitch) {
+    const note = document.createElement("div");
+    note.className = "extras";
+    note.innerHTML = "Line-ups are out - see the Line-ups tab. " +
+      match.teams.home.name + " " + (match.formations.home || "") + ", " +
+      match.teams.away.name + " " + (match.formations.away || "") + ".";
+    list.appendChild(note);
+  } else if (!played) {
+    const note = document.createElement("div");
+    note.className = "extras";
+    note.textContent = "Line-ups usually appear about an hour before kick off.";
+    list.appendChild(note);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// LOADING
+// ---------------------------------------------------------------
+// ---------------------------------------------------------------
+// THE FIXTURES SCREEN FILTER
+// ---------------------------------------------------------------
+let fixtureFilter = null;   // { country, league } or null
+let filterStage = "off";    // off | country | league
+
+// Which kinds of match to show: all, upcoming, live or finished.
+let stateFilter = "all";
+
+function drawFilterBar(counts) {
+  const bar = document.createElement("div");
+  bar.className = "filterBar";
+
+  const leagueRow = fixtureFilter
+    ? '<span class="filterNote">' + fixtureFilter.country +
+      ' &rsaquo; ' + fixtureFilter.league.name + '</span>' +
+      '<span class="filterClear" id="clearFilter">Clear</span>'
+    : '<button class="filterBtn" id="openFilter">Filter by competition</button>' +
+      '<span class="filterNote">Showing everywhere</span>';
+
+  const chip = function (key, icon, label, count) {
+    return '<div class="chip' + (stateFilter === key ? " on" : "") +
+      '" data-state="' + key + '">' +
+      '<span class="cIcon">' + icon + '</span>' + label +
+      (count === undefined ? "" : '<span class="cCount">' + count + '</span>') +
+      '</div>';
+  };
+
+  bar.innerHTML =
+    leagueRow +
+    '<div class="chips">' +
+      chip("all", "&#9776;", "All", counts.all) +
+      chip("upcoming", "&#128197;", "Fixtures", counts.upcoming) +
+      chip("live", "&#9679;", "Live", counts.live) +
+      chip("finished", "&#10003;", "Results", counts.finished) +
+    '</div>';
+
+  return bar;
+}
+
+function wireFilterBar() {
+  const open = document.getElementById("openFilter");
+  if (open) {
+    open.onclick = function () {
+      filterStage = "country";
+      refresh();
+    };
+  }
+  const clear = document.getElementById("clearFilter");
+  if (clear) {
+    clear.onclick = function () {
+      fixtureFilter = null;
+      filterStage = "off";
+      refresh();
+    };
+  }
+  for (const chip of document.querySelectorAll(".chip")) {
+    chip.onclick = function () {
+      stateFilter = this.getAttribute("data-state");
+      refresh();
+    };
+  }
+}
+
+// The two picking steps reuse the same row style as Favourites.
+function drawFilterPicker() {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+
+  if (allLeagues === null) {
+    list.innerHTML = '<div class="empty">Loading competitions...</div>';
+    loadLeagues().then(function () {
+      if (screen === "fixtures" && filterStage !== "off") drawFilterPicker();
+    });
+    return;
+  }
+
+  const grouped = countriesInOrder();
+
+  const back = document.createElement("div");
+  back.className = "crumbs";
+  back.innerHTML = '<span class="crumb">&#8592; Back to fixtures</span>';
+  back.querySelector(".crumb").onclick = function () {
+    filterStage = "off";
+    refresh();
+  };
+  list.appendChild(back);
+
+  if (filterStage === "country") {
+    for (const country of grouped.order) {
+      const leagues = grouped.byCountry[country];
+      const row = document.createElement("div");
+      row.className = "pickRow";
+      row.innerHTML =
+        (leagues[0].logo ? '<img src="' + leagues[0].logo + '" alt="">' : '<img alt="">') +
+        '<span class="pname">' + country + '</span>' +
+        '<span class="chev">&#9654;</span>';
+      row.onclick = function () {
+        fixtureFilter = { country: country, league: null };
+        filterStage = "league";
+        refresh();
+      };
+      list.appendChild(row);
+    }
+    return;
+  }
+
+  const leagues = grouped.byCountry[fixtureFilter.country] || [];
+  for (const league of leagues) {
+    const row = document.createElement("div");
+    row.className = "pickRow";
+    row.innerHTML =
+      (league.logo ? '<img src="' + league.logo + '" alt="">' : '<img alt="">') +
+      '<span class="pname">' + league.name + '</span>';
+    row.onclick = function () {
+      fixtureFilter.league = league;
+      filterStage = "off";
+      refresh();
+    };
+    list.appendChild(row);
+  }
+}
+
+
+// ---------------------------------------------------------------
+// LOADING WHATEVER THE CURRENT SCREEN NEEDS
+// ---------------------------------------------------------------
+async function refresh() {
+  const list = document.getElementById("list");
+  const updated = document.getElementById("updated");
+
+  // Home does not use the competition list at all - it runs off the
+  // followed clubs and the live feed. Waiting on a thousand leagues
+  // before drawing anything is what left the app sitting on
+  // "Loading..." with an empty bar.
+  // Only Favourites actually needs the competition list up front.
+  // The fixtures screen needs it when the league filter is opened,
+  // and not a moment before.
+  if (allLeagues === null && screen === "favourites") {
+    await loadLeagues();
+  }
+
+  if (screen === "club") {
+    drawClubHead();
+    const club = openClubInfo;
+    updated.textContent = "Loading...";
+
+    try {
+      if (clubTab === "fixtures") {
+        const matches = await (await fetch("/api/team-season?team=" + club.id)).json();
+        if (matches.length === 0) {
+          list.innerHTML = '<div class="empty">No fixtures found for this season.</div>';
+          updated.textContent = "";
+          return;
+        }
+        matches.sort(function (a, b) {
+          return new Date(a.fixture.date) - new Date(b.fixture.date);
+        });
+        drawMatches(matches, true);
+        updated.textContent = matches.length + " games this season";
+
+      } else if (clubTab === "table") {
+        // Fall back to reading the league off a fixture if we did
+        // not store it when the club was favourited.
+        let leagueId = club.leagueId;
+        if (!leagueId) {
+          const matches = await (await fetch("/api/team-season?team=" + club.id)).json();
+          if (matches.length > 0) {
+            leagueId = matches[0].league.id;
+            club.leagueId = leagueId;
+            club.leagueName = matches[0].league.name;
+            saveFavourites();
+          }
+        }
+
+        if (!leagueId) {
+          list.innerHTML = '<div class="empty">Could not work out which league.</div>';
+          updated.textContent = "";
+          return;
+        }
+
+        const rows = await (await fetch("/api/table?league=" + leagueId)).json();
+        drawTable(rows);
+        // Mark where this club sits.
+        for (const row of list.querySelectorAll(".tableRow")) {
+          if (row.textContent.includes(club.name)) row.classList.add("meRow");
+        }
+        updated.textContent = club.leagueName || "";
+
+      } else {
+        const players = await (await fetch("/api/team-stats?team=" + club.id)).json();
+        drawClubStats(players);
+        updated.textContent = "";
+      }
+    } catch (error) {
+      updated.textContent = "Could not reach the server";
+    }
+    return;
+  }
+
+  if (screen === "league") {
+    drawLeagueHead();
+    const id = openLeagueInfo.id;
+    updated.textContent = "Loading...";
+
+    try {
+      if (leagueTab === "table") {
+        const rows = await (await fetch("/api/table?league=" + id)).json();
+        drawTable(rows);
+        updated.textContent = rows.length > 0 ? rows.length + " teams" : "";
+
+      } else if (leagueTab === "fixtures") {
+        const from = isoDate(new Date());
+        const later = new Date();
+        later.setDate(later.getDate() + 14);
+        const matches = await (await fetch(
+          "/api/league-fixtures?league=" + id + "&from=" + from + "&to=" + isoDate(later))).json();
+        // One competition, so kick-off order is what matters.
+        matches.sort(matchSort);
+        drawMatches(matches, true);
+        updated.textContent = matches.length + " games in the next fortnight";
+
+      } else if (leagueTab === "stats") {
+        const scorers = await (await fetch("/api/scorers?league=" + id)).json();
+        drawScorers(scorers);
+        updated.textContent = "";
+
+      } else {
+        const teams = await (await fetch("/api/teams?league=" + id)).json();
+        drawTeams(teams);
+        updated.textContent = teams.length > 0 ? teams.length + " clubs" : "";
+      }
+    } catch (error) {
+      updated.textContent = "Could not reach the server";
+    }
+    return;
+  }
+
+  if (screen === "match") {
+    updated.textContent = "Loading...";
+    let match = null;
+    try {
+      match = await (await fetch("/api/match?id=" + openFixtureId)).json();
+    } catch (error) {
+      updated.textContent = "Could not reach the server";
+      return;
+    }
+    if (!match) {
+      updated.textContent = "";
+      list.innerHTML = '<div class="empty">Could not load that match.</div>';
+      return;
+    }
+    updated.textContent = "";
+    drawMatch(match);
+    return;
+  }
+
+  if (screen === "favourites") {
+    updated.textContent =
+      favTeams.length + " clubs, " + favLeagues.length + " leagues followed";
+
+    if (favView === "countries") { drawFavCountries(); return; }
+    if (favView === "leagues") { drawFavLeagues(); return; }
+
+    // Teams need fetching for the chosen league.
+    list.innerHTML = "";
+    list.appendChild(drawCrumbs());
+    const loading = document.createElement("div");
+    loading.className = "empty";
+    loading.textContent = "Loading clubs...";
+    list.appendChild(loading);
+
+    try {
+      favTeamList = await (await fetch("/api/teams?league=" + favLeagueChosen.id)).json();
+    } catch (error) {
+      favTeamList = [];
+    }
+    drawFavTeams();
+    return;
+  }
+
+  if (screen === "home") {
+    await drawHome();
+    return;
+  }
+
+  if (screen === "xp") {
+    updated.textContent = "";
+    drawXpScreen();
+    return;
+  }
+
+  if (screen === "profile") {
+    updated.textContent = "";
+    // Fetch the league standing first, so the profile can show
+    // the division and this week's position.
+    if (signedIn() && !leagueSnapshot) {
+      try {
+        const response = await fetch("/api/league", {
+          headers: { "Authorization": "Bearer " + authToken },
+        });
+        const data = await response.json();
+        if (!data.error) {
+          leagueSnapshot = data;
+          bestDivision = Math.max(bestDivision, data.division || 1);
+          saveHistory();
+        }
+      } catch (error) {
+        // Carry on without it.
+      }
+    }
+    drawProfile();
+    return;
+  }
+
+  if (screen === "settings") {
+    updated.textContent = "",
+    drawSettings();
+    return;
+  }
+
+  if (screen === "challenges") {
+    updated.textContent = "";
+    drawChallenges();
+    return;
+  }
+
+  // Fixtures screen.
+  if (filterStage !== "off") {
+    updated.textContent = "";
+    drawFilterPicker();
+    return;
+  }
+
+  updated.textContent = "Loading...";
+
+  let matches = [];
+  try {
+    if (fixtureFilter && fixtureFilter.league) {
+      // Fetch the week in one call, since that caches well, then
+      // show only the day that is selected.
+      const later = new Date(chosenDate);
+      later.setDate(later.getDate() + 7);
+      const week = await (await fetch(
+        "/api/league-fixtures?league=" + fixtureFilter.league.id +
+        "&from=" + chosenDate + "&to=" + isoDate(later))).json();
+
+      matches = week.filter(function (m) {
+        return localDateOf(m) === chosenDate;
+      });
+    } else {
+      // Everywhere. The server sends the day either side as well,
+      // so the local day can be picked out here.
+      const wide = await (await fetch(
+        "/api/fixtures?date=" + chosenDate + "&all=1&span=1")).json();
+      matches = wide.filter(function (m) {
+        return localDateOf(m) === chosenDate;
+      });
+    }
+  } catch (error) {
+    updated.textContent = "Could not reach the server";
+    return;
+  }
+
+  // Count each kind so the chips can show numbers.
+  const counts = { all: matches.length, live: 0, upcoming: 0, finished: 0 };
+  for (const match of matches) counts[stateOf(match)]++;
+
+  const shown = stateFilter === "all"
+    ? matches
+    : matches.filter(function (m) { return stateOf(m) === stateFilter; });
+
+  // Biggest competitions first, so the leagues worth caring about
+  // are at the top of a day with fifteen hundred games on it.
+  shown.sort(fixtureSort);
+
+  // drawMatches clears the list, so draw first then put the bar on top.
+  if (shown.length === 0) {
+    list.innerHTML = '<div class="empty">Nothing to show here.</div>';
+  } else {
+    drawMatches(shown, true);
+  }
+
+  const bar = drawFilterBar(counts);
+  list.insertBefore(bar, list.firstChild);
+  wireFilterBar();
+
+  updated.textContent = shown.length + " of " + matches.length + " games";
+  drawProgress();
+}
+
+drawDates();
+drawProgress();
+
+// Freeze this week's squad before anything else touches it, then
+// fetch the players and pay out any gameweek that has finished.
+ensureSquadLocked();
+loadFplPlayers()
+  .then(settleGameweeks)
+  .then(function () {
+    drawProgress();
+    refreshXpIfShowing();
+  });
+
+// No sign-in screen: the session is arranged quietly on startup,
+// then whatever the account has saved is pulled down.
+startSession()
+  .then(pullProgress)
+  .then(function () {
+    // A new anonymous account starts empty on the server, so push
+    // whatever is already on this device up straight away. Without
+    // this, a fresh session has no row and no XP until something
+    // happens to change.
+    if (signedIn()) pushProgress();
+    if (screen === "xp") drawXpScreen();
+  });
+
+goTo("home");
+
+// Past this point the app has drawn, so a late rejection is not
+// worth a full-screen warning.
+window.__started = true;
+
+// Give the iPhone app a full copy straight away, so people who
+// already have progress are protected from the first open.
+setTimeout(sendNativeBackup, 3000);
+
+// Nothing on Home needs the competition list, but the drawer and
+// Favourites do, so it is warmed quietly in the background rather
+// than made into anybody's first wait.
+loadLeagues();
+
+// The ticker keeps live scores moving on its own, so only the
+// home screen needs periodic refreshing.
+setInterval(function () {
+  if (screen === "home") refresh();
+}, 120000);
+
+// An open match refreshes on its own, so new commentary appears
+// without the person doing anything.
+setInterval(function () {
+  if (screen === "match" && matchTab === "comm") refresh();
+}, 30000);
+</script>
+</body>
+</html>
+`;
+
+
+// ---------------------------------------------------------------
+// THE LEGAL PAGES
+//
+// Both app stores insist on a reachable privacy policy and a
+// support page before they will look at a submission. These are
+// plain pages on the same server, so there is nothing else to host.
+//
+// WRITTEN IN GOOD FAITH, NOT BY A LAWYER. They describe what the
+// code actually does today. Have them read properly before you
+// submit, and update them whenever the app starts collecting
+// something new.
+// ---------------------------------------------------------------
+// The AdSense script and ownership tag. Google needs these on the
+// page to review the site, and to serve anything afterwards. Left
+// out entirely when adverts are switched off.
+function adHead() {
+  if (ADS_OFF) return "";
+  return '<meta name="google-adsense-account" content="' +
+      ADSENSE_CLIENT + '">\n' +
+    '<script async src="https://pagead2.googlesyndication.com/pagead/js/' +
+      'adsbygoogle.js?client=' + ADSENSE_CLIENT + '" ' +
+      'crossorigin="anonymous"></script>';
+}
+
+function pageShell(title, body) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title} - ${APP_NAME}</title>
+<style>
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: #F5F6F8; color: #111827;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 0 20px 60px; }
+  header { background: #0B1E3D; color: #fff; padding: 28px 20px; }
+  header .inner { max-width: 680px; margin: 0 auto; }
+  header .brand { font-size: 20px; font-weight: 700; }
+  header .brand span { color: #F5A623; }
+  header h1 { font-size: 22px; margin: 10px 0 0; font-weight: 600; }
+  header .when { font-size: 12px; color: #8FA6C4; margin-top: 6px; }
+  h2 { font-size: 16px; margin: 30px 0 8px; }
+  p, li { font-size: 15px; color: #374151; }
+  ul { padding-left: 20px; }
+  a { color: #1E6FD9; }
+  .warn {
+    background: #FEF3C7; color: #92400E; padding: 12px 14px;
+    border-radius: 10px; font-size: 14px; margin: 20px 0;
+  }
+  footer {
+    margin-top: 40px; padding-top: 18px;
+    border-top: 1px solid #E3E6EA; font-size: 13px; color: #6B7280;
+  }
+</style>
+</head>
+<body>
+<header><div class="inner">
+  <div class="brand">Goal<span>Flash</span></div>
+  <h1>${title}</h1>
+  <div class="when">Last updated ${POLICY_UPDATED}</div>
+</div></header>
+<div class="wrap">
+${body}
+<footer>
+  ${SUPPORT_EMAIL
+    ? 'Questions? <a href="mailto:' + SUPPORT_EMAIL + '">' +
+      SUPPORT_EMAIL + '</a><br>'
+    : ''}
+  <a href="/privacy">Privacy</a> &middot;
+  <a href="/support">Support</a> &middot;
+  <a href="/">Back to ${APP_NAME}</a>
+</footer>
+</div>
+</body>
+</html>`;
+}
+
+function privacyPage() {
+  return pageShell("Privacy policy", `
+<p>${APP_NAME} is a football scores app. This page explains what it
+stores about you, why, and how to get rid of it.</p>
+
+<h2>The short version</h2>
+<p>We do not ask who you are, and we have no way of finding out.
+There is no sign-in, no email address, no password and no name unless
+you choose to type one. We do not collect personal information
+ourselves.</p>
+<p>${APP_NAME} is free because it shows adverts. Those adverts come
+from Google, and Google collects some information to show them - the
+section on advertising below explains exactly what.</p>
+
+<h2>How your progress is saved</h2>
+<p>The first time you open ${APP_NAME} it quietly creates an anonymous
+account. It has no email address attached to it and no way of being
+traced back to a person - it is a random identifier and nothing more.
+Your progress is stored against it so the app can pick up where you
+left off.</p>
+<p>What is stored: your XP and coins, your day streak, the clubs and
+leagues you follow, the matches you star, your 6-a-side squad and your
+progress through the challenges. Football preferences, in other words.</p>
+<p>Because there is no email address, there is also no way for us -
+or anyone else - to work out whose account is whose.</p>
+
+<h2>The name you choose</h2>
+<p>If you set a display name for the weekly XP league, other players
+in your group can see it. That is the only thing about you anyone else
+can see, and you decide what it says. Please do not use your real name
+if you would rather not be identified.</p>
+
+<h2>What this means if you change phone</h2>
+<p>An anonymous account lives on the device that created it. Clearing
+the app's data, or moving to a new phone, means starting again. That
+is the price of not holding anything that could identify you, and we
+think it is the right trade - but it is only fair that you know.</p>
+
+${OPERATOR_NAME
+  ? '<h2>Who is responsible</h2><p>' + APP_NAME + ' is operated by ' +
+    OPERATOR_NAME +
+    (OPERATOR_PLACE ? ', based in ' + OPERATOR_PLACE : '') +
+    '. We are responsible for the information described here.</p>'
+  : ''}
+
+<h2>Where it is held</h2>
+<p>Progress is stored by Supabase, our database provider, and the app
+runs on Render. Both operate outside Australia. Since none of what we
+store identifies you, nothing personal crosses a border - but you
+should know where the servers are.</p>
+
+<h2>How long we keep it</h2>
+<p>Progress is kept while the anonymous account exists. Delete it from
+inside the app and everything goes immediately. We keep no backups of
+deleted accounts.</p>
+
+<h2>Seeing your information</h2>
+<p>Everything we hold is already on your screen - it is your XP, your
+clubs and your squad. There is nothing held back that you could ask
+us for.</p>
+
+<h2>Advertising</h2>
+<p>Adverts in ${APP_NAME} are provided by Google AdSense. To choose and
+measure them, Google and its advertising partners may use cookies,
+similar technologies and device identifiers, and may receive
+information such as your IP address, the type of device and browser
+you use, and which pages of ${APP_NAME} you view. They may use this to
+show adverts based on your interests, including interests worked out
+from other sites and apps you use.</p>
+<p>We do not pass Google your name, email address or anything else
+that identifies you - we do not hold any of that to pass on. The
+adverts are always labelled "Advertisement" and are kept separate from
+the scores.</p>
+<p>How Google uses this information is set out at
+<a href="https://policies.google.com/technologies/partner-sites">policies.google.com/technologies/partner-sites</a>.
+You can turn off personalised adverts at
+<a href="https://adssettings.google.com">adssettings.google.com</a>,
+and on an iPhone you can refuse tracking under Settings, Privacy &amp;
+Security, Tracking. If you do, you will still see adverts, but they
+will be less tailored to you.</p>
+<p>Where the law requires it - for example in the UK and European
+Union - you will be asked for your consent before personalised adverts
+are shown, and you can change your choice at any time.</p>
+
+<h2>Keeping it safe</h2>
+<p>Traffic between the app and our servers is encrypted. No system is
+perfect, and we will not pretend otherwise - but we hold as little as
+we can, which is the best protection there is.</p>
+
+<h2>What we do not do</h2>
+<ul>
+  <li>No email addresses, ever.</li>
+  <li>No analytics software of our own.</li>
+  <li>We do not ask for your location.</li>
+  <li>We do not sell your information. The only outside company that
+  receives anything from the app for its own purposes is Google, for
+  the adverts described above.</li>
+</ul>
+
+<h2>Other services the app touches</h2>
+<p>Match data comes from api-football.com, Premier League player data
+from the Fantasy Premier League service, and news headlines from
+publishers' public feeds. Those requests are made by our server, not
+by your phone, so those services do not see you.</p>
+<p>One exception worth being straight about: club badges and player
+photographs are loaded directly by your device from the services that
+host them. Those services will therefore see your device's IP address,
+in the same way any website's images would.</p>
+
+<h2>Notifications</h2>
+<p>If you turn on goal alerts, your device asks your permission first.
+Alerts are about matches you chose to follow and nothing else. You can
+withdraw permission at any time in your phone's settings.</p>
+
+<h2>Deleting your data</h2>
+<p>Settings, Account, Delete account. This removes the anonymous
+account and all its progress from our servers immediately and
+permanently. There is no recovery afterwards.</p>
+<p>"Clear this device", also under Settings, wipes the copy held on
+your phone only.</p>
+
+<h2>Children</h2>
+<p>${APP_NAME} is not directed at children under 13 and we do not
+knowingly collect their information. Adverts are not intended for
+children.</p>
+
+<h2>Changes</h2>
+<p>If this policy changes we will update this page and the date at the
+top of it.</p>
+
+`);
+}
+
+function supportPage() {
+  return pageShell("Support", `
+<p>${APP_NAME} shows live football scores, tables, line-ups and
+commentary, and lets you build a 6-a-side team from Premier League
+players to earn XP.</p>
+
+<h2>Getting help</h2>
+${SUPPORT_EMAIL
+  ? '<p>Email <a href="mailto:' + SUPPORT_EMAIL + '">' + SUPPORT_EMAIL +
+    '</a> and we will get back to you. It helps to say which phone you ' +
+    'are using and what you were doing at the time.</p>'
+  : '<p>Contact details are being set up. In the meantime, the ' +
+    'questions below cover most of what comes up.</p>'}
+
+<h2>Common questions</h2>
+<p><strong>Kick-off times look wrong.</strong> Times are converted to
+whatever timezone your phone is set to. Check Settings, About, which
+shows the timezone your device is reporting.</p>
+
+<p><strong>Alerts are not arriving.</strong> Goal alerts currently only
+work while the app is open, and need notification permission. Check
+Settings, Alerts.</p>
+
+<p><strong>I cannot change my 6-a-side team.</strong> Squads can only be
+changed between midnight on Wednesday and midnight on Saturday, and you
+get one change a week. Filling an empty place is always free.</p>
+
+<p><strong>My 6-a-side shows 0 XP.</strong> Only points your players
+score while they are in your team become XP. Anything they scored
+before you picked them stays behind. XP is paid once a gameweek is
+finished and its bonus points have been confirmed.</p>
+
+<p><strong>Do I need to sign in?</strong> No. There is no sign-in and
+no email address. The app creates an anonymous account for you the
+first time it runs.</p>
+
+<p><strong>Will my progress move to a new phone?</strong> No. An
+anonymous account belongs to the device that made it, so clearing the
+app's data or changing phone means starting again. It is the trade for
+holding nothing that identifies you.</p>
+
+<p><strong>Why can I not change my league name?</strong> Setting it is
+free once. Changing it after that is a subscription feature.</p>
+
+<p><strong>Why are there adverts?</strong> They pay for the live data
+that keeps ${APP_NAME} free. They are provided by Google, always marked
+"Advertisement", and kept apart from the scores. The privacy policy
+explains what Google collects to show them.</p>
+
+<p><strong>I want my data gone.</strong> Settings, Account, Delete
+account. It is immediate and cannot be undone.</p>
+
+<h2>Where the data comes from</h2>
+<p>Scores, fixtures, tables and line-ups are provided by
+api-football.com. Premier League player statistics come from the
+Fantasy Premier League service. News headlines are from publishers'
+own feeds and link back to the original articles.</p>
+`);
+}
+
+
+// ---------------------------------------------------------------
+// THE SERVER
+// ---------------------------------------------------------------
+const STARTED_AT = new Date().toISOString();
+
+const server = http.createServer(async function (request, response) {
+  try {
+    await handleRequest(request, response);
+  } catch (error) {
+    // Anything unexpected becomes a 500 rather than a dead socket.
+    console.log("!! request failed: " + (error && error.stack || error));
+    if (!response.headersSent) {
+      response.writeHead(500, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Something went wrong" }));
+    } else {
+      response.end();
+    }
+  }
+});
+
+async function handleRequest(request, response) {
+  const address = new URL(request.url, "http://localhost");
+
+  // The old email sign-in endpoint is gone on purpose. Nothing in
+  // this app collects an email address any more, so there is no
+  // route that could store one.
+  if (address.pathname === "/api/account" && request.method === "POST") {
+    response.writeHead(410, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      error: "Accounts no longer use email. Sessions are anonymous.",
+    }));
+    return;
+  }
+
+  // ---- Starting, or resuming, an anonymous session ----
+  if (address.pathname === "/api/session" && request.method === "POST") {
+    if (!DB_ON) {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Accounts are not set up yet" }));
+      return;
+    }
+
+    let body = "";
+    for await (const chunk of request) body += chunk;
+
+    let sent;
+    try { sent = JSON.parse(body); } catch (error) { sent = {}; }
+
+    // An existing session is renewed rather than replaced. Creating
+    // a new anonymous user here would silently orphan someone's
+    // whole account, so it is only ever the last resort.
+    if (sent.refresh) {
+      const renewed = await refreshSession(String(sent.refresh));
+      if (!renewed.error) {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify(renewed));
+        return;
+      }
+    }
+
+    const fresh = await signInAnonymously();
+    response.writeHead(fresh.error ? 503 : 200,
+      { "Content-Type": "application/json" });
+    response.end(JSON.stringify(fresh));
+    return;
+  }
+
+  // ---- Closing an account ----
+  if (address.pathname === "/api/account/delete" && request.method === "POST") {
+    if (!DB_ON) {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Accounts are not set up yet" }));
+      return;
+    }
+
+    const token = String(request.headers.authorization || "").replace("Bearer ", "");
+    const who = token ? await whoIs(token) : null;
+
+    if (!who) {
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Please sign in again" }));
+      return;
+    }
+
+    const gone = await deleteAccount(who.id);
+
+    response.writeHead(gone ? 200 : 500, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(gone
+      ? { deleted: true }
+      : { error: "Could not delete the account. Please try again." }));
+    return;
+  }
+
+  // ---- Saved progress ----
+  if (address.pathname === "/api/progress") {
+    if (!DB_ON) {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Accounts are not set up yet" }));
+      return;
+    }
+
+    const token = String(request.headers.authorization || "").replace("Bearer ", "");
+    const who = token ? await whoIs(token) : null;
+
+    if (!who) {
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Please sign in again" }));
+      return;
+    }
+
+    if (request.method === "GET") {
+      const data = await loadProgress(who.id);
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ data: data }));
+      return;
+    }
+
+    let body = "";
+    for await (const chunk of request) body += chunk;
+
+    let sent;
+    try { sent = JSON.parse(body); } catch (error) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Could not read that" }));
+      return;
+    }
+
+    const saved = await saveProgressFor(who.id, sent.data || {});
+    response.writeHead(saved ? 200 : 500, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ saved: saved }));
+    return;
+  }
+
+  // ---- The weekly league ----
+  if (address.pathname === "/api/league") {
+    if (!DB_ON) {
+      response.writeHead(503, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Leagues are not set up yet" }));
+      return;
+    }
+
+    const token = String(request.headers.authorization || "").replace("Bearer ", "");
+    const who = token ? await whoIs(token) : null;
+
+    if (!who) {
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Sign in to join a league" }));
+      return;
+    }
+
+    // Let someone set the name others see.
+    if (request.method === "POST") {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+
+      let sent;
+      try { sent = JSON.parse(body); } catch (error) { sent = {}; }
+
+      const name = String(sent.name || "").trim().slice(0, 18);
+
+      if (name) {
+        const current = await getProfile(who.id);
+
+        if (!mayChangeName(current)) {
+          response.writeHead(403, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({
+            error: "nameLocked",
+            message: "You have used your free name change. Changing it " +
+              "again needs a subscription.",
+          }));
+          return;
+        }
+
+        // Counted on the server, so the app cannot award itself
+        // extra changes by editing what it sends.
+        if (name !== (current && current.name)) {
+          await updateProfile(who.id, {
+            name: name,
+            name_changes: (Number(current && current.name_changes) || 0) + 1,
+          });
+        }
+      }
+    }
+
+    // Make sure there is something to roll before rolling it.
+    await ensureProfile(who.id);
+
+    const profile = await rollWeek(who.id);
+    if (!profile) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        error: "Could not set up your league place. Please try again.",
+      }));
+      return;
+    }
+
+    const table = addPaceSetters(
+      await groupTable(profile.group_key), profile.division);
+    const place = table.findIndex(function (row) { return row.id === who.id; });
+
+    // Only send back what the screen needs, and no email addresses.
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      division: Number(profile.division) || 1,
+      name: profile.name || "",
+      canRename: mayChangeName(profile),
+      pro: isPro(profile),
+      position: place === -1 ? null : place + 1,
+      table: table.map(function (row, index) {
+        return {
+          position: index + 1,
+          name: row.name,
+          earned: row.earned,
+          you: row.id === who.id,
+          pace: Boolean(row.pace),
+        };
+      }),
+      promoteAt: PROMOTE,
+      relegateAt: RELEGATE,
+      lastResult: profile.last_result || null,
+      weekEnds: (function () {
+        const d = new Date();
+        const daysLeft = (7 - ((d.getUTCDay() + 6) % 7)) % 7 || 7;
+        const end = new Date(d);
+        end.setUTCDate(end.getUTCDate() + daysLeft);
+        end.setUTCHours(0, 0, 0, 0);
+        return end.toISOString();
+      })(),
+    }));
+    return;
+  }
+
+  if (address.pathname === "/api/scores") {
+    const all = await getLiveScores();
+    const matches = onlyTheirLeagues(all, leagueIdsFrom(address));
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (address.pathname === "/api/fixtures") {
+    const date = address.searchParams.get("date");
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    // span=1 widens it to the day either side, for timezones.
+    let all;
+    if (address.searchParams.get("span") === "1") {
+      const shift = function (days) {
+        const d = new Date(date + "T12:00:00Z");
+        d.setUTCDate(d.getUTCDate() + days);
+        return d.toISOString().slice(0, 10);
+      };
+      all = await getFixturesRange(shift(-1), shift(1));
+    } else {
+      all = await getFixturesFor(date);
+    }
+
+    // all=1 means every country, used by the Fixtures screen.
+    const matches = address.searchParams.get("all") === "1"
+      ? all
+      : onlyTheirLeagues(all, leagueIdsFrom(address));
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (address.pathname === "/api/table") {
+    const leagueId = Number(address.searchParams.get("league"));
+    if (!leagueId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    const rows = await getTableFor(leagueId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(rows));
+    return;
+  }
+
+  if (address.pathname === "/api/match") {
+    const fixtureId = Number(address.searchParams.get("id"));
+    if (!fixtureId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("null");
+      return;
+    }
+    // light=1 skips the line-up and squad work.
+    const match = address.searchParams.get("light") === "1"
+      ? await getMatchLight(fixtureId)
+      : await getMatch(fixtureId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(match));
+    return;
+  }
+
+  if (address.pathname === "/api/match-extra") {
+    const fixtureId = Number(address.searchParams.get("id"));
+    if (!fixtureId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("null");
+      return;
+    }
+
+    const extra = await getMatchExtra(fixtureId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(extra));
+    return;
+  }
+
+  if (address.pathname === "/api/league-fixtures") {
+    const leagueId = Number(address.searchParams.get("league"));
+    const from = address.searchParams.get("from");
+    const to = address.searchParams.get("to");
+    const dateOk = /^\d{4}-\d{2}-\d{2}$/;
+
+    if (!leagueId || !dateOk.test(from) || !dateOk.test(to)) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+
+    const matches = await getLeagueFixtures(leagueId, from, to);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (address.pathname === "/api/team-fixtures") {
+    const teamId = Number(address.searchParams.get("team"));
+    const from = address.searchParams.get("from");
+    const to = address.searchParams.get("to");
+    const dateOk = /^\d{4}-\d{2}-\d{2}$/;
+
+    if (!teamId || !dateOk.test(from) || !dateOk.test(to)) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    const matches = await getTeamFixtures(teamId, from, to);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (address.pathname === "/api/team-season") {
+    const teamId = Number(address.searchParams.get("team"));
+    if (!teamId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    const matches = await getSeason(teamId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(matches));
+    return;
+  }
+
+  if (address.pathname === "/api/team-stats") {
+    const teamId = Number(address.searchParams.get("team"));
+    if (!teamId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+
+    const squad = await getSquad(teamId);
+    const players = Object.keys(squad).map(function (id) {
+      const p = squad[id];
+      return {
+        name: p.name, image: p.image, number: p.number,
+        position: p.position, goals: p.goals, assists: p.assists,
+        yellow: p.yellow, red: p.red, played: p.played,
+      };
+    });
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(players));
+    return;
+  }
+
+  if (address.pathname === "/api/teams") {
+    const leagueId = Number(address.searchParams.get("league"));
+    if (!leagueId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    const teams = await getTeams(leagueId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(teams));
+    return;
+  }
+
+  // Every competition the account can see. This is what fills the
+  // country drawer and the favourites picker - without it both sit
+  // empty, because the app cannot read the page it gets instead.
+  if (address.pathname === "/api/leagues") {
+    const leagues = await getAllLeagues();
+
+    // ?debug=1 says why the list is empty, rather than handing back
+    // a bare [] that explains nothing.
+    if (address.searchParams.get("debug") === "1") {
+      const direct = await askApi("leagues", {});
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        leagues_we_would_send: leagues.length,
+        straight_from_the_api: direct === null ? null : direct.length,
+        first_row: direct && direct.length > 0 ? direct[0] : null,
+        recent_api_errors: apiTrouble,
+        host: API_HOST,
+        key_set: Boolean(API_KEY),
+      }, null, 2));
+      return;
+    }
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(leagues));
+    return;
+  }
+
+  if (address.pathname === "/api/scorers") {
+    const leagueId = Number(address.searchParams.get("league"));
+    if (!leagueId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    const scorers = await getTopScorers(leagueId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(scorers));
+    return;
+  }
+
+  // Every live match in the world, not filtered by followed
+  // leagues. Shares the same cache, so it costs nothing extra.
+  if (address.pathname === "/api/ticker") {
+    const all = await getLiveScores();
+    const small = all.map(function (m) {
+      return {
+        id: m.fixture.id,
+        home: m.teams.home.name,
+        away: m.teams.away.name,
+        homeId: m.teams.home.id,
+        awayId: m.teams.away.id,
+        homeLogo: m.teams.home.logo,
+        awayLogo: m.teams.away.logo,
+        hg: m.goals.home,
+        ag: m.goals.away,
+        minute: m.fixture.status.elapsed,
+        short: m.fixture.status.short,
+        league: m.league.name,
+        leagueId: m.league.id,
+        country: m.league.country,
+      };
+    });
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(small));
+    return;
+  }
+
+  // The badge in the top bar. Drop a logo.png next to this file
+  // and it appears; without one the bar falls back to a bolt.
+  if (address.pathname === "/logo.png") {
+    const file = pathlib.join(__dirname, "logo.png");
+
+    // A file on disk beats the built-in one, so the badge can be
+    // changed without editing this script.
+    fs.readFile(file, function (error, data) {
+      response.writeHead(200, {
+        "Content-Type": "image/png",
+        "Cache-Control": "public, max-age=86400",
+      });
+      response.end(error ? LOGO_BYTES : data);
+    });
+    return;
+  }
+
+  // Google reads this before it pays for any advert on the site.
+  if (address.pathname === "/ads.txt") {
+    response.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "public, max-age=3600",
+    });
+    response.end(ADS_TXT);
+    return;
+  }
+
+  if (address.pathname === "/privacy" || address.pathname === "/support") {
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    response.end(address.pathname === "/privacy" ? privacyPage() : supportPage());
+    return;
+  }
+
+  // Checks every part of the setup and says which bit is missing.
+  // Open /api/diag on the deployed app when something will not save.
+  if (address.pathname === "/api/diag") {
+    const checks = [];
+    const add = function (name, ok, detail) {
+      checks.push({ check: name, ok: ok, detail: detail });
+    };
+
+    add("Supabase settings present", DB_ON,
+      DB_ON ? "SUPABASE_URL and SUPABASE_SERVICE_KEY are set"
+            : "Set SUPABASE_URL and SUPABASE_SERVICE_KEY on the server");
+
+    let userId = null;
+
+    if (DB_ON) {
+      const reachable = await dbCall("/rest/v1/profiles?select=id&limit=1");
+      add("Database reachable", reachable.status !== 0,
+        reachable.status === 0
+          ? "Could not connect. Is the project paused? Free Supabase " +
+            "projects pause after about a week of no use."
+          : "Answered with HTTP " + reachable.status);
+
+      // The one that is most likely to be switched off.
+      const anon = await signInAnonymously();
+      add("Anonymous sign-ins enabled", !anon.error,
+        anon.error
+          ? "Turn on Authentication, Sign In / Providers, Anonymous " +
+            "sign-ins in the Supabase dashboard"
+          : "Working - a test session was created");
+
+      if (!anon.error) userId = anon.userId;
+
+      // The two columns the name rule needs.
+      const columns = await dbCall(
+        "/rest/v1/profiles?select=name_changes,pro_until&limit=1");
+      add("Profile columns added", columns.ok,
+        columns.ok
+          ? "name_changes and pro_until are present"
+          : "Run the ALTER TABLE statements in the Supabase SQL editor");
+
+      // Tidy up the test user so it does not sit in the table.
+      if (userId) await deleteAccount(userId);
+    }
+
+    // Anything the football API has recently refused belongs here
+    // too - it is the first page anybody opens when something is
+    // missing from the screens.
+    const troubled = Object.keys(apiTrouble);
+    add("Football API healthy", troubled.length === 0,
+      troubled.length === 0
+        ? "No endpoint has complained recently"
+        : "Failing: " + troubled.join(", ") + ". See /api/raw for detail");
+
+    const failed = checks.filter(function (c) { return !c.ok; });
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      ready: failed.length === 0,
+      summary: failed.length === 0
+        ? "Everything is set up. Progress and the XP league will save."
+        : "Not ready yet - " + failed.length + " thing" +
+          (failed.length === 1 ? "" : "s") + " to fix, listed below.",
+      checks: checks,
+    }, null, 2));
+    return;
+  }
+
+  if (address.pathname === "/api/fpl-players") {
+    const data = await getFplPlayers();
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(data));
+    return;
+  }
+
+  if (address.pathname === "/api/fpl-event") {
+    const eventId = Number(address.searchParams.get("id"));
+    if (!eventId) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end("null");
+      return;
+    }
+    const data = await getFplEvent(eventId);
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(data));
+    return;
+  }
+
+  // Shows what FPL really sent, for when a field has been renamed
+  // or the whole thing is being refused.
+  if (address.pathname === "/api/fpl-raw") {
+    const boot = await getFplBootstrap();
+
+    if (!boot) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({
+        error: "Nothing came back from fantasy.premierleague.com",
+        hint: "A 403 in the logs means the request was refused. " +
+              "A network error means the host is unreachable from here.",
+      }, null, 2));
+      return;
+    }
+
+    const first = (boot.elements || [])[0] || null;
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      element_count: (boot.elements || []).length,
+      team_count: (boot.teams || []).length,
+      element_types: (boot.element_types || []).map(function (t) {
+        return { id: t.id, name: t.singular_name_short };
+      }),
+      events: (boot.events || []).filter(function (e) {
+        return e.is_previous || e.is_current || e.is_next;
+      }).map(function (e) {
+        return {
+          id: e.id, name: e.name, deadline_time: e.deadline_time,
+          finished: e.finished, data_checked: e.data_checked,
+          is_previous: e.is_previous, is_current: e.is_current, is_next: e.is_next,
+        };
+      }),
+      first_element_fields: first ? Object.keys(first) : [],
+      first_element: first,
+    }, null, 2));
+    return;
+  }
+
+  if (address.pathname === "/api/news") {
+    const items = await getNews();
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(items));
+    return;
+  }
+
+  // What the API really sent, for when a field has moved or the
+  // key is being refused. Open /api/raw on the deployed app.
+  if (address.pathname === "/api/raw") {
+    const what = address.searchParams.get("of") || "live";
+
+    const calls = {
+      live: ["fixtures", { live: "all" }],
+      today: ["fixtures", { date: isoToday() }],
+      leagues: ["leagues", { current: "true" }],
+      status: ["status", {}],
+    };
+
+    const call = calls[what] || calls.live;
+    const raw = await askApi(call[0], call[1]);
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      asked_for: what,
+      options: Object.keys(calls),
+      host: API_HOST,
+      key_set: Boolean(API_KEY),
+      season: currentSeason(),
+      rows: raw === null ? null : raw.length,
+      first_row: raw && raw.length > 0 ? raw[0] : null,
+      note: raw === null
+        ? "Nothing came back. What the API complained about is below."
+        : "Use ?of=today, ?of=leagues or ?of=status for the others.",
+      recent_api_errors: apiTrouble,
+    }, null, 2));
+    return;
+  }
+
+  // The account itself: what plan, and how many requests are left.
+  // Which build is actually running. Open /api/version.
+  if (address.pathname === "/api/version") {
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      build: BUILD,
+      started: STARTED_AT,
+      note: "If this build is not the one you were expecting, the " +
+            "newest file has not reached Render.",
+    }, null, 2));
+    return;
+  }
+
+  // What the commentary watcher has gathered, and what it costs.
+  if (address.pathname === "/api/commentary-status") {
+    const watching = Object.keys(derivedFeed);
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      matches_being_watched: watching.length,
+      lines_gathered: watching.reduce(function (sum, id) {
+        return sum + derivedFeed[id].length;
+      }, 0),
+      reading_every: POLL_SECONDS + " seconds",
+      requests_left_today: requestsLeft,
+      per_day_estimate: Math.round((86400 / POLL_SECONDS) * 3),
+      sample: watching.length > 0
+        ? derivedFeed[watching[0]].slice(-8)
+        : [],
+    }, null, 2));
+    return;
+  }
+
+  if (address.pathname === "/api/quota") {
+    const raw = await askApi("status", {});
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(raw && raw[0] ? raw[0] : {
+      error: "Could not read your API account. Is the key right?",
+      host: API_HOST,
+    }, null, 2));
+    return;
+  }
+
+  // Which match statuses are in play today, and what we make of
+  // them. Handy if a game ever looks stuck on the wrong state.
+  if (address.pathname === "/api/statuses") {
+    const date = address.searchParams.get("date") || isoToday();
+    const raw = await askApi("fixtures", { date: date });
+
+    if (raw === null) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "no answer from the API" }, null, 2));
+      return;
+    }
+
+    const seen = {};
+    for (const row of raw) {
+      const status = (row.fixture && row.fixture.status) || {};
+      const key = String(status.short);
+
+      if (!seen[key]) {
+        seen[key] = {
+          short: status.short,
+          long: status.long,
+          count: 0,
+          we_read_it_as: readStatus(row),
+          example: (row.teams && row.teams.home && row.teams.home.name) + " v " +
+                   (row.teams && row.teams.away && row.teams.away.name),
+        };
+      }
+      seen[key].count++;
+    }
+
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      date: date,
+      total: raw.length,
+      statuses: Object.values(seen),
+    }, null, 2));
+    return;
+  }
+
+
+  // Inside the iPhone app, adverts come from AdMob as a native banner
+  // instead, so the website's AdSense code and in-feed slots are left
+  // out entirely. The app adds "GoalFlashApp" to its user agent,
+  // which is how the server tells the two apart.
+  const inApp = /GoalFlashApp/i.test(String(request.headers["user-agent"] || ""));
+
+  // The page must never be kept by the phone. The iPhone app's web
+  // view held on to an old copy after an update, so changes here did
+  // not reach the app. "no-store" makes it fetch a fresh page every
+  // time it opens.
+  response.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+  });
+  response.end(PAGE
+    .replace("__LEAGUES__", JSON.stringify(MY_LEAGUES))
+    // The website always keeps the AdSense code, because Google checks
+    // for it while reviewing the site - preview mode included.
+    .replace("__ADHEAD__", inApp && !ADS_IN_APP ? "" : adHead())
+    .replace("__ADS__", JSON.stringify({
+      on: !ADS_OFF && (ADS_PREVIEW || !inApp || ADS_IN_APP),
+      preview: ADS_PREVIEW,
+      client: ADSENSE_CLIENT,
+      slot: ADSENSE_SLOT,
+      every: AD_EVERY,
+    })));
+}
+
+// Kept out of the way until the server is actually up.
+setInterval(pollLiveMatches, POLL_SECONDS * 1000);
+
+server.listen(PORT, function () {
+  console.log("");
+  console.log("  App running on port " + PORT);
+  console.log("  Build: " + BUILD);
+  console.log("  Football data from " + API_HOST);
+  console.log("  Watching live matches every " + POLL_SECONDS +
+    "s for commentary");
+  if (!API_KEY) {
+    console.log("  !! APIFOOTBALL_KEY is not set - no match data will load");
+  }
+
+  // These used to be printed on the privacy page itself, which meant
+  // users read notes meant for the developer. They belong here.
+  const missing = [];
+  if (!SUPPORT_EMAIL) missing.push("SUPPORT_EMAIL");
+  if (!OPERATOR_NAME) missing.push("OPERATOR_NAME");
+  if (!OPERATOR_PLACE) missing.push("OPERATOR_PLACE");
+
+  if (missing.length > 0) {
+    console.log("");
+    console.log("  !! Not ready for an app store submission.");
+    console.log("     Missing settings: " + missing.join(", "));
+    console.log("     Both stores need a contact address, and a privacy");
+    console.log("     policy has to name who is answerable for the data.");
+    console.log("     Until these are set those sections are left out.");
+  }
+  console.log("  On your own PC:  http://localhost:" + PORT);
+  console.log("");
 });
