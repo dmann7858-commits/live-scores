@@ -32,7 +32,7 @@ const APP_NAME = "GoalFlash";
 // so there is a way to tell at a glance whether what is running is
 // what was last sent. Chasing a bug in code that was never
 // deployed wastes more time than anything else.
-const BUILD = "2026-09-29-infeed-a";
+const BUILD = "2026-09-29-news-b";
 
 // Who is answerable for the data. Both stores and Australian privacy
 // law expect a named, contactable entity - not just an app name.
@@ -2445,10 +2445,37 @@ async function getTopScorers(leagueId) {
 // public RSS feeds. Only the headline, the source and a link out are
 // kept - the article itself stays with whoever wrote it.
 // ---------------------------------------------------------------
+// Sky's 12040 feed is every sport they cover, which is how darts,
+// snooker and the NBA ended up on a football app. 11095 is their
+// football-only feed. The check below backs it up either way.
 const NEWS_FEEDS = [
   { name: "BBC Sport", url: "https://feeds.bbci.co.uk/sport/football/rss.xml" },
-  { name: "Sky Sports", url: "https://www.skysports.com/rss/12040" },
+  { name: "Sky Sports", url: "https://www.skysports.com/rss/11095" },
 ];
+
+// Headlines older than this are dropped. Feeds sometimes keep an
+// old story pinned for months.
+const NEWS_MAX_AGE_DAYS = 7;
+
+// Both papers put the sport in the story's address, so a football
+// story always has "/football/" in its link. That is far more
+// reliable than guessing from the headline.
+function isFootballStory(item) {
+  const link = String(item.link || "").toLowerCase();
+  if (link.indexOf("bbc.co") !== -1 || link.indexOf("bbc.com") !== -1) {
+    return link.indexOf("/sport/football") !== -1;
+  }
+  if (link.indexOf("skysports.com") !== -1) {
+    return link.indexOf("/football/") !== -1;
+  }
+  return true;
+}
+
+function isRecentStory(item) {
+  if (!item.at) return true;
+  const age = Date.now() - new Date(item.at).getTime();
+  return age < NEWS_MAX_AGE_DAYS * 86400000;
+}
 
 function tidyXml(text) {
   return String(text || "")
@@ -2501,7 +2528,10 @@ async function getNews() {
       });
       if (!response.ok) continue;
       const xml = await response.text();
-      for (const item of readFeed(xml, feed.name).slice(0, 25)) {
+      const stories = readFeed(xml, feed.name)
+        .filter(isFootballStory)
+        .filter(isRecentStory);
+      for (const item of stories.slice(0, 25)) {
         gathered.push(item);
       }
     } catch (error) {
@@ -9860,7 +9890,7 @@ function drawSettings() {
     hour: "2-digit", minute: "2-digit", day: "numeric", month: "short",
   }));
   row("Version", "1.0");
-  row("Build", "2026-09-29-infeed-a");
+  row("Build", "2026-09-29-news-b");
 
   // ---- Clearing up ----
   section("Data");
@@ -12611,7 +12641,16 @@ async function handleRequest(request, response) {
   // which is how the server tells the two apart.
   const inApp = /GoalFlashApp/i.test(String(request.headers["user-agent"] || ""));
 
-  response.writeHead(200, { "Content-Type": "text/html" });
+  // The page must never be kept by the phone. The iPhone app's web
+  // view held on to an old copy after an update, so changes here did
+  // not reach the app. "no-store" makes it fetch a fresh page every
+  // time it opens.
+  response.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+  });
   response.end(PAGE
     .replace("__LEAGUES__", JSON.stringify(MY_LEAGUES))
     // The website always keeps the AdSense code, because Google checks
